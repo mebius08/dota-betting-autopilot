@@ -8,9 +8,11 @@ from app.domain import (
     BetCandidate,
     BetResult,
     BetStatus,
+    Decision,
     ExecutionMode,
     Match,
     MatchStatus,
+    OddsPhase,
     OddsSnapshot,
     Session,
     StreamerUtterance,
@@ -270,6 +272,20 @@ class SQLiteRepository:
 
         return [_row_to_bet(row) for row in rows]
 
+    def list_recent_bets(self, limit: int) -> list[Bet]:
+        with closing(get_connection(self.db_path)) as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM bets
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
+        return [_row_to_bet(row) for row in rows]
+
     def list_bets_by_session(self, session_id: str) -> list[Bet]:
         with closing(get_connection(self.db_path)) as connection:
             rows = connection.execute(
@@ -283,6 +299,21 @@ class SQLiteRepository:
             ).fetchall()
 
         return [_row_to_bet(row) for row in rows]
+
+    def get_session(self, session_id: str) -> Session | None:
+        with closing(get_connection(self.db_path)) as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM sessions
+                WHERE id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+
+        if row is None:
+            return None
+        return _row_to_session(row)
 
     def list_sessions(self) -> list[Session]:
         with closing(get_connection(self.db_path)) as connection:
@@ -310,6 +341,23 @@ class SQLiteRepository:
 
         return [_row_to_match(row) for row in rows]
 
+    def list_bet_candidates_by_session(
+        self,
+        session_id: str,
+    ) -> list[BetCandidate]:
+        with closing(get_connection(self.db_path)) as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM bet_candidates
+                WHERE session_id = ?
+                ORDER BY created_at, id
+                """,
+                (session_id,),
+            ).fetchall()
+
+        return [_row_to_bet_candidate(row) for row in rows]
+
     def list_streamer_utterances_by_session(
         self,
         session_id: str,
@@ -323,6 +371,23 @@ class SQLiteRepository:
                 ORDER BY created_at, id
                 """,
                 (session_id,),
+            ).fetchall()
+
+        return [_row_to_streamer_utterance(row) for row in rows]
+
+    def list_recent_streamer_utterances(
+        self,
+        limit: int,
+    ) -> list[StreamerUtterance]:
+        with closing(get_connection(self.db_path)) as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM streamer_utterances
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (limit,),
             ).fetchall()
 
         return [_row_to_streamer_utterance(row) for row in rows]
@@ -393,6 +458,29 @@ def _row_to_match(row: object) -> Match:
         status=cast(MatchStatus, data["status"]),
         start_time=_datetime_from_text(data["start_time"]),
         external_id=_optional_text(data["external_id"]),
+    )
+
+
+def _row_to_bet_candidate(row: object) -> BetCandidate:
+    data = cast("dict[str, object]", row)
+    return BetCandidate(
+        id=str(data["id"]),
+        session_id=str(data["session_id"]),
+        match_id=str(data["match_id"]),
+        market=str(data["market"]),
+        selection=str(data["selection"]),
+        line=_optional_float(data["line"]),
+        odds=_required_float(data["odds"]),
+        phase=cast(OddsPhase, data["phase"]),
+        market_score=_required_float(data["market_score"]),
+        phase_score=_required_float(data["phase_score"]),
+        line_score=_required_float(data["line_score"]),
+        streamer_score=_required_float(data["streamer_score"]),
+        risk_score=_required_float(data["risk_score"]),
+        final_score=_required_float(data["final_score"]),
+        decision=cast(Decision, data["decision"]),
+        explanation=str(data["explanation"]),
+        created_at=_required_datetime_from_text(data["created_at"]),
     )
 
 

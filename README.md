@@ -9,7 +9,8 @@ captchas, parse private bookmaker accounts, or execute real bets. `auto` mode is
 intentionally a safe stub:
 
 ```text
-Auto execution is intentionally not implemented. Use an official permitted API adapter only.
+Auto execution is intentionally not implemented.
+Use an official permitted API adapter only.
 ```
 
 ## Quick Start
@@ -83,7 +84,38 @@ Typical workflow:
 2. Write or paste streamer phrases into the transcript file, one phrase per line.
 3. The bot reads the transcript, scores candidates, and records paper bets.
 4. Paper trading data is stored in `data/autopilot.db`.
-5. Delete `data/autopilot.db` for a clean research start.
+5. Use `report` to inspect stored paper trading history.
+6. Delete `data/autopilot.db` for a clean research start.
+
+## Reports
+
+Show a paper trading summary from the default SQLite database:
+
+```bash
+python -m app.cli report --db data/autopilot.db
+```
+
+Filter by session and limit recent bets:
+
+```bash
+python -m app.cli report \
+  --db data/autopilot.db \
+  --session-id SESSION_ID \
+  --last-bets 20
+```
+
+Include recent streamer utterances:
+
+```bash
+python -m app.cli report \
+  --db data/autopilot.db \
+  --show-utterances \
+  --last-utterances 20
+```
+
+The report prints sessions, total bets, open and settled bets, profit units,
+ROI, average bets per match, and recent bet history. If the database does not
+exist yet, run `python -m app.main` or `python -m app.cli run-once` first.
 
 ## MVP Data
 

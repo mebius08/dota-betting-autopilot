@@ -1,4 +1,4 @@
-from argparse import ArgumentParser, Namespace
+from argparse import ArgumentParser, ArgumentTypeError, Namespace
 from collections.abc import Callable, Sequence
 from pathlib import Path
 import sys
@@ -6,7 +6,8 @@ import time
 from typing import Any
 
 from app.collectors import TranscriptFileStreamerSpeechCollector
-from app.reports import build_report
+from app.domain import Bet, StreamerUtterance
+from app.reports import build_report, build_report_from_repository
 from app.services import SessionManager, create_autopilot_service
 from app.storage import SQLiteRepository, init_db
 
@@ -96,6 +97,25 @@ def create_parser() -> ArgumentParser:
         help="Number of passes to run. Defaults to 1; no infinite loop.",
     )
 
+    report_parser = subparsers.add_parser(
+        "report",
+        help="Show paper trading history from SQLite.",
+    )
+    report_parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("data") / "autopilot.db",
+        help="SQLite database path.",
+    )
+    report_parser.add_argument("--session-id")
+    report_parser.add_argument("--last-bets", type=_positive_int, default=10)
+    report_parser.add_argument("--show-utterances", action="store_true")
+    report_parser.add_argument(
+        "--last-utterances",
+        type=_positive_int,
+        default=10,
+    )
+
     return parser
 
 
@@ -116,6 +136,8 @@ def main(
             return _run_once_command(args)
         if args.command == "loop":
             return _loop_command(args, sleep_func)
+        if args.command == "report":
+            return _report_command(args)
     except (NotImplementedError, RuntimeError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -174,6 +196,44 @@ def _loop_command(
         interval_seconds=args.interval_seconds,
         sleep_func=sleep_func,
     )
+
+
+def _report_command(args: Namespace) -> int:
+    db_path = Path(args.db)
+    if not db_path.exists():
+        print(
+            f"Database not found: {db_path.as_posix()}. "
+            "Run app.main or app.cli run-once first."
+        )
+        return 1
+
+    repository = SQLiteRepository(db_path)
+    report = build_report_from_repository(repository, args.session_id)
+    recent_bets = _recent_bets_for_report(
+        repository,
+        session_id=args.session_id,
+        limit=args.last_bets,
+    )
+
+    print(f"Database: {db_path.as_posix()}")
+    print(f"Sessions: {report.total_sessions}")
+    print(f"Bets: {report.total_bets}")
+    print(f"Open bets: {report.open_bets}")
+    print(f"Settled bets: {report.settled_bets}")
+    print(f"Profit units: {report.profit_units:.2f}")
+    print(f"ROI: {report.roi_pct:.2f}%")
+    print(f"Average bets per match: {report.average_bets_per_match:.2f}")
+    _print_recent_bets(recent_bets)
+
+    if args.show_utterances:
+        recent_utterances = _recent_utterances_for_report(
+            repository,
+            session_id=args.session_id,
+            limit=args.last_utterances,
+        )
+        _print_recent_utterances(recent_utterances)
+
+    return 0
 
 
 def _run_command(
@@ -246,10 +306,73 @@ def _print_summary(
     print(f"Profit units: {profit_units:.2f}")
 
 
+def _recent_bets_for_report(
+    repository: SQLiteRepository,
+    session_id: str | None,
+    limit: int,
+) -> list[Bet]:
+    if session_id is None:
+        return repository.list_recent_bets(limit)
+
+    return sorted(
+        repository.list_bets_by_session(session_id),
+        key=lambda bet: (bet.created_at, bet.id),
+        reverse=True,
+    )[:limit]
+
+
+def _recent_utterances_for_report(
+    repository: SQLiteRepository,
+    session_id: str | None,
+    limit: int,
+) -> list[StreamerUtterance]:
+    if session_id is None:
+        return repository.list_recent_streamer_utterances(limit)
+
+    return sorted(
+        repository.list_streamer_utterances_by_session(session_id),
+        key=lambda utterance: (utterance.created_at, utterance.id),
+        reverse=True,
+    )[:limit]
+
+
+def _print_recent_bets(bets: list[Bet]) -> None:
+    print()
+    print("Recent bets:")
+    if not bets:
+        print("No bets yet.")
+        return
+
+    for index, bet in enumerate(bets, start=1):
+        print(
+            f"{index}. {bet.market} {bet.selection} "
+            f"line={bet.line} odds={bet.odds} stake_pct={bet.stake_pct} "
+            f"status={bet.status} result={bet.result}"
+        )
+
+
+def _print_recent_utterances(utterances: list[StreamerUtterance]) -> None:
+    print()
+    print("Recent streamer utterances:")
+    if not utterances:
+        print("No streamer utterances yet.")
+        return
+
+    for index, utterance in enumerate(utterances, start=1):
+        print(
+            f'{index}. "{utterance.text}" '
+            f"signal={utterance.signal_type} strength={utterance.strength}"
+        )
+
+
 def _positive_int(value: str) -> int:
-    parsed = int(value)
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise ArgumentTypeError("must be an integer") from exc
+
     if parsed < 1:
-        raise ValueError("must be at least 1")
+        raise ArgumentTypeError("must be at least 1")
     return parsed
 
 
