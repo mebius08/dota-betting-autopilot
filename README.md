@@ -51,6 +51,40 @@ python -m app.main
 - `confirm`: reserved for a future confirmation UI/CLI.
 - `auto`: deliberately not implemented for safety.
 
+## CLI Usage
+
+Show available commands:
+
+```bash
+python -m app.cli --help
+```
+
+Run one pass with a manual transcript file:
+
+```bash
+python -m app.cli run-once \
+  --tournament DreamLeague \
+  --transcript data/streamer_transcript.txt
+```
+
+Run a bounded loop:
+
+```bash
+python -m app.cli loop \
+  --tournament DreamLeague \
+  --transcript data/streamer_transcript.txt \
+  --iterations 5 \
+  --interval-seconds 30
+```
+
+Typical workflow:
+
+1. Start `loop` during the selected tournament.
+2. Write or paste streamer phrases into the transcript file, one phrase per line.
+3. The bot reads the transcript, scores candidates, and records paper bets.
+4. Paper trading data is stored in `data/autopilot.db`.
+5. Delete `data/autopilot.db` for a clean research start.
+
 ## MVP Data
 
 The default demo uses fake collectors. The media layer is based on streamer

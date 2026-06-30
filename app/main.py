@@ -1,14 +1,9 @@
 from pathlib import Path
 
-from app.collectors import (
-    FakeMatchCollector,
-    FakeOddsCollector,
-    FakeStreamerSpeechCollector,
-)
+from app.collectors import FakeStreamerSpeechCollector
 from app.config import load_config
-from app.execution import ExecutionEngine, PaperExecutor
 from app.reports import build_report
-from app.services import AutopilotService, SessionManager
+from app.services import SessionManager, create_autopilot_service
 from app.storage import SQLiteRepository, init_db
 
 
@@ -32,12 +27,8 @@ def main() -> None:
         f"in {session.execution_mode} mode"
     )
 
-    paper_executor = PaperExecutor()
-    autopilot = AutopilotService(
-        match_collector=FakeMatchCollector(),
-        odds_collector=FakeOddsCollector(),
+    autopilot = create_autopilot_service(
         streamer_speech_collector=FakeStreamerSpeechCollector(),
-        execution_engine=ExecutionEngine(paper_executor),
         repository=repository,
     )
 
