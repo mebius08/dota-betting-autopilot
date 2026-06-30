@@ -5,14 +5,23 @@ from app.config import load_config
 from app.execution import ExecutionEngine, PaperExecutor
 from app.reports import build_report
 from app.services import AutopilotService, SessionManager
+from app.storage import SQLiteRepository, init_db
 
 
 def main() -> None:
-    config_path = Path(__file__).resolve().parent.parent / "config.example.yaml"
+    project_root = Path(__file__).resolve().parent.parent
+    config_path = project_root / "config.example.yaml"
+    db_path = project_root / "data" / "autopilot.db"
+
+    init_db(db_path)
+    repository = SQLiteRepository(db_path)
+
     config = load_config(config_path)
 
     session_manager = SessionManager()
     session = session_manager.start_session(config)
+    repository.save_session(session)
+    print(f"Database: {Path('data', 'autopilot.db').as_posix()}")
     print(
         "Started session "
         f"{session.id} for {session.tournament_keyword} "
@@ -29,6 +38,13 @@ def main() -> None:
 
     try:
         bets = autopilot.run_once(session, config)
+        for match in autopilot.last_in_scope_matches:
+            repository.save_match(match)
+        for candidate in autopilot.last_candidates:
+            repository.save_bet_candidate(candidate)
+        for bet in bets:
+            repository.save_bet(bet)
+
         for bet in bets:
             line = f" line={bet.line}" if bet.line is not None else ""
             print(
@@ -37,7 +53,11 @@ def main() -> None:
                 f"stake_pct={bet.stake_pct}"
             )
 
-        report = build_report(bets, matches_count=len(autopilot.last_in_scope_matches))
+        stored_bets = repository.list_bets_by_session(session.id)
+        report = build_report(
+            stored_bets,
+            matches_count=len(autopilot.last_in_scope_matches),
+        )
         print(
             "Summary: "
             f"bets={report.total_bets}, "
@@ -46,6 +66,7 @@ def main() -> None:
         )
     finally:
         stopped = session_manager.stop_session(session.id)
+        repository.save_session(stopped)
         print(f"Stopped session {stopped.id}")
 
 

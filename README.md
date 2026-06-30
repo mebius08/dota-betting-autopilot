@@ -41,7 +41,8 @@ python -m app.main
    components.
 7. Select up to `max_bets_per_match` candidates above threshold.
 8. In `paper` mode, record virtual bets in memory.
-9. Build a summary report from recorded paper bets.
+9. Persist the session and paper bets to SQLite.
+10. Build a summary report from stored paper bets.
 
 ## Modes
 
@@ -54,3 +55,18 @@ python -m app.main
 
 All collectors are fake implementations. Real odds or Twitch adapters can be
 added later behind the same interfaces, preferably via official APIs.
+
+## SQLite Storage
+
+Paper trading data is persisted to `data/autopilot.db`. The database file and
+its parent directory are created automatically when you run:
+
+```bash
+python -m app.main
+```
+
+For a clean research run, stop the app and delete `data/autopilot.db`; the next
+demo run will recreate it from `app/storage/schema.sql`.
+
+This is still paper/research tracking only. The project does not place real
+bets or implement real auto execution.
