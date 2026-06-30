@@ -10,6 +10,7 @@ from app.domain.entities import (
     OddsSnapshot,
     OddsPhase,
     Session,
+    StreamerUtterance,
     BET_RESULTS,
     BET_STATUSES,
     DECISIONS,
@@ -36,4 +37,5 @@ __all__ = [
     "OddsSnapshot",
     "OddsPhase",
     "Session",
+    "StreamerUtterance",
 ]

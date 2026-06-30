@@ -4,6 +4,12 @@ from app.collectors.match_collector import (
     match_in_scope,
 )
 from app.collectors.odds_collector import FakeOddsCollector, OddsCollector
+from app.collectors.streamer_speech_collector import (
+    FakeStreamerSpeechCollector,
+    RawStreamerUtterance,
+    StreamerSpeechCollector,
+    TranscriptFileStreamerSpeechCollector,
+)
 from app.collectors.twitch_collector import (
     FakeTwitchCollector,
     TwitchCollector,
@@ -13,9 +19,13 @@ from app.collectors.twitch_collector import (
 __all__ = [
     "FakeMatchCollector",
     "FakeOddsCollector",
+    "FakeStreamerSpeechCollector",
     "FakeTwitchCollector",
     "MatchCollector",
     "OddsCollector",
+    "RawStreamerUtterance",
+    "StreamerSpeechCollector",
+    "TranscriptFileStreamerSpeechCollector",
     "TwitchCollector",
     "TwitchMessage",
     "match_in_scope",

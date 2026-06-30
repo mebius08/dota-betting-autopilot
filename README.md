@@ -1,8 +1,8 @@
 # Dota Betting Autopilot
 
 Rule-based MVP for Dota 2 betting research. It can run a scoped tournament
-session, collect fake matches/odds/chat, score bet candidates, select a small
-number of candidates, and record paper bets.
+session, collect fake matches/odds/streamer speech opinions, score bet
+candidates, select a small number of candidates, and record paper bets.
 
 No real money is used. The project does not click bookmaker sites, bypass
 captchas, parse private bookmaker accounts, or execute real bets. `auto` mode is
@@ -35,8 +35,8 @@ python -m app.main
 1. Load `config.example.yaml`.
 2. Start a session for a tournament keyword.
 3. Fetch fake Dota matches and filter them by tournament scope.
-4. Fetch fake odds snapshots and fake Twitch chat messages.
-5. Build streamer signals with simple keyword rules.
+4. Fetch fake odds snapshots and fake streamer utterances.
+5. Build streamer speech/opinion signals with simple keyword rules.
 6. Score markets with rule-based quality, phase, odds, streamer, and riskophile
    components.
 7. Select up to `max_bets_per_match` candidates above threshold.
@@ -53,8 +53,17 @@ python -m app.main
 
 ## MVP Data
 
-All collectors are fake implementations. Real odds or Twitch adapters can be
-added later behind the same interfaces, preferably via official APIs.
+The default demo uses fake collectors. The media layer is based on streamer
+speech/opinion text, not Twitch chat. Implemented collectors:
+
+- `FakeStreamerSpeechCollector`: built-in fake streamer phrases.
+- `TranscriptFileStreamerSpeechCollector`: reads one utterance per non-empty
+  line from a local transcript text file.
+
+Real speech-to-text is intentionally not implemented in this MVP. A future
+adapter can use a local Whisper/faster-whisper style transcription pipeline or
+another permitted STT backend. `python -m app.main` works without real Twitch,
+real audio, browser automation, or network calls.
 
 ## SQLite Storage
 

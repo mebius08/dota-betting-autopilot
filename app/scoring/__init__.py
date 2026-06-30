@@ -7,14 +7,16 @@ from app.scoring.bet_scorer import (
 from app.scoring.bet_selector import select_bets
 from app.scoring.market_classifier import classify_market, market_quality_score
 from app.scoring.streamer_analyzer import (
-    analyze_streamer_messages,
+    analyze_streamer_utterance_text,
+    map_raw_utterances_to_entities,
     streamer_score_for_candidate,
 )
 
 __all__ = [
     "ScoreBreakdown",
-    "analyze_streamer_messages",
+    "analyze_streamer_utterance_text",
     "classify_market",
+    "map_raw_utterances_to_entities",
     "market_quality_score",
     "odds_quality_score",
     "phase_score",

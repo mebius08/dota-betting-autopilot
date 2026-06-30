@@ -87,3 +87,21 @@ CREATE TABLE IF NOT EXISTS bets (
     FOREIGN KEY (match_id) REFERENCES matches (id),
     FOREIGN KEY (candidate_id) REFERENCES bet_candidates (id)
 );
+
+CREATE TABLE IF NOT EXISTS streamer_utterances (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    match_id TEXT NULL,
+    source TEXT NOT NULL,
+    text TEXT NOT NULL,
+    detected_market TEXT NULL,
+    detected_selection TEXT NULL,
+    detected_team TEXT NULL,
+    signal_type TEXT NULL,
+    strength REAL NOT NULL,
+    confidence REAL NOT NULL,
+    hype_flag INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES sessions (id),
+    FOREIGN KEY (match_id) REFERENCES matches (id)
+);

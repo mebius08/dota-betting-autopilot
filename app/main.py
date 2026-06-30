@@ -1,6 +1,10 @@
 from pathlib import Path
 
-from app.collectors import FakeMatchCollector, FakeOddsCollector, FakeTwitchCollector
+from app.collectors import (
+    FakeMatchCollector,
+    FakeOddsCollector,
+    FakeStreamerSpeechCollector,
+)
 from app.config import load_config
 from app.execution import ExecutionEngine, PaperExecutor
 from app.reports import build_report
@@ -32,18 +36,15 @@ def main() -> None:
     autopilot = AutopilotService(
         match_collector=FakeMatchCollector(),
         odds_collector=FakeOddsCollector(),
-        twitch_collector=FakeTwitchCollector(),
+        streamer_speech_collector=FakeStreamerSpeechCollector(),
         execution_engine=ExecutionEngine(paper_executor),
+        repository=repository,
     )
 
     try:
         bets = autopilot.run_once(session, config)
-        for match in autopilot.last_in_scope_matches:
-            repository.save_match(match)
-        for candidate in autopilot.last_candidates:
-            repository.save_bet_candidate(candidate)
-        for bet in bets:
-            repository.save_bet(bet)
+        saved_utterances = repository.list_streamer_utterances_by_session(session.id)
+        print(f"Saved streamer utterances: {len(saved_utterances)}")
 
         for bet in bets:
             line = f" line={bet.line}" if bet.line is not None else ""

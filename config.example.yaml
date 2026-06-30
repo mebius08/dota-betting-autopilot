@@ -12,8 +12,9 @@ session:
 streamer:
   platform: "twitch"
   channel: "streamer_name"
-  use_chat: true
+  use_chat: false
   use_speech_to_text: false
+  transcript_path: "data/streamer_transcript.txt"
 
 betting:
   target_bets_per_match: 1.2

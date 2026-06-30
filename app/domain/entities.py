@@ -129,3 +129,20 @@ class Bet:
         _validate_allowed("mode", self.mode, EXECUTION_MODES)
         _validate_allowed("status", self.status, BET_STATUSES)
         _validate_allowed("result", self.result, BET_RESULTS)
+
+
+@dataclass
+class StreamerUtterance:
+    id: str
+    session_id: str
+    match_id: str | None
+    source: str
+    text: str
+    detected_market: str | None
+    detected_selection: str | None
+    detected_team: str | None
+    signal_type: str | None
+    strength: float
+    confidence: float
+    hype_flag: bool
+    created_at: datetime

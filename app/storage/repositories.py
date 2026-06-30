@@ -13,6 +13,7 @@ from app.domain import (
     MatchStatus,
     OddsSnapshot,
     Session,
+    StreamerUtterance,
 )
 from app.storage.database import get_connection, init_db
 
@@ -212,6 +213,51 @@ class SQLiteRepository:
             )
             connection.commit()
 
+    def save_streamer_utterance(self, utterance: StreamerUtterance) -> None:
+        with closing(get_connection(self.db_path)) as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO streamer_utterances (
+                    id,
+                    session_id,
+                    match_id,
+                    source,
+                    text,
+                    detected_market,
+                    detected_selection,
+                    detected_team,
+                    signal_type,
+                    strength,
+                    confidence,
+                    hype_flag,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    utterance.id,
+                    utterance.session_id,
+                    utterance.match_id,
+                    utterance.source,
+                    utterance.text,
+                    utterance.detected_market,
+                    utterance.detected_selection,
+                    utterance.detected_team,
+                    utterance.signal_type,
+                    utterance.strength,
+                    utterance.confidence,
+                    int(utterance.hype_flag),
+                    _datetime_to_text(utterance.created_at),
+                ),
+            )
+            connection.commit()
+
+    def save_streamer_utterances(
+        self,
+        utterances: list[StreamerUtterance],
+    ) -> None:
+        for utterance in utterances:
+            self.save_streamer_utterance(utterance)
+
     def list_bets(self) -> list[Bet]:
         with closing(get_connection(self.db_path)) as connection:
             rows = connection.execute(
@@ -263,6 +309,40 @@ class SQLiteRepository:
             ).fetchall()
 
         return [_row_to_match(row) for row in rows]
+
+    def list_streamer_utterances_by_session(
+        self,
+        session_id: str,
+    ) -> list[StreamerUtterance]:
+        with closing(get_connection(self.db_path)) as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM streamer_utterances
+                WHERE session_id = ?
+                ORDER BY created_at, id
+                """,
+                (session_id,),
+            ).fetchall()
+
+        return [_row_to_streamer_utterance(row) for row in rows]
+
+    def list_streamer_utterances_by_match(
+        self,
+        match_id: str,
+    ) -> list[StreamerUtterance]:
+        with closing(get_connection(self.db_path)) as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM streamer_utterances
+                WHERE match_id = ?
+                ORDER BY created_at, id
+                """,
+                (match_id,),
+            ).fetchall()
+
+        return [_row_to_streamer_utterance(row) for row in rows]
 
 
 def _datetime_to_text(value: datetime | None) -> str | None:
@@ -334,6 +414,25 @@ def _row_to_bet(row: object) -> Bet:
         profit_units=_required_float(data["profit_units"]),
         created_at=_required_datetime_from_text(data["created_at"]),
         settled_at=_datetime_from_text(data["settled_at"]),
+    )
+
+
+def _row_to_streamer_utterance(row: object) -> StreamerUtterance:
+    data = cast("dict[str, object]", row)
+    return StreamerUtterance(
+        id=str(data["id"]),
+        session_id=str(data["session_id"]),
+        match_id=_optional_text(data["match_id"]),
+        source=str(data["source"]),
+        text=str(data["text"]),
+        detected_market=_optional_text(data["detected_market"]),
+        detected_selection=_optional_text(data["detected_selection"]),
+        detected_team=_optional_text(data["detected_team"]),
+        signal_type=_optional_text(data["signal_type"]),
+        strength=_required_float(data["strength"]),
+        confidence=_required_float(data["confidence"]),
+        hype_flag=_required_bool(data["hype_flag"]),
+        created_at=_required_datetime_from_text(data["created_at"]),
     )
 
 

@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from app.domain import OddsSnapshot
+from app.domain import OddsSnapshot, StreamerUtterance
 from app.scoring.market_classifier import classify_market, market_quality_score
 from app.scoring.streamer_analyzer import streamer_score_for_candidate
 
@@ -49,7 +49,7 @@ def odds_quality_score(
 
 def score_odds_snapshot(
     snapshot: OddsSnapshot,
-    streamer_signals: dict[str, float],
+    streamer_utterances: list[StreamerUtterance],
     riskophile_bonus: float = 5.0,
 ) -> ScoreBreakdown:
     market_score = market_quality_score(snapshot.market)
@@ -59,7 +59,7 @@ def score_odds_snapshot(
         snapshot.is_suspended,
     )
     line_score = odds_quality_score(snapshot.odds)
-    streamer_score = streamer_score_for_candidate(snapshot, streamer_signals)
+    streamer_score = streamer_score_for_candidate(snapshot, streamer_utterances)
     risk_score = riskophile_bonus
     penalties = 0.0
     final_score = (
@@ -125,9 +125,9 @@ def _build_explanation(
         parts.append("odds are neutral")
 
     if streamer_score > 0:
-        parts.append("streamer/chat signal supports selection")
+        parts.append("streamer speech supports selection")
     elif streamer_score < 0:
-        parts.append("streamer/chat hype penalty applied")
+        parts.append("streamer speech penalty applied")
     else:
         parts.append("no streamer edge")
 
