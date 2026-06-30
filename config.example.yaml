@@ -1,0 +1,44 @@
+mode:
+  execution: "paper"
+
+session:
+  game: "Dota 2"
+  tournament_keyword: "DreamLeague"
+  blocked_keywords:
+    - "Qualifier"
+    - "Academy"
+    - "Showmatch"
+
+streamer:
+  platform: "twitch"
+  channel: "streamer_name"
+  use_chat: true
+  use_speech_to_text: false
+
+betting:
+  target_bets_per_match: 1.2
+  max_bets_per_match: 3
+  score_threshold: 62
+  max_exposure_per_match_pct: 1.5
+  max_exposure_per_day_pct: 5.0
+  default_stake_pct: 0.35
+
+markets:
+  allow:
+    - "total_kills"
+    - "map_duration"
+    - "team_total_kills"
+    - "total_maps"
+    - "map_handicap"
+    - "map_winner"
+    - "live_total_kills"
+    - "live_duration"
+  block:
+    - "next_kill"
+    - "next_tower"
+    - "first_blood"
+
+odds:
+  min_odds: 1.30
+  max_odds: 3.50
+  max_odds_drop_pct_before_execution: 8
