@@ -5,6 +5,7 @@ from app.scoring.bet_scorer import (
     score_odds_snapshot,
 )
 from app.scoring.bet_selector import select_bets
+from app.scoring.hybrid_scorer import apply_ml_score, update_candidate_decision
 from app.scoring.market_classifier import classify_market, market_quality_score
 from app.scoring.streamer_analyzer import (
     analyze_streamer_utterance_text,
@@ -15,6 +16,7 @@ from app.scoring.streamer_analyzer import (
 __all__ = [
     "ScoreBreakdown",
     "analyze_streamer_utterance_text",
+    "apply_ml_score",
     "classify_market",
     "map_raw_utterances_to_entities",
     "market_quality_score",
@@ -23,4 +25,5 @@ __all__ = [
     "score_odds_snapshot",
     "select_bets",
     "streamer_score_for_candidate",
+    "update_candidate_decision",
 ]

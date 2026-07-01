@@ -8,6 +8,7 @@ from typing import Any
 from app.collectors import TranscriptFileStreamerSpeechCollector
 from app.domain import Bet, StreamerUtterance
 from app.reports import build_report, build_report_from_repository
+from app.scoring.hybrid_scorer import BetScorePredictor
 from app.services import SessionManager, create_autopilot_service
 from app.storage import SQLiteRepository, init_db
 
@@ -116,6 +117,24 @@ def create_parser() -> ArgumentParser:
         default=10,
     )
 
+    train_ml_parser = subparsers.add_parser(
+        "train-ml",
+        help="Train the optional ML scoring model from settled paper bets.",
+    )
+    train_ml_parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("data") / "autopilot.db",
+        help="SQLite database path.",
+    )
+    train_ml_parser.add_argument(
+        "--model-path",
+        type=Path,
+        default=Path("data") / "models" / "bet_model.joblib",
+        help="Path where the trained model is saved.",
+    )
+    train_ml_parser.add_argument("--min-rows", type=_positive_int, default=30)
+
     return parser
 
 
@@ -138,6 +157,8 @@ def main(
             return _loop_command(args, sleep_func)
         if args.command == "report":
             return _report_command(args)
+        if args.command == "train-ml":
+            return _train_ml_command(args)
     except (NotImplementedError, RuntimeError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -179,6 +200,23 @@ def _add_common_run_options(parser: ArgumentParser) -> None:
         "--score-threshold",
         type=float,
         default=62.0,
+    )
+    parser.add_argument(
+        "--model-path",
+        type=Path,
+        default=Path("data") / "models" / "bet_model.joblib",
+        help="Optional ML model path.",
+    )
+    parser.add_argument(
+        "--ml-weight",
+        type=float,
+        default=0.5,
+        help="Weight of ML score in the hybrid score.",
+    )
+    parser.add_argument(
+        "--use-ml",
+        action="store_true",
+        help="Use optional ML scoring if a trained model exists.",
     )
 
 
@@ -236,6 +274,33 @@ def _report_command(args: Namespace) -> int:
     return 0
 
 
+def _train_ml_command(args: Namespace) -> int:
+    db_path = Path(args.db)
+    if not db_path.exists():
+        print(
+            f"Database not found: {db_path.as_posix()}. "
+            "Run app.main or app.cli run-once first."
+        )
+        return 1
+
+    from app.ml import train_model_from_repository
+
+    repository = SQLiteRepository(args.db)
+    result = train_model_from_repository(
+        repository,
+        model_path=args.model_path,
+        min_rows=args.min_rows,
+    )
+
+    print(f"trained: {result.trained}")
+    print(f"rows: {result.rows}")
+    print(f"positives: {result.positive_rows}")
+    print(f"negatives: {result.negative_rows}")
+    print(f"model path: {_format_optional_path(result.model_path)}")
+    print(f"message: {result.message}")
+    return 0
+
+
 def _run_command(
     args: Namespace,
     iterations: int,
@@ -257,9 +322,12 @@ def _run_command(
     repository.save_session(session)
 
     collector = TranscriptFileStreamerSpeechCollector(transcript_path)
+    ml_predictor = _build_ml_predictor(args)
     autopilot = create_autopilot_service(
         streamer_speech_collector=collector,
         repository=repository,
+        ml_predictor=ml_predictor,
+        ml_weight=args.ml_weight,
     )
 
     try:
@@ -304,6 +372,24 @@ def _print_summary(
     print(f"Saved streamer utterances: {saved_utterances}")
     print(f"Total bets in session: {total_bets}")
     print(f"Profit units: {profit_units:.2f}")
+
+
+def _build_ml_predictor(args: Namespace) -> BetScorePredictor | None:
+    if not args.use_ml:
+        return None
+
+    from app.ml import MLBetPredictor
+
+    predictor = MLBetPredictor(args.model_path)
+    if not predictor.is_available():
+        print("ML model not found, using rule-based scoring fallback")
+    return predictor
+
+
+def _format_optional_path(path: Path | None) -> str:
+    if path is None:
+        return "-"
+    return path.as_posix()
 
 
 def _recent_bets_for_report(

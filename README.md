@@ -117,6 +117,36 @@ The report prints sessions, total bets, open and settled bets, profit units,
 ROI, average bets per match, and recent bet history. If the database does not
 exist yet, run `python -m app.main` or `python -m app.cli run-once` first.
 
+## ML Layer
+
+The bot still starts with rule-based scoring. The optional ML layer is a v1
+overlay that learns from settled paper bets and blends its score with the rule
+score. If no model exists, the bot keeps using the rule-based fallback.
+
+Train a model from stored paper trading history:
+
+```bash
+python -m app.cli train-ml --db data/autopilot.db
+```
+
+Run one pass with optional ML scoring:
+
+```bash
+python -m app.cli run-once \
+  --tournament DreamLeague \
+  --transcript data/streamer_transcript.txt \
+  --use-ml
+```
+
+ML training uses only settled `win` and `loss` paper bets. `unknown`, open,
+push, and void bets are not training targets. Until there is enough settled
+history, `train-ml` exits cleanly with `Not enough settled bets to train model`.
+
+The current model is a simple `LogisticRegression` pipeline over candidate,
+rule-score, odds, and streamer-speech features. It does not place real bets,
+call bookmaker APIs, use Twitch APIs, run speech-to-text, or add browser
+automation.
+
 ## MVP Data
 
 The default demo uses fake collectors. The media layer is based on streamer

@@ -358,6 +358,18 @@ class SQLiteRepository:
 
         return [_row_to_bet_candidate(row) for row in rows]
 
+    def list_bet_candidates(self) -> list[BetCandidate]:
+        with closing(get_connection(self.db_path)) as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM bet_candidates
+                ORDER BY created_at, id
+                """
+            ).fetchall()
+
+        return [_row_to_bet_candidate(row) for row in rows]
+
     def list_streamer_utterances_by_session(
         self,
         session_id: str,

@@ -21,10 +21,13 @@ from app.domain import (
 from app.execution import ExecutionEngine
 from app.scoring import (
     ScoreBreakdown,
+    apply_ml_score,
     map_raw_utterances_to_entities,
     score_odds_snapshot,
+    update_candidate_decision,
 )
 from app.scoring.bet_selector import select_bets
+from app.scoring.hybrid_scorer import BetScorePredictor
 from app.storage import SQLiteRepository
 
 
@@ -70,12 +73,16 @@ class AutopilotService:
         streamer_speech_collector: StreamerSpeechCollector,
         execution_engine: ExecutionEngine,
         repository: SQLiteRepository | None = None,
+        ml_predictor: BetScorePredictor | None = None,
+        ml_weight: float = 0.5,
     ) -> None:
         self.match_collector = match_collector
         self.odds_collector = odds_collector
         self.streamer_speech_collector = streamer_speech_collector
         self.execution_engine = execution_engine
         self.repository = repository
+        self.ml_predictor = ml_predictor
+        self.ml_weight = ml_weight
         self.last_in_scope_matches: list[Match] = []
         self.last_candidates: list[BetCandidate] = []
         self.last_streamer_utterances: list[StreamerUtterance] = []
@@ -116,10 +123,18 @@ class AutopilotService:
                     self.repository.save_odds_snapshot(snapshot)
 
             candidates = [
-                build_candidate_from_snapshot(
-                    snapshot=snapshot,
-                    score=score_odds_snapshot(snapshot, utterances),
-                    threshold=session.score_threshold,
+                update_candidate_decision(
+                    apply_ml_score(
+                        build_candidate_from_snapshot(
+                            snapshot=snapshot,
+                            score=score_odds_snapshot(snapshot, utterances),
+                            threshold=session.score_threshold,
+                        ),
+                        utterances,
+                        self.ml_predictor,
+                        self.ml_weight,
+                    ),
+                    session.score_threshold,
                 )
                 for snapshot in snapshots
             ]
