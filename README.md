@@ -92,6 +92,7 @@ Typical workflow:
 Show a paper trading summary from the default SQLite database:
 
 ```bash
+python -m app.cli report
 python -m app.cli report --db data/autopilot.db
 ```
 
@@ -173,6 +174,21 @@ The current model is a simple `LogisticRegression` pipeline over candidate,
 rule-score, odds, and streamer-speech features. It does not place real bets,
 call bookmaker APIs, use Twitch APIs, run speech-to-text, or add browser
 automation.
+
+## ML Status
+
+Check whether paper trading history has enough settled win/loss examples for
+training:
+
+```bash
+python -m app.cli ml-status
+python -m app.cli ml-status --min-rows 30
+```
+
+`ml-status` reports training rows, win/loss balance, ignored bets, and whether
+the data is ready for training. Unknown/open bets are not used by ML training.
+`push` and `void` bets are stored for reporting, but they are also excluded from
+the training dataset.
 
 ## MVP Data
 

@@ -58,8 +58,11 @@ def test_report_command_with_bets(
     assert "Bets: 1" in output
     assert "Open bets: 1" in output
     assert "Settled bets: 0" in output
+    assert "Wins: 0" in output
+    assert "Total staked units: 0.00" in output
     assert "ROI: 0.00%" in output
     assert "total_kills" in output
+    assert "profit_units=0.00" in output
     assert "Profit units" in output
     assert repository.list_bets()
 
@@ -78,6 +81,7 @@ def test_report_show_utterances(
     assert exit_code == 0
     assert "Recent streamer utterances" in output
     assert "over kills looks playable" in output
+    assert "confidence=0.8" in output
 
 
 def test_build_report_from_repository_all_sessions(tmp_path: Path) -> None:

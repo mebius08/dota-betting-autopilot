@@ -20,6 +20,7 @@ class BettingReport:
     pushes: int
     voids: int
     profit_units: float
+    total_staked_units: float
     roi_pct: float
     average_bets_per_match: float
 
@@ -36,7 +37,7 @@ def build_report(
     )
     settled_bets = len(settled)
     profit_units = sum(bet.profit_units for bet in bets)
-    total_staked = sum(bet.stake_pct for bet in settled)
+    total_staked_units = sum(bet.stake_pct for bet in settled)
     return BettingReport(
         total_sessions=(
             total_sessions
@@ -51,7 +52,10 @@ def build_report(
         pushes=sum(1 for bet in bets if bet.result == "push"),
         voids=sum(1 for bet in bets if bet.result == "void"),
         profit_units=profit_units,
-        roi_pct=(profit_units / total_staked * 100) if total_staked else 0.0,
+        total_staked_units=total_staked_units,
+        roi_pct=(
+            profit_units / total_staked_units * 100 if total_staked_units else 0.0
+        ),
         average_bets_per_match=total_bets / matches_count if matches_count else 0.0,
     )
 

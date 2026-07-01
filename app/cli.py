@@ -165,6 +165,37 @@ def create_parser() -> ArgumentParser:
     )
     train_ml_parser.add_argument("--min-rows", type=_positive_int, default=30)
 
+    ml_status_parser = subparsers.add_parser(
+        "ml-status",
+        help="Show ML training data readiness.",
+    )
+    ml_status_parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("data") / "autopilot.db",
+        help="SQLite database path.",
+    )
+    ml_status_parser.add_argument("--min-rows", type=_positive_int, default=30)
+    
+    show_transcript_parser = subparsers.add_parser(
+        "show-transcript",
+        help="Show recent transcriptions from transcript file.",
+    )
+    
+    show_transcript_parser.add_argument(
+        "--transcript",
+        type=Path,
+        default=Path("data") / "streamer_transcript.txt",
+        help="Gets some transcriptions",
+    )
+    
+    show_transcript_parser.add_argument(
+        "--last",
+        type=_positive_int,
+        default=10,
+        help="choose number of shown strings",
+    )
+    
     return parser
 
 
@@ -193,6 +224,10 @@ def main(
             return _settle_bet_command(args)
         if args.command == "train-ml":
             return _train_ml_command(args)
+        if args.command == "ml-status":
+            return _ml_status_command(args)
+        if args.command == "show-transcript":
+            return _show_transcript_command(args)
     except (NotImplementedError, RuntimeError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -292,7 +327,12 @@ def _report_command(args: Namespace) -> int:
     print(f"Bets: {report.total_bets}")
     print(f"Open bets: {report.open_bets}")
     print(f"Settled bets: {report.settled_bets}")
+    print(f"Wins: {report.wins}")
+    print(f"Losses: {report.losses}")
+    print(f"Pushes: {report.pushes}")
+    print(f"Voids: {report.voids}")
     print(f"Profit units: {report.profit_units:.2f}")
+    print(f"Total staked units: {report.total_staked_units:.2f}")
     print(f"ROI: {report.roi_pct:.2f}%")
     print(f"Average bets per match: {report.average_bets_per_match:.2f}")
     _print_recent_bets(recent_bets)
@@ -384,6 +424,60 @@ def _train_ml_command(args: Namespace) -> int:
     return 0
 
 
+def _ml_status_command(args: Namespace) -> int:
+    db_path = Path(args.db)
+    if not db_path.exists():
+        print(
+            f"Database not found: {db_path.as_posix()}. "
+            "Run app.main or app.cli run-once first."
+        )
+        return 1
+
+    from app.ml import build_ml_training_status
+
+    repository = SQLiteRepository(db_path)
+    status = build_ml_training_status(repository, min_rows=args.min_rows)
+
+    print(f"Database: {db_path.as_posix()}")
+    print(f"ML training rows: {status.training_rows}")
+    print(f"Positive rows: {status.positive_rows}")
+    print(f"Negative rows: {status.negative_rows}")
+    print(f"Ignored bets: {status.ignored_bets}")
+    print(f"Unknown/open bets: {status.unknown_open_bets}")
+    print(f"Push/void bets: {status.push_void_bets}")
+    print(f"Can train: {'yes' if status.can_train else 'no'}")
+    print(f"Reason: {status.reason}")
+    return 0
+
+def _show_transcript_command(args: Namespace) -> int:
+    transcript_path = Path(args.transcript)
+    if not transcript_path.exists():
+        print(f"Transcript file not found: {transcript_path.as_posix()}")
+        return 1
+    
+    text = transcript_path.read_text(encoding="utf-8")
+    
+    utterances: list[str] = []
+    for line in text.splitlines():
+        stripped_line = line.strip()
+        if stripped_line:
+            utterances.append(stripped_line)
+    
+    ans = utterances[-args.last :]
+    print(f"Transcript file: {transcript_path.as_posix()}")
+    
+    if not ans:
+        print("No utterances found.")
+        return 0
+    
+    print(f"Utterances: {len(ans)}")
+    print()
+    
+    for i in range (len(ans)):
+        print(i + 1, ans[i])
+        
+    return 0
+    
 def _run_command(
     args: Namespace,
     iterations: int,
@@ -520,7 +614,8 @@ def _format_bet_summary(bet: Bet) -> str:
     return (
         f"id={bet.id} {bet.market} {bet.selection} "
         f"line={bet.line} odds={bet.odds} stake_pct={bet.stake_pct} "
-        f"status={bet.status} result={bet.result}"
+        f"status={bet.status} result={bet.result} "
+        f"profit_units={bet.profit_units:.2f}"
     )
 
 
@@ -534,7 +629,8 @@ def _print_recent_utterances(utterances: list[StreamerUtterance]) -> None:
     for index, utterance in enumerate(utterances, start=1):
         print(
             f'{index}. "{utterance.text}" '
-            f"signal={utterance.signal_type} strength={utterance.strength}"
+            f"signal={utterance.signal_type} "
+            f"strength={utterance.strength} confidence={utterance.confidence}"
         )
 
 
