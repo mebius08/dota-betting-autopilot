@@ -3,10 +3,10 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 import sys
 import time
-from typing import Any
+from typing import Any, cast
 
 from app.collectors import TranscriptFileStreamerSpeechCollector
-from app.domain import Bet, StreamerUtterance
+from app.domain import Bet, BetResult, StreamerUtterance
 from app.reports import build_report, build_report_from_repository
 from app.scoring.hybrid_scorer import BetScorePredictor
 from app.services import SessionManager, create_autopilot_service
@@ -117,6 +117,36 @@ def create_parser() -> ArgumentParser:
         default=10,
     )
 
+    open_bets_parser = subparsers.add_parser(
+        "open-bets",
+        help="List unsettled paper bets.",
+    )
+    open_bets_parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("data") / "autopilot.db",
+        help="SQLite database path.",
+    )
+    open_bets_parser.add_argument("--session-id")
+    open_bets_parser.add_argument("--limit", type=_positive_int, default=20)
+
+    settle_bet_parser = subparsers.add_parser(
+        "settle-bet",
+        help="Manually settle a paper bet.",
+    )
+    settle_bet_parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("data") / "autopilot.db",
+        help="SQLite database path.",
+    )
+    settle_bet_parser.add_argument("--bet-id", required=True)
+    settle_bet_parser.add_argument(
+        "--result",
+        choices=("win", "loss", "push", "void"),
+        required=True,
+    )
+
     train_ml_parser = subparsers.add_parser(
         "train-ml",
         help="Train the optional ML scoring model from settled paper bets.",
@@ -157,6 +187,10 @@ def main(
             return _loop_command(args, sleep_func)
         if args.command == "report":
             return _report_command(args)
+        if args.command == "open-bets":
+            return _open_bets_command(args)
+        if args.command == "settle-bet":
+            return _settle_bet_command(args)
         if args.command == "train-ml":
             return _train_ml_command(args)
     except (NotImplementedError, RuntimeError, ValueError) as exc:
@@ -271,6 +305,55 @@ def _report_command(args: Namespace) -> int:
         )
         _print_recent_utterances(recent_utterances)
 
+    return 0
+
+
+def _open_bets_command(args: Namespace) -> int:
+    db_path = Path(args.db)
+    if not db_path.exists():
+        print(
+            f"Database not found: {db_path.as_posix()}. "
+            "Run app.main or app.cli run-once first."
+        )
+        return 1
+
+    repository = SQLiteRepository(db_path)
+    if args.session_id is None:
+        open_bets = repository.list_open_bets()
+    else:
+        open_bets = repository.list_open_bets_by_session(args.session_id)
+    limited_bets = open_bets[: args.limit]
+
+    print(f"Database: {db_path.as_posix()}")
+    print(f"Open bets: {len(open_bets)}")
+    for index, bet in enumerate(limited_bets, start=1):
+        print(f"{index}. {_format_bet_summary(bet)}")
+    return 0
+
+
+def _settle_bet_command(args: Namespace) -> int:
+    db_path = Path(args.db)
+    if not db_path.exists():
+        print(
+            f"Database not found: {db_path.as_posix()}. "
+            "Run app.main or app.cli run-once first."
+        )
+        return 1
+
+    repository = SQLiteRepository(db_path)
+    result = cast(BetResult, args.result)
+    settled_bet = repository.settle_bet(args.bet_id, result)
+
+    print("Settled bet:")
+    print(f"id={settled_bet.id}")
+    print(f"market={settled_bet.market}")
+    print(f"selection={settled_bet.selection}")
+    print(f"line={settled_bet.line}")
+    print(f"odds={settled_bet.odds}")
+    print(f"stake_pct={settled_bet.stake_pct}")
+    print(f"result={settled_bet.result}")
+    print(f"profit_units={settled_bet.profit_units:.2f}")
+    print(f"status={settled_bet.status}")
     return 0
 
 
@@ -430,11 +513,15 @@ def _print_recent_bets(bets: list[Bet]) -> None:
         return
 
     for index, bet in enumerate(bets, start=1):
-        print(
-            f"{index}. {bet.market} {bet.selection} "
-            f"line={bet.line} odds={bet.odds} stake_pct={bet.stake_pct} "
-            f"status={bet.status} result={bet.result}"
-        )
+        print(f"{index}. {_format_bet_summary(bet)}")
+
+
+def _format_bet_summary(bet: Bet) -> str:
+    return (
+        f"id={bet.id} {bet.market} {bet.selection} "
+        f"line={bet.line} odds={bet.odds} stake_pct={bet.stake_pct} "
+        f"status={bet.status} result={bet.result}"
+    )
 
 
 def _print_recent_utterances(utterances: list[StreamerUtterance]) -> None:

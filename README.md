@@ -117,6 +117,33 @@ The report prints sessions, total bets, open and settled bets, profit units,
 ROI, average bets per match, and recent bet history. If the database does not
 exist yet, run `python -m app.main` or `python -m app.cli run-once` first.
 
+## Settlement
+
+Paper bets start as open bets with `status=placed`, `result=unknown`, and
+`profit_units=0.0`. Manual settlement records the final paper result so reports
+and ML training can use the history.
+
+List open bets:
+
+```bash
+python -m app.cli open-bets
+```
+
+Settle a paper bet:
+
+```bash
+python -m app.cli settle-bet --bet-id BET_ID --result win
+python -m app.cli settle-bet --bet-id BET_ID --result loss
+```
+
+`win` and `loss` settled bets are used by ML training. `push` and `void` are
+stored for reporting, but they are not training targets. Profit is calculated
+from `stake_pct`:
+
+- `win`: `stake_pct * (odds - 1)`
+- `loss`: `-stake_pct`
+- `push` / `void`: `0.0`
+
 ## ML Layer
 
 The bot still starts with rule-based scoring. The optional ML layer is a v1

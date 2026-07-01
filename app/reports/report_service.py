@@ -30,10 +30,13 @@ def build_report(
     total_sessions: int | None = None,
 ) -> BettingReport:
     total_bets = len(bets)
-    open_bets = sum(1 for bet in bets if bet.result == "unknown")
-    settled_bets = total_bets - open_bets
+    settled = [bet for bet in bets if bet.status == "settled"]
+    open_bets = sum(
+        1 for bet in bets if bet.result == "unknown" or bet.status != "settled"
+    )
+    settled_bets = len(settled)
     profit_units = sum(bet.profit_units for bet in bets)
-    total_staked = sum(bet.stake_pct for bet in bets)
+    total_staked = sum(bet.stake_pct for bet in settled)
     return BettingReport(
         total_sessions=(
             total_sessions

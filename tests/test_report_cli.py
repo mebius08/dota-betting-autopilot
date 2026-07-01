@@ -98,7 +98,7 @@ def test_build_report_from_repository_all_sessions(tmp_path: Path) -> None:
     assert report.total_bets == 2
     assert report.open_bets == 1
     assert report.settled_bets == 1
-    assert report.roi_pct == pytest.approx(45.71, abs=0.01)
+    assert report.roi_pct == pytest.approx(91.43, abs=0.01)
     assert report.average_bets_per_match == 1.0
 
 

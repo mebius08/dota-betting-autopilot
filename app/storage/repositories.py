@@ -1,5 +1,5 @@
 from contextlib import closing
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
 
@@ -300,6 +300,87 @@ class SQLiteRepository:
 
         return [_row_to_bet(row) for row in rows]
 
+    def get_bet(self, bet_id: str) -> Bet | None:
+        with closing(get_connection(self.db_path)) as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM bets
+                WHERE id = ?
+                """,
+                (bet_id,),
+            ).fetchone()
+
+        if row is None:
+            return None
+        return _row_to_bet(row)
+
+    def list_open_bets(self) -> list[Bet]:
+        with closing(get_connection(self.db_path)) as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM bets
+                WHERE result = 'unknown' OR status != 'settled'
+                ORDER BY created_at, id
+                """
+            ).fetchall()
+
+        return [_row_to_bet(row) for row in rows]
+
+    def list_open_bets_by_session(self, session_id: str) -> list[Bet]:
+        with closing(get_connection(self.db_path)) as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM bets
+                WHERE session_id = ?
+                  AND (result = 'unknown' OR status != 'settled')
+                ORDER BY created_at, id
+                """,
+                (session_id,),
+            ).fetchall()
+
+        return [_row_to_bet(row) for row in rows]
+
+    def settle_bet(
+        self,
+        bet_id: str,
+        result: BetResult,
+        settled_at: datetime | None = None,
+    ) -> Bet:
+        bet = self.get_bet(bet_id)
+        if bet is None:
+            raise ValueError(f"Bet not found: {bet_id}")
+
+        settlement_time = settled_at or datetime.now(timezone.utc)
+        profit_units = calculate_profit_units(result, bet.odds, bet.stake_pct)
+
+        with closing(get_connection(self.db_path)) as connection:
+            connection.execute(
+                """
+                UPDATE bets
+                SET status = ?,
+                    result = ?,
+                    profit_units = ?,
+                    settled_at = ?
+                WHERE id = ?
+                """,
+                (
+                    "settled",
+                    result,
+                    profit_units,
+                    _datetime_to_text(settlement_time),
+                    bet_id,
+                ),
+            )
+            connection.commit()
+
+        updated_bet = self.get_bet(bet_id)
+        if updated_bet is None:
+            raise ValueError(f"Bet not found after settlement: {bet_id}")
+        return updated_bet
+
     def get_session(self, session_id: str) -> Session | None:
         with closing(get_connection(self.db_path)) as connection:
             row = connection.execute(
@@ -426,6 +507,20 @@ def _datetime_to_text(value: datetime | None) -> str | None:
     if value is None:
         return None
     return value.isoformat()
+
+
+def calculate_profit_units(
+    result: BetResult,
+    odds: float,
+    stake_pct: float,
+) -> float:
+    if result == "win":
+        return stake_pct * (odds - 1)
+    if result == "loss":
+        return -stake_pct
+    if result in ("push", "void"):
+        return 0.0
+    raise ValueError("result must be one of: win, loss, push, void")
 
 
 def _datetime_from_text(value: object) -> datetime | None:
