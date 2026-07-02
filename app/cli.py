@@ -6,7 +6,8 @@ import time
 from typing import Any, cast
 
 from app.collectors import TranscriptFileStreamerSpeechCollector
-from app.domain import Bet, BetResult, StreamerUtterance
+from app.domain import Bet, BetCandidate, BetResult, Match, OddsSnapshot, Session
+from app.domain import StreamerUtterance
 from app.reports import build_report, build_report_from_repository
 from app.scoring.hybrid_scorer import BetScorePredictor
 from app.services import SessionManager, create_autopilot_service
@@ -239,6 +240,45 @@ def create_parser() -> ArgumentParser:
         required=True,
         help="Utterance text to append.",
     )
+    add_utterance_parser.add_argument(
+        "--speaker",
+        type=_non_empty_text,
+        help="Optional speaker label to prefix the utterance.",
+    )
+
+    clear_transcript_parser = subparsers.add_parser(
+        "clear-transcript",
+        help="Clear a transcript file.",
+    )
+    clear_transcript_parser.add_argument(
+        "--transcript",
+        type=Path,
+        default=Path("data") / "streamer_transcript.txt",
+        help="Path to a manual streamer transcript file.",
+    )
+
+    list_sessions_parser = subparsers.add_parser(
+        "list-sessions",
+        help="List stored paper trading sessions.",
+    )
+    list_sessions_parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("data") / "autopilot.db",
+        help="SQLite database path.",
+    )
+
+    show_session_parser = subparsers.add_parser(
+        "show-session",
+        help="Show one stored paper trading session.",
+    )
+    show_session_parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("data") / "autopilot.db",
+        help="SQLite database path.",
+    )
+    show_session_parser.add_argument("--session-id", required=True)
 
     return parser
 
@@ -276,6 +316,12 @@ def main(
             return _show_transcript_command(args)
         if args.command == "add-utterance":
             return _add_utterance_command(args)
+        if args.command == "clear-transcript":
+            return _clear_transcript_command(args)
+        if args.command == "list-sessions":
+            return _list_sessions_command(args)
+        if args.command == "show-session":
+            return _show_session_command(args)
     except (NotImplementedError, RuntimeError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -551,11 +597,86 @@ def _show_transcript_command(args: Namespace) -> int:
 def _add_utterance_command(args: Namespace) -> int:
     transcript_path = Path(args.transcript)
     ensure_transcript_file(transcript_path)
+    text = args.text
+    if args.speaker is not None:
+        text = f"{args.speaker}: {text}"
 
     with transcript_path.open("a", encoding="utf-8") as file:
-        file.write(args.text + "\n")
+        file.write(text + "\n")
 
     print(f"Added utterance to {transcript_path.as_posix()}")
+    return 0
+
+
+def _clear_transcript_command(args: Namespace) -> int:
+    transcript_path = Path(args.transcript)
+    transcript_path.parent.mkdir(parents=True, exist_ok=True)
+    transcript_path.write_text("", encoding="utf-8")
+
+    print(f"Cleared transcript: {transcript_path.as_posix()}")
+    return 0
+
+
+def _list_sessions_command(args: Namespace) -> int:
+    db_path = Path(args.db)
+    if not db_path.exists():
+        print(f"Database not found: {db_path.as_posix()}.")
+        print("No sessions found.")
+        return 0
+
+    repository = SQLiteRepository(db_path)
+    sessions = repository.list_sessions()
+
+    print(f"Database: {db_path.as_posix()}")
+    print(f"Sessions: {len(sessions)}")
+    if not sessions:
+        print("No sessions found.")
+        return 0
+
+    for index, session in enumerate(sessions, start=1):
+        matches_count = len(repository.list_matches_by_session(session.id))
+        bets_count = len(repository.list_bets_by_session(session.id))
+        utterances_count = len(
+            repository.list_streamer_utterances_by_session(session.id)
+        )
+        print(
+            f"{index}. id={session.id} name={session.name} "
+            f"tournament={session.tournament_keyword} "
+            f"mode={session.execution_mode} active={session.active} "
+            f"created_at={session.created_at.isoformat()} "
+            f"matches={matches_count} bets={bets_count} "
+            f"utterances={utterances_count}"
+        )
+
+    return 0
+
+
+def _show_session_command(args: Namespace) -> int:
+    db_path = Path(args.db)
+    if not db_path.exists():
+        print(f"Database not found: {db_path.as_posix()}.")
+        print(f"Session not found: {args.session_id}")
+        return 0
+
+    repository = SQLiteRepository(db_path)
+    session = repository.get_session(args.session_id)
+    if session is None:
+        print(f"Session not found: {args.session_id}")
+        return 0
+
+    matches = repository.list_matches_by_session(session.id)
+    odds_snapshots = repository.list_odds_snapshots_by_session(session.id)
+    candidates = repository.list_bet_candidates_by_session(session.id)
+    bets = repository.list_bets_by_session(session.id)
+    utterances = repository.list_streamer_utterances_by_session(session.id)
+
+    print(f"Database: {db_path.as_posix()}")
+    _print_session_details(session)
+    _print_matches(matches)
+    _print_odds_snapshots(odds_snapshots)
+    _print_bet_candidates(candidates)
+    _print_bets("Bets", bets)
+    _print_recent_utterances(utterances)
     return 0
 
 
@@ -680,6 +801,80 @@ def _recent_utterances_for_report(
     )[:limit]
 
 
+def _print_session_details(session: Session) -> None:
+    print()
+    print("Session:")
+    print(f"id={session.id}")
+    print(f"name={session.name}")
+    print(f"tournament={session.tournament_keyword}")
+    print(f"streamer_channel={session.streamer_channel}")
+    print(f"execution_mode={session.execution_mode}")
+    print(f"target_bets_per_match={session.target_bets_per_match}")
+    print(f"max_bets_per_match={session.max_bets_per_match}")
+    print(f"score_threshold={session.score_threshold}")
+    print(f"active={session.active}")
+    print(f"created_at={session.created_at.isoformat()}")
+    print(f"ended_at={_format_optional_datetime(session.ended_at)}")
+
+
+def _print_matches(matches: list[Match]) -> None:
+    print()
+    print(f"Matches: {len(matches)}")
+    if not matches:
+        print("No matches found.")
+        return
+
+    for index, match in enumerate(matches, start=1):
+        print(
+            f"{index}. id={match.id} {match.team_a} vs {match.team_b} "
+            f"format={match.format} status={match.status} "
+            f"start_time={_format_optional_datetime(match.start_time)}"
+        )
+
+
+def _print_odds_snapshots(snapshots: list[OddsSnapshot]) -> None:
+    print()
+    print(f"Odds snapshots: {len(snapshots)}")
+    if not snapshots:
+        print("No odds snapshots found.")
+        return
+
+    for index, snapshot in enumerate(snapshots, start=1):
+        print(
+            f"{index}. id={snapshot.id} match={snapshot.match_id} "
+            f"{snapshot.market} {snapshot.selection} line={snapshot.line} "
+            f"odds={snapshot.odds} phase={snapshot.phase} "
+            f"live={snapshot.is_live} suspended={snapshot.is_suspended}"
+        )
+
+
+def _print_bet_candidates(candidates: list[BetCandidate]) -> None:
+    print()
+    print(f"Bet candidates: {len(candidates)}")
+    if not candidates:
+        print("No bet candidates found.")
+        return
+
+    for index, candidate in enumerate(candidates, start=1):
+        print(
+            f"{index}. id={candidate.id} match={candidate.match_id} "
+            f"{candidate.market} {candidate.selection} line={candidate.line} "
+            f"odds={candidate.odds} phase={candidate.phase} "
+            f"final_score={candidate.final_score} decision={candidate.decision}"
+        )
+
+
+def _print_bets(title: str, bets: list[Bet]) -> None:
+    print()
+    print(f"{title}: {len(bets)}")
+    if not bets:
+        print("No bets found.")
+        return
+
+    for index, bet in enumerate(bets, start=1):
+        print(f"{index}. {_format_bet_summary(bet)}")
+
+
 def _print_recent_bets(bets: list[Bet]) -> None:
     print()
     print("Recent bets:")
@@ -698,6 +893,12 @@ def _format_bet_summary(bet: Bet) -> str:
         f"status={bet.status} result={bet.result} "
         f"profit_units={bet.profit_units:.2f}"
     )
+
+
+def _format_optional_datetime(value: object) -> str:
+    if value is None:
+        return "-"
+    return str(value)
 
 
 def _print_recent_utterances(utterances: list[StreamerUtterance]) -> None:

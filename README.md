@@ -87,6 +87,30 @@ Typical workflow:
 5. Use `report` to inspect stored paper trading history.
 6. Delete `data/autopilot.db` for a clean research start.
 
+## UX CLI Helpers
+
+Manual transcript helpers:
+
+```bash
+python -m app.cli show-transcript --transcript data/streamer_transcript.txt
+python -m app.cli add-utterance \
+  --transcript data/streamer_transcript.txt \
+  --speaker streamer \
+  --text "over kills looks playable"
+python -m app.cli clear-transcript --transcript data/streamer_transcript.txt
+```
+
+Offline SQLite session inspection:
+
+```bash
+python -m app.cli list-sessions --db data/autopilot.db
+python -m app.cli show-session --db data/autopilot.db --session-id SESSION_ID
+```
+
+Transcript commands work with the manual/fake transcript workflow. Session
+commands only read local SQLite paper-trading storage. They do not place real
+bets, automate bookmaker sites, call Twitch/STT APIs, or use browser automation.
+
 ## Reports
 
 Show a paper trading summary from the default SQLite database:

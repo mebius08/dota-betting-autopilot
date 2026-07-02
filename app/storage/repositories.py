@@ -422,6 +422,23 @@ class SQLiteRepository:
 
         return [_row_to_match(row) for row in rows]
 
+    def list_odds_snapshots_by_session(
+        self,
+        session_id: str,
+    ) -> list[OddsSnapshot]:
+        with closing(get_connection(self.db_path)) as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM odds_snapshots
+                WHERE session_id = ?
+                ORDER BY created_at, id
+                """,
+                (session_id,),
+            ).fetchall()
+
+        return [_row_to_odds_snapshot(row) for row in rows]
+
     def list_bet_candidates_by_session(
         self,
         session_id: str,
@@ -565,6 +582,25 @@ def _row_to_match(row: object) -> Match:
         status=cast(MatchStatus, data["status"]),
         start_time=_datetime_from_text(data["start_time"]),
         external_id=_optional_text(data["external_id"]),
+    )
+
+
+def _row_to_odds_snapshot(row: object) -> OddsSnapshot:
+    data = cast("dict[str, object]", row)
+    return OddsSnapshot(
+        id=str(data["id"]),
+        session_id=str(data["session_id"]),
+        match_id=str(data["match_id"]),
+        external_market_id=_optional_text(data["external_market_id"]),
+        market=str(data["market"]),
+        selection=str(data["selection"]),
+        line=_optional_float(data["line"]),
+        odds=_required_float(data["odds"]),
+        phase=cast(OddsPhase, data["phase"]),
+        is_live=_required_bool(data["is_live"]),
+        is_suspended=_required_bool(data["is_suspended"]),
+        bookmaker=str(data["bookmaker"]),
+        created_at=_required_datetime_from_text(data["created_at"]),
     )
 
 
