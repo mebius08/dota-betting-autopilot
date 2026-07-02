@@ -280,6 +280,24 @@ def create_parser() -> ArgumentParser:
     )
     show_session_parser.add_argument("--session-id", required=True)
 
+    show_last_bets_parser = subparsers.add_parser(
+        "show-last-bets",
+        help="Show recent paper bets.",
+    )
+    show_last_bets_parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("data") / "autopilot.db",
+        help="SQLite database path.",
+    )
+    show_last_bets_parser.add_argument("--session-id")
+    show_last_bets_parser.add_argument(
+        "--limit",
+        type=_positive_int,
+        default=10,
+        help="Number of recent bets to show.",
+    )
+
     return parser
 
 
@@ -322,6 +340,8 @@ def main(
             return _list_sessions_command(args)
         if args.command == "show-session":
             return _show_session_command(args)
+        if args.command == "show-last-bets":
+            return _show_last_bets_command(args)
     except (NotImplementedError, RuntimeError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -605,6 +625,30 @@ def _add_utterance_command(args: Namespace) -> int:
         file.write(text + "\n")
 
     print(f"Added utterance to {transcript_path.as_posix()}")
+    return 0
+
+
+def _show_last_bets_command(args: Namespace) -> int:
+    db_path = Path(args.db)
+    if not db_path.exists():
+        print(
+            f"Database not found: {db_path.as_posix()}. "
+            "Run app.main or app.cli run-once first."
+        )
+        return 1
+
+    repository = SQLiteRepository(db_path)
+    if args.session_id is None:
+        bets = repository.list_recent_bets(args.limit)
+    else:
+        bets = sorted(
+            repository.list_bets_by_session(args.session_id),
+            key=lambda bet: (bet.created_at, bet.id),
+            reverse=True,
+        )[: args.limit]
+
+    print(f"Database: {db_path.as_posix()}")
+    _print_bets("Recent bets", bets)
     return 0
 
 

@@ -30,6 +30,7 @@ def test_cli_help_includes_ux_commands(capsys) -> None:
     assert "clear-transcript" in output
     assert "list-sessions" in output
     assert "show-session" in output
+    assert "show-last-bets" in output
 
 
 def test_build_config_from_args() -> None:
@@ -448,6 +449,89 @@ def test_show_session_without_related_data(
     assert "No matches found." in output
     assert "No bets found." in output
     assert "No streamer utterances yet." in output
+
+
+def test_show_last_bets_missing_database(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    db_path = tmp_path / "missing.db"
+
+    exit_code = cli.main(["show-last-bets", "--db", str(db_path)])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "Database not found" in output
+
+
+def test_show_last_bets_empty_database(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+
+    exit_code = cli.main(["show-last-bets", "--db", str(db_path)])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Recent bets: 0" in output
+    assert "No bets found." in output
+
+
+def test_show_last_bets_limits_recent_bets(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    db_path = tmp_path / "test.db"
+    repository = SQLiteRepository(db_path)
+    repository.save_session(make_session("session-1"))
+    repository.save_match(make_match("session-1", "match-1"))
+    repository.save_bet_candidate(make_candidate("session-1", "match-1"))
+    repository.save_bet(make_bet("session-1", "match-1", "candidate-1", "bet-1"))
+    repository.save_bet(make_bet("session-1", "match-1", "candidate-1", "bet-2"))
+
+    exit_code = cli.main(["show-last-bets", "--db", str(db_path), "--limit", "1"])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Recent bets: 1" in output
+    assert "id=bet-2" in output
+    assert "id=bet-1" not in output
+
+
+def test_show_last_bets_can_filter_by_session(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    db_path = tmp_path / "test.db"
+    repository = SQLiteRepository(db_path)
+    repository.save_session(make_session("session-1"))
+    repository.save_session(make_session("session-2"))
+    repository.save_match(make_match("session-1", "match-1"))
+    repository.save_match(make_match("session-2", "match-2"))
+    repository.save_bet_candidate(make_candidate("session-1", "match-1"))
+    repository.save_bet_candidate(
+        make_candidate("session-2", "match-2", "candidate-2")
+    )
+    repository.save_bet(make_bet("session-1", "match-1", "candidate-1", "bet-1"))
+    repository.save_bet(make_bet("session-2", "match-2", "candidate-2", "bet-2"))
+
+    exit_code = cli.main(
+        [
+            "show-last-bets",
+            "--db",
+            str(db_path),
+            "--session-id",
+            "session-1",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Recent bets: 1" in output
+    assert "id=bet-1" in output
+    assert "id=bet-2" not in output
 
 
 def make_odds_snapshot(session_id: str, match_id: str) -> OddsSnapshot:
