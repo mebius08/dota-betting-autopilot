@@ -135,3 +135,95 @@ def test_ensure_transcript_file_creates_parent_and_file(tmp_path: Path) -> None:
     cli.ensure_transcript_file(transcript_path)
 
     assert transcript_path.exists()
+
+
+def test_show_transcript_command_prints_recent_lines(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    transcript_path = tmp_path / "streamer_transcript.txt"
+    transcript_path.write_text(
+        "first\n\nsecond\nthird\n",
+        encoding="utf-8",
+    )
+
+    exit_code = cli.main(
+        [
+            "show-transcript",
+            "--transcript",
+            str(transcript_path),
+            "--last",
+            "2",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Utterances: 2" in output
+    assert "1. second" in output
+    assert "2. third" in output
+    assert "first" not in output
+
+
+def test_show_transcript_command_missing_file(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    transcript_path = tmp_path / "missing.txt"
+
+    exit_code = cli.main(
+        [
+            "show-transcript",
+            "--transcript",
+            str(transcript_path),
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "Transcript file not found" in output
+
+
+def test_add_utterance_command_appends_text(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    transcript_path = tmp_path / "streamer_transcript.txt"
+    transcript_path.write_text("first\n", encoding="utf-8")
+
+    exit_code = cli.main(
+        [
+            "add-utterance",
+            "--transcript",
+            str(transcript_path),
+            "--text",
+            "second",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Added utterance" in output
+    assert transcript_path.read_text(encoding="utf-8") == "first\nsecond\n"
+
+
+def test_add_utterance_command_creates_file(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    transcript_path = tmp_path / "nested" / "streamer_transcript.txt"
+
+    exit_code = cli.main(
+        [
+            "add-utterance",
+            "--transcript",
+            str(transcript_path),
+            "--text",
+            "fresh phrase",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Added utterance" in output
+    assert transcript_path.read_text(encoding="utf-8") == "fresh phrase\n"

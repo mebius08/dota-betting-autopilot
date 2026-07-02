@@ -190,6 +190,26 @@ the data is ready for training. Unknown/open bets are not used by ML training.
 `push` and `void` bets are stored for reporting, but they are also excluded from
 the training dataset.
 
+## Evaluation / Backtest
+
+Evaluate whether the optional ML scorer looks useful compared with the stored
+rule-based score on settled paper bets:
+
+```bash
+python -m app.cli evaluate-ml --db data/autopilot.db
+```
+
+`evaluate-ml` builds an offline train/test split from settled `win` and `loss`
+paper bets, trains an in-memory ML model on the train split, and compares it
+with the saved rule-based candidate score on the test split. The report prints
+usable settled records, train/test sizes, win/loss distribution, rule metrics,
+ML metrics, profit/ROI-style paper metrics, and a simple conclusion.
+
+`push`, `void`, open, and `unknown` results are counted in the report but are
+not used as binary labels. If there are too few settled bets, the output is
+`not_enough_data` or inconclusive instead of a traceback. This is research-only
+paper evaluation, not financial advice and not a real-money betting signal.
+
 ## MVP Data
 
 The default demo uses fake collectors. The media layer is based on streamer

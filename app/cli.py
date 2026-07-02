@@ -176,26 +176,70 @@ def create_parser() -> ArgumentParser:
         help="SQLite database path.",
     )
     ml_status_parser.add_argument("--min-rows", type=_positive_int, default=30)
-    
+
+    evaluate_ml_parser = subparsers.add_parser(
+        "evaluate-ml",
+        help="Backtest ML scoring against rule-based scoring on settled paper bets.",
+    )
+    evaluate_ml_parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("data") / "autopilot.db",
+        help="SQLite database path.",
+    )
+    evaluate_ml_parser.add_argument(
+        "--test-size",
+        type=_test_size,
+        default=0.3,
+        help="Share of usable records reserved for evaluation.",
+    )
+    evaluate_ml_parser.add_argument(
+        "--min-records",
+        type=_positive_int,
+        default=10,
+        help="Minimum usable settled win/loss records required.",
+    )
+    evaluate_ml_parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Deterministic train/test split seed.",
+    )
+
     show_transcript_parser = subparsers.add_parser(
         "show-transcript",
         help="Show recent transcriptions from transcript file.",
     )
-    
     show_transcript_parser.add_argument(
         "--transcript",
         type=Path,
         default=Path("data") / "streamer_transcript.txt",
-        help="Gets some transcriptions",
+        help="Path to a manual streamer transcript file.",
     )
-    
     show_transcript_parser.add_argument(
         "--last",
         type=_positive_int,
         default=10,
-        help="choose number of shown strings",
+        help="Number of recent utterances to show.",
     )
-    
+
+    add_utterance_parser = subparsers.add_parser(
+        "add-utterance",
+        help="Add one utterance to a transcript file.",
+    )
+    add_utterance_parser.add_argument(
+        "--transcript",
+        type=Path,
+        default=Path("data") / "streamer_transcript.txt",
+        help="Path to a manual streamer transcript file.",
+    )
+    add_utterance_parser.add_argument(
+        "--text",
+        type=_non_empty_text,
+        required=True,
+        help="Utterance text to append.",
+    )
+
     return parser
 
 
@@ -226,8 +270,12 @@ def main(
             return _train_ml_command(args)
         if args.command == "ml-status":
             return _ml_status_command(args)
+        if args.command == "evaluate-ml":
+            return _evaluate_ml_command(args)
         if args.command == "show-transcript":
             return _show_transcript_command(args)
+        if args.command == "add-utterance":
+            return _add_utterance_command(args)
     except (NotImplementedError, RuntimeError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -449,35 +497,68 @@ def _ml_status_command(args: Namespace) -> int:
     print(f"Reason: {status.reason}")
     return 0
 
+
+def _evaluate_ml_command(args: Namespace) -> int:
+    db_path = Path(args.db)
+    if not db_path.exists():
+        print(f"Database not found: {db_path.as_posix()}.")
+        print("Not enough data for meaningful evaluation.")
+        return 0
+
+    from app.evaluation import format_evaluation_report, run_evaluation_backtest
+
+    repository = SQLiteRepository(db_path)
+    report = run_evaluation_backtest(
+        repository,
+        test_size=args.test_size,
+        min_records=args.min_records,
+        seed=args.seed,
+    )
+    print(format_evaluation_report(report, db_path=db_path))
+    return 0
+
+
 def _show_transcript_command(args: Namespace) -> int:
     transcript_path = Path(args.transcript)
     if not transcript_path.exists():
         print(f"Transcript file not found: {transcript_path.as_posix()}")
         return 1
-    
+
     text = transcript_path.read_text(encoding="utf-8")
-    
+
     utterances: list[str] = []
     for line in text.splitlines():
         stripped_line = line.strip()
         if stripped_line:
             utterances.append(stripped_line)
-    
-    ans = utterances[-args.last :]
+
+    recent_utterances = utterances[-args.last :]
     print(f"Transcript file: {transcript_path.as_posix()}")
-    
-    if not ans:
+
+    if not recent_utterances:
         print("No utterances found.")
         return 0
-    
-    print(f"Utterances: {len(ans)}")
+
+    print(f"Utterances: {len(recent_utterances)}")
     print()
-    
-    for i in range (len(ans)):
-        print(i + 1, ans[i])
-        
+
+    for index, utterance in enumerate(recent_utterances, start=1):
+        print(f"{index}. {utterance}")
+
     return 0
-    
+
+
+def _add_utterance_command(args: Namespace) -> int:
+    transcript_path = Path(args.transcript)
+    ensure_transcript_file(transcript_path)
+
+    with transcript_path.open("a", encoding="utf-8") as file:
+        file.write(args.text + "\n")
+
+    print(f"Added utterance to {transcript_path.as_posix()}")
+    return 0
+
+
 def _run_command(
     args: Namespace,
     iterations: int,
@@ -642,6 +723,24 @@ def _positive_int(value: str) -> int:
 
     if parsed < 1:
         raise ArgumentTypeError("must be at least 1")
+    return parsed
+
+
+def _non_empty_text(value: str) -> str:
+    parsed = value.strip()
+    if not parsed:
+        raise ArgumentTypeError("must not be empty")
+    return parsed
+
+
+def _test_size(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise ArgumentTypeError("must be a number") from exc
+
+    if not 0 < parsed < 1:
+        raise ArgumentTypeError("must be between 0 and 1")
     return parsed
 
 
