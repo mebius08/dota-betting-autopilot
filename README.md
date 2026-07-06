@@ -169,6 +169,53 @@ from `stake_pct`:
 - `loss`: `-stake_pct`
 - `push` / `void`: `0.0`
 
+## Data export/import
+
+Export stored paper research data for offline analysis:
+
+```bash
+python -m app.cli export-bets --db data/autopilot.db --out exports/bets.csv
+python -m app.cli export-candidates \
+  --db data/autopilot.db \
+  --out exports/candidates.csv
+python -m app.cli export-utterances \
+  --db data/autopilot.db \
+  --out exports/utterances.csv
+```
+
+Exports use UTF-8 CSV, create the output directory when needed, always write a
+header, and keep columns in the same stable order as the persisted SQLite/domain
+fields. Exported CSV files are intended for local offline inspection and are
+usually not committed.
+
+Settlement imports work only with existing paper bets:
+
+```csv
+bet_id,outcome,profit_units
+<bet-id>,win,1.25
+<bet-id>,loss,-1.0
+```
+
+```bash
+python -m app.cli import-settlements --db data/autopilot.db --csv settlements.csv
+```
+
+Invalid rows are skipped with warnings, while valid rows are still applied. The
+CSV `profit_units` value is validated as numeric input; stored paper profit is
+calculated by the existing settlement logic from the bet odds, stake, and
+outcome.
+
+Inspect offline data readiness before ML training or evaluation:
+
+```bash
+python -m app.cli inspect-dataset --db data/autopilot.db
+```
+
+The inspection report prints entity counts, open and settled bet counts,
+win/loss/push/void outcomes, streamer utterance counts, usable ML records, and a
+simple readiness status. This remains paper/research data only. It is not real
+betting, bookmaker automation, or financial advice.
+
 ## ML Layer
 
 The bot still starts with rule-based scoring. The optional ML layer is a v1

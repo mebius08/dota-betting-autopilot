@@ -408,6 +408,18 @@ class SQLiteRepository:
 
         return [_row_to_session(row) for row in rows]
 
+    def list_matches(self) -> list[Match]:
+        with closing(get_connection(self.db_path)) as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM matches
+                ORDER BY start_time, id
+                """
+            ).fetchall()
+
+        return [_row_to_match(row) for row in rows]
+
     def list_matches_by_session(self, session_id: str) -> list[Match]:
         with closing(get_connection(self.db_path)) as connection:
             rows = connection.execute(
@@ -421,6 +433,18 @@ class SQLiteRepository:
             ).fetchall()
 
         return [_row_to_match(row) for row in rows]
+
+    def list_odds_snapshots(self) -> list[OddsSnapshot]:
+        with closing(get_connection(self.db_path)) as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM odds_snapshots
+                ORDER BY created_at, id
+                """
+            ).fetchall()
+
+        return [_row_to_odds_snapshot(row) for row in rows]
 
     def list_odds_snapshots_by_session(
         self,
@@ -467,6 +491,18 @@ class SQLiteRepository:
             ).fetchall()
 
         return [_row_to_bet_candidate(row) for row in rows]
+
+    def list_streamer_utterances(self) -> list[StreamerUtterance]:
+        with closing(get_connection(self.db_path)) as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM streamer_utterances
+                ORDER BY created_at, id
+                """
+            ).fetchall()
+
+        return [_row_to_streamer_utterance(row) for row in rows]
 
     def list_streamer_utterances_by_session(
         self,

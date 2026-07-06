@@ -118,6 +118,85 @@ def create_parser() -> ArgumentParser:
         default=10,
     )
 
+    export_bets_parser = subparsers.add_parser(
+        "export-bets",
+        help="Export persisted paper bets to CSV.",
+    )
+    export_bets_parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("data") / "autopilot.db",
+        help="SQLite database path.",
+    )
+    export_bets_parser.add_argument(
+        "--out",
+        type=Path,
+        required=True,
+        help="Output CSV path.",
+    )
+
+    export_candidates_parser = subparsers.add_parser(
+        "export-candidates",
+        help="Export persisted bet candidates to CSV.",
+    )
+    export_candidates_parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("data") / "autopilot.db",
+        help="SQLite database path.",
+    )
+    export_candidates_parser.add_argument(
+        "--out",
+        type=Path,
+        required=True,
+        help="Output CSV path.",
+    )
+
+    export_utterances_parser = subparsers.add_parser(
+        "export-utterances",
+        help="Export persisted streamer utterances to CSV.",
+    )
+    export_utterances_parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("data") / "autopilot.db",
+        help="SQLite database path.",
+    )
+    export_utterances_parser.add_argument(
+        "--out",
+        type=Path,
+        required=True,
+        help="Output CSV path.",
+    )
+
+    import_settlements_parser = subparsers.add_parser(
+        "import-settlements",
+        help="Import paper bet settlements from CSV.",
+    )
+    import_settlements_parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("data") / "autopilot.db",
+        help="SQLite database path.",
+    )
+    import_settlements_parser.add_argument(
+        "--csv",
+        type=Path,
+        required=True,
+        help="Settlement CSV path.",
+    )
+
+    inspect_dataset_parser = subparsers.add_parser(
+        "inspect-dataset",
+        help="Show offline data readiness for ML training and evaluation.",
+    )
+    inspect_dataset_parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("data") / "autopilot.db",
+        help="SQLite database path.",
+    )
+
     open_bets_parser = subparsers.add_parser(
         "open-bets",
         help="List unsettled paper bets.",
@@ -320,6 +399,16 @@ def main(
             return _loop_command(args, sleep_func)
         if args.command == "report":
             return _report_command(args)
+        if args.command == "export-bets":
+            return _export_bets_command(args)
+        if args.command == "export-candidates":
+            return _export_candidates_command(args)
+        if args.command == "export-utterances":
+            return _export_utterances_command(args)
+        if args.command == "import-settlements":
+            return _import_settlements_command(args)
+        if args.command == "inspect-dataset":
+            return _inspect_dataset_command(args)
         if args.command == "open-bets":
             return _open_bets_command(args)
         if args.command == "settle-bet":
@@ -459,6 +548,77 @@ def _report_command(args: Namespace) -> int:
         )
         _print_recent_utterances(recent_utterances)
 
+    return 0
+
+
+def _export_bets_command(args: Namespace) -> int:
+    from app.data_io import export_bets_to_csv
+
+    repository = SQLiteRepository(args.db)
+    result = export_bets_to_csv(repository, args.out)
+    print(f"Exported {result.row_count} bets to {result.output_path.as_posix()}")
+    return 0
+
+
+def _export_candidates_command(args: Namespace) -> int:
+    from app.data_io import export_candidates_to_csv
+
+    repository = SQLiteRepository(args.db)
+    result = export_candidates_to_csv(repository, args.out)
+    print(
+        f"Exported {result.row_count} candidates to "
+        f"{result.output_path.as_posix()}"
+    )
+    return 0
+
+
+def _export_utterances_command(args: Namespace) -> int:
+    from app.data_io import export_utterances_to_csv
+
+    repository = SQLiteRepository(args.db)
+    result = export_utterances_to_csv(repository, args.out)
+    print(
+        f"Exported {result.row_count} utterances to "
+        f"{result.output_path.as_posix()}"
+    )
+    return 0
+
+
+def _import_settlements_command(args: Namespace) -> int:
+    from app.data_io import import_settlements_from_csv
+
+    db_path = Path(args.db)
+    if not db_path.exists():
+        print(
+            f"Database not found: {db_path.as_posix()}. "
+            "Run app.main or app.cli run-once first."
+        )
+        return 1
+
+    csv_path = Path(args.csv)
+    if not csv_path.exists():
+        print(f"Settlement CSV not found: {csv_path.as_posix()}")
+        return 1
+
+    repository = SQLiteRepository(db_path)
+    result = import_settlements_from_csv(repository, csv_path)
+
+    print(f"Processed rows: {result.processed_rows}")
+    print(f"Updated bets: {result.updated_bets}")
+    print(f"Skipped rows: {result.skipped_rows}")
+    print(f"Warnings: {len(result.warnings)}")
+    for warning in result.warnings:
+        print(f"Warning: {warning}")
+    return 0
+
+
+def _inspect_dataset_command(args: Namespace) -> int:
+    from app.data_io import format_dataset_inspection_report, inspect_dataset
+
+    db_path = Path(args.db)
+    repository = SQLiteRepository(db_path)
+    report = inspect_dataset(repository, db_path)
+    print(format_dataset_inspection_report(report))
     return 0
 
 
