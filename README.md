@@ -216,6 +216,31 @@ win/loss/push/void outcomes, streamer utterance counts, usable ML records, and a
 simple readiness status. This remains paper/research data only. It is not real
 betting, bookmaker automation, or financial advice.
 
+## Real match data adapter
+
+The optional PandaScore adapter is a read-only source for Dota 2 match metadata.
+It fetches matches and maps them into the existing `Match` domain entity. It
+does not fetch bookmaker odds, place bets, run scoring, or execute paper bets.
+Fake/manual collectors remain the default fallback for the local workflow.
+
+Set a local PandaScore token before using the real provider:
+
+```powershell
+$env:PANDASCORE_TOKEN="your-token-here"
+```
+
+Fetch match metadata explicitly:
+
+```bash
+python -m app.cli fetch-matches --provider pandascore
+python -m app.cli fetch-matches --provider pandascore --status upcoming --limit 10
+python -m app.cli fetch-matches --provider pandascore --status live --limit 10
+```
+
+Network access happens only when the real provider command is used. Unit tests
+mock the network boundary and stay offline. API availability, rate limits, and
+provider plan behavior are controlled by PandaScore. Do not commit credentials.
+
 ## ML Layer
 
 The bot still starts with rule-based scoring. The optional ML layer is a v1

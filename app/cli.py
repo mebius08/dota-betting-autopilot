@@ -118,6 +118,28 @@ def create_parser() -> ArgumentParser:
         default=10,
     )
 
+    fetch_matches_parser = subparsers.add_parser(
+        "fetch-matches",
+        help="Fetch read-only real match metadata from a provider.",
+    )
+    fetch_matches_parser.add_argument(
+        "--provider",
+        choices=("pandascore",),
+        required=True,
+    )
+    fetch_matches_parser.add_argument("--limit", type=_positive_int, default=20)
+    fetch_matches_parser.add_argument(
+        "--status",
+        choices=("upcoming", "live", "all"),
+        default="all",
+    )
+    fetch_matches_parser.add_argument(
+        "--timeout",
+        type=_positive_float,
+        default=10.0,
+        help="HTTP timeout in seconds.",
+    )
+
     export_bets_parser = subparsers.add_parser(
         "export-bets",
         help="Export persisted paper bets to CSV.",
@@ -399,6 +421,8 @@ def main(
             return _loop_command(args, sleep_func)
         if args.command == "report":
             return _report_command(args)
+        if args.command == "fetch-matches":
+            return _fetch_matches_command(args)
         if args.command == "export-bets":
             return _export_bets_command(args)
         if args.command == "export-candidates":
@@ -548,6 +572,40 @@ def _report_command(args: Namespace) -> int:
         )
         _print_recent_utterances(recent_utterances)
 
+    return 0
+
+
+def _fetch_matches_command(args: Namespace) -> int:
+    from app.collectors import PandaScoreError, PandaScoreMatchCollector
+
+    if args.provider != "pandascore":
+        print(f"Unsupported provider: {args.provider}")
+        return 1
+
+    collector = PandaScoreMatchCollector(
+        timeout=args.timeout,
+        limit=args.limit,
+        status_filter=args.status,
+    )
+    try:
+        matches = collector.collect()
+    except PandaScoreError as exc:
+        print(str(exc))
+        return 1
+
+    print("Provider: pandascore")
+    print(f"Matches: {len(matches)}")
+    if not matches:
+        print()
+        print("No matches found.")
+        return 0
+
+    for index, match in enumerate(matches, start=1):
+        print()
+        print(f"{index}. {match.team_a} vs {match.team_b}")
+        print(f"   Tournament: {match.tournament_name}")
+        print(f"   Status: {match.status}")
+        print(f"   Starts at: {_format_optional_datetime(match.start_time)}")
     return 0
 
 
@@ -1146,6 +1204,17 @@ def _test_size(value: str) -> float:
 
     if not 0 < parsed < 1:
         raise ArgumentTypeError("must be between 0 and 1")
+    return parsed
+
+
+def _positive_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise ArgumentTypeError("must be a number") from exc
+
+    if parsed <= 0:
+        raise ArgumentTypeError("must be greater than 0")
     return parsed
 
 

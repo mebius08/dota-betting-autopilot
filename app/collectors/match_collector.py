@@ -64,3 +64,7 @@ def match_in_scope(
             return False
 
     return match.status in ("upcoming", "live")
+
+
+def normalize_team_name(value: str) -> str:
+    return " ".join(value.strip().lower().split())
