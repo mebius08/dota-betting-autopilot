@@ -1,4 +1,5 @@
 from pathlib import Path
+import math
 from typing import Any
 
 import joblib  # type: ignore[import-untyped]
@@ -27,14 +28,30 @@ class MLBetPredictor:
         if self._model is None:
             return None
 
-        row = feature_row_to_dict(build_feature_row(candidate, utterances))
-        dataframe = pd.DataFrame([row])
-        probabilities = self._model.predict_proba(select_model_features(dataframe))[0]
-        classes = list(self._model.classes_)
+        predict_proba = getattr(self._model, "predict_proba", None)
+        classes_attribute = getattr(self._model, "classes_", None)
+        if predict_proba is None or classes_attribute is None:
+            return None
+
+        try:
+            row = feature_row_to_dict(build_feature_row(candidate, utterances))
+            dataframe = pd.DataFrame([row])
+            probabilities = predict_proba(select_model_features(dataframe))[0]
+            classes = list(classes_attribute)
+        except Exception:
+            return None
+
         if 1 not in classes:
             return None
 
-        return float(probabilities[classes.index(1)])
+        return _valid_probability_or_none(probabilities[classes.index(1)])
+
+    def predict_win_probability(
+        self,
+        candidate: BetCandidate,
+        utterances: list[StreamerUtterance],
+    ) -> float | None:
+        return self.predict_good_bet_probability(candidate, utterances)
 
     def predict_ml_score(
         self,
@@ -45,3 +62,19 @@ class MLBetPredictor:
         if probability is None:
             return None
         return probability * 100
+
+
+def _valid_probability_or_none(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+
+    try:
+        probability = float(value)
+    except (TypeError, ValueError):
+        return None
+
+    if not math.isfinite(probability):
+        return None
+    if probability < 0.0 or probability > 1.0:
+        return None
+    return probability

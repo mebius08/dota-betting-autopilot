@@ -1,5 +1,6 @@
 from argparse import ArgumentParser, ArgumentTypeError, Namespace
 from collections.abc import Callable, Sequence
+import math
 from pathlib import Path
 import sys
 import time
@@ -8,6 +9,7 @@ from typing import Any, cast
 from app.collectors import TranscriptFileStreamerSpeechCollector
 from app.domain import Bet, BetCandidate, BetResult, Match, OddsSnapshot, Session
 from app.domain import StreamerUtterance
+from app.edge import CandidateEdgeAnalysis, build_edge_analyses
 from app.reports import build_report, build_report_from_repository
 from app.scoring.hybrid_scorer import BetScorePredictor
 from app.services import SessionManager, create_autopilot_service
@@ -329,6 +331,38 @@ def create_parser() -> ArgumentParser:
         help="Deterministic train/test split seed.",
     )
 
+    analyze_edge_parser = subparsers.add_parser(
+        "analyze-edge",
+        help="Inspect market probability and estimated edge from stored data.",
+    )
+    analyze_edge_parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("data") / "autopilot.db",
+        help="SQLite database path.",
+    )
+    analyze_edge_parser.add_argument(
+        "--model-path",
+        "--model",
+        dest="model_path",
+        type=Path,
+        default=Path("data") / "models" / "bet_model.joblib",
+        help="Optional ML model path.",
+    )
+    analyze_edge_parser.add_argument("--match-id")
+    analyze_edge_parser.add_argument("--bookmaker")
+    analyze_edge_parser.add_argument(
+        "--min-edge",
+        type=_float_value,
+        help="Minimum decimal probability edge to display, for example 0.05.",
+    )
+    analyze_edge_parser.add_argument(
+        "--limit",
+        type=_positive_int,
+        default=20,
+        help="Maximum analyses to print.",
+    )
+
     show_transcript_parser = subparsers.add_parser(
         "show-transcript",
         help="Show recent transcriptions from transcript file.",
@@ -466,6 +500,8 @@ def main(
             return _ml_status_command(args)
         if args.command == "evaluate-ml":
             return _evaluate_ml_command(args)
+        if args.command == "analyze-edge":
+            return _analyze_edge_command(args)
         if args.command == "show-transcript":
             return _show_transcript_command(args)
         if args.command == "add-utterance":
@@ -863,6 +899,57 @@ def _evaluate_ml_command(args: Namespace) -> int:
     return 0
 
 
+def _analyze_edge_command(args: Namespace) -> int:
+    db_path = Path(args.db)
+    if not db_path.exists():
+        print(
+            f"Database not found: {db_path.as_posix()}. "
+            "Run app.main or app.cli run-once first."
+        )
+        return 1
+
+    from app.ml import MLBetPredictor
+
+    repository = SQLiteRepository(db_path)
+    candidates = repository.list_bet_candidates()
+    snapshots = repository.list_odds_snapshots()
+    match_ids = {candidate.match_id for candidate in candidates}
+    utterances_by_match = {
+        match_id: repository.list_streamer_utterances_by_match(match_id)
+        for match_id in match_ids
+    }
+    predictor = MLBetPredictor(args.model_path)
+    analyses = build_edge_analyses(
+        candidates=candidates,
+        snapshots=snapshots,
+        utterances_by_match=utterances_by_match,
+        predictor=predictor,
+        match_id=args.match_id,
+        bookmaker=args.bookmaker,
+        min_edge=args.min_edge,
+        limit=args.limit,
+    )
+
+    print("Edge analysis")
+    print(f"Database: {db_path.as_posix()}")
+    print(f"Model path: {Path(args.model_path).as_posix()}")
+
+    if not analyses:
+        print()
+        print("No candidates available for edge analysis.")
+        return 0
+
+    for analysis in analyses:
+        _print_edge_analysis(analysis)
+
+    available = sum(1 for analysis in analyses if analysis.status == "available")
+    print()
+    print(f"Analyzed candidates: {len(analyses)}")
+    print(f"Edge available: {available}")
+    print(f"Unavailable: {len(analyses) - available}")
+    return 0
+
+
 def _show_transcript_command(args: Namespace) -> int:
     transcript_path = Path(args.transcript)
     if not transcript_path.exists():
@@ -1239,6 +1326,56 @@ def _print_recent_utterances(utterances: list[StreamerUtterance]) -> None:
         )
 
 
+def _print_edge_analysis(analysis: CandidateEdgeAnalysis) -> None:
+    print()
+    print(f"Candidate: {analysis.selection}")
+    print(f"Market: {analysis.market}")
+    print(f"Bookmaker: {_format_optional_text(analysis.bookmaker)}")
+    print(f"Odds: {analysis.decimal_odds:.2f}")
+    print(
+        "Raw implied probability: "
+        f"{_format_optional_probability(analysis.raw_implied_probability)}"
+    )
+    print(
+        "Fair market probability: "
+        f"{_format_optional_probability(analysis.fair_market_probability)}"
+    )
+    print(
+        "Model probability: "
+        f"{_format_optional_probability(analysis.model_probability)}"
+    )
+    print(f"Probability source: {analysis.probability_source}")
+    print(f"Estimated edge: {_format_optional_edge(analysis.edge)}")
+    print(f"Expected value: {_format_optional_units(analysis.expected_value_units)}")
+    print(f"Status: {analysis.status}")
+    if analysis.reason and analysis.status != "available":
+        print(f"Reason: {analysis.reason}")
+
+
+def _format_optional_probability(value: float | None) -> str:
+    if value is None:
+        return "unavailable"
+    return f"{value * 100:.2f}%"
+
+
+def _format_optional_edge(value: float | None) -> str:
+    if value is None:
+        return "unavailable"
+    return f"{value * 100:+.2f} pp"
+
+
+def _format_optional_units(value: float | None) -> str:
+    if value is None:
+        return "unavailable"
+    return f"{value:+.3f} units"
+
+
+def _format_optional_text(value: str | None) -> str:
+    if value is None:
+        return "unavailable"
+    return value
+
+
 def _positive_int(value: str) -> int:
     try:
         parsed = int(value)
@@ -1265,6 +1402,17 @@ def _test_size(value: str) -> float:
 
     if not 0 < parsed < 1:
         raise ArgumentTypeError("must be between 0 and 1")
+    return parsed
+
+
+def _float_value(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise ArgumentTypeError("must be a number") from exc
+
+    if not math.isfinite(parsed):
+        raise ArgumentTypeError("must be finite")
     return parsed
 
 

@@ -269,6 +269,69 @@ but ambiguous matches are skipped rather than attaching odds to the wrong match.
 Network access happens only when the explicit odds command is used. Do not commit
 credentials.
 
+## Market Probability and Estimated Edge
+
+The edge layer is a read-only research calculation over stored candidates and
+odds. It does not create signals, place bets, calculate stake size, call
+bookmaker write APIs, or provide financial advice.
+
+Raw implied probability is calculated directly from decimal odds:
+
+```text
+raw implied probability = 1 / decimal_odds
+```
+
+For a complete two-way `map_winner` market from one bookmaker, bookmaker margin
+is removed by normalizing both raw implied probabilities:
+
+```text
+fair market probability = selection raw implied probability / market overround
+```
+
+This fair market probability is a market-derived baseline after simple two-way
+margin normalization. Incomplete markets are not guessed; one side is never
+invented from the other side.
+
+Model probability is only available when the ML predictor can load a model that
+exposes a real positive-class `predict_proba` output. The current probability is
+reported as raw `ml_predict_proba`; it is not claimed to be calibrated. Rule
+score is not probability. Hybrid score is not probability. The code does not
+normalize arbitrary scores by dividing by 100 or applying a sigmoid.
+
+Estimated edge is a probability-point difference:
+
+```text
+estimated edge = model probability - fair market probability
+```
+
+Example:
+
+```text
+Model probability: 56%
+Fair market probability: 49%
+Estimated edge: +7 percentage points
+```
+
+Expected value per 1 unit is:
+
+```text
+expected value = model probability * decimal_odds - 1
+```
+
+Inspect persisted data:
+
+```bash
+python -m app.cli analyze-edge --db data/autopilot.db
+python -m app.cli analyze-edge --db data/autopilot.db --model-path data/models/bet_model.joblib
+```
+
+If the model file is missing or cannot provide a valid class probability, the
+command reports model probability, estimated edge, and expected value as
+unavailable instead of failing. If stored data does not contain complete
+same-bookmaker two-way market snapshots for a candidate, the command reports the
+market as incomplete. OddsPapi fetching remains read-only and does not imply
+that fetched odds have already been persisted to SQLite.
+
 ## ML Layer
 
 The bot still starts with rule-based scoring. The optional ML layer is a v1
