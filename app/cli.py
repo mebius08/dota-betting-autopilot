@@ -136,10 +136,26 @@ def create_parser() -> ArgumentParser:
         default="all",
     )
     fetch_matches_parser.add_argument(
+        "--scope",
+        choices=("ewc-2026",),
+        help="Optional read-only scope filter for fetched matches.",
+    )
+    fetch_matches_parser.add_argument(
         "--timeout",
         type=_positive_float,
         default=10.0,
         help="HTTP timeout in seconds.",
+    )
+
+    ewc_status_parser = subparsers.add_parser(
+        "ewc-status",
+        help="Show persisted EWC 2026 Dota match scope status.",
+    )
+    ewc_status_parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("data") / "autopilot.db",
+        help="SQLite database path.",
     )
 
     fetch_odds_parser = subparsers.add_parser(
@@ -478,6 +494,8 @@ def main(
             return _report_command(args)
         if args.command == "fetch-matches":
             return _fetch_matches_command(args)
+        if args.command == "ewc-status":
+            return _ewc_status_command(args)
         if args.command == "fetch-odds":
             return _fetch_odds_command(args)
         if args.command == "export-bets":
@@ -651,8 +669,14 @@ def _fetch_matches_command(args: Namespace) -> int:
     except PandaScoreError as exc:
         print(str(exc))
         return 1
+    if args.scope == "ewc-2026":
+        from app.tournaments import belongs_to_ewc_2026
+
+        matches = [match for match in matches if belongs_to_ewc_2026(match)]
 
     print("Provider: pandascore")
+    if args.scope is not None:
+        print(f"Scope: {args.scope}")
     print(f"Matches: {len(matches)}")
     if not matches:
         print()
@@ -666,6 +690,77 @@ def _fetch_matches_command(args: Namespace) -> int:
         print(f"   Status: {match.status}")
         print(f"   Starts at: {_format_optional_datetime(match.start_time)}")
     return 0
+
+
+def _ewc_status_command(args: Namespace) -> int:
+    from app.tournaments import (
+        EWC_2026_DOTA,
+        CompetitiveStage,
+        belongs_to_ewc_2026,
+        stage_for_ewc_2026_match,
+    )
+
+    db_path = Path(args.db)
+    print("EWC 2026 Dota scope")
+    print(f"Tournament id: {EWC_2026_DOTA.id}")
+    print(f"Tournament name: {EWC_2026_DOTA.canonical_name}")
+    print(f"Database: {db_path.as_posix()}")
+
+    if not db_path.exists():
+        _print_ewc_status_counts(
+            scoped_matches=0,
+            stage_counts={stage: 0 for stage in CompetitiveStage},
+            upcoming=0,
+            live=0,
+            completed=0,
+        )
+        print()
+        print("No persisted EWC 2026 Dota matches found.")
+        print(
+            f"Database not found: {db_path.as_posix()}. "
+            "Run app.main or app.cli run-once first."
+        )
+        return 0
+
+    repository = SQLiteRepository(db_path)
+    matches = [
+        match for match in repository.list_matches() if belongs_to_ewc_2026(match)
+    ]
+    stage_counts = {stage: 0 for stage in CompetitiveStage}
+    for match in matches:
+        stage = stage_for_ewc_2026_match(match).competitive_stage
+        stage_counts[stage] += 1
+
+    _print_ewc_status_counts(
+        scoped_matches=len(matches),
+        stage_counts=stage_counts,
+        upcoming=sum(1 for match in matches if match.status == "upcoming"),
+        live=sum(1 for match in matches if match.status == "live"),
+        completed=sum(1 for match in matches if match.status == "finished"),
+    )
+    if not matches:
+        print()
+        print("No persisted EWC 2026 Dota matches found.")
+    return 0
+
+
+def _print_ewc_status_counts(
+    *,
+    scoped_matches: int,
+    stage_counts: dict[Any, int],
+    upcoming: int,
+    live: int,
+    completed: int,
+) -> None:
+    print()
+    print(f"Scoped matches: {scoped_matches}")
+    print("Competitive stages:")
+    for stage in stage_counts:
+        print(f"  {stage.value}: {stage_counts[stage]}")
+    print()
+    print(f"Upcoming: {upcoming}")
+    print(f"Live: {live}")
+    print(f"Completed: {completed}")
 
 
 def _fetch_odds_command(args: Namespace) -> int:

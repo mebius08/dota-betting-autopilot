@@ -58,6 +58,24 @@ def test_fetch_matches_command_prints_empty_result(
     assert "No matches found." in output
 
 
+def test_fetch_matches_command_filters_ewc_scope(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(app.collectors, "PandaScoreMatchCollector", _ScopeCollector)
+
+    exit_code = cli.main(
+        ["fetch-matches", "--provider", "pandascore", "--scope", "ewc-2026"]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Scope: ewc-2026" in output
+    assert "Matches: 1" in output
+    assert "Team Spirit vs PARIVISION" in output
+    assert "DreamLeague" not in output
+
+
 def test_fetch_matches_command_missing_token_is_friendly(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -112,3 +130,42 @@ class _EmptyCollector:
 
     def collect(self) -> list[Match]:
         return []
+
+
+class _ScopeCollector:
+    def __init__(
+        self,
+        *,
+        timeout: float,
+        limit: int,
+        status_filter: str,
+    ) -> None:
+        assert timeout == 10.0
+        assert limit == 20
+        assert status_filter == "all"
+
+    def collect(self) -> list[Match]:
+        return [
+            Match(
+                id="pandascore-ewc",
+                session_id="pandascore",
+                tournament_name="Esports World Cup 2026 / Group Stage",
+                team_a="Team Spirit",
+                team_b="PARIVISION",
+                format="bo3",
+                status="upcoming",
+                start_time=datetime(2026, 7, 6, 12, 0, tzinfo=timezone.utc),
+                external_id="ewc",
+            ),
+            Match(
+                id="pandascore-dreamleague",
+                session_id="pandascore",
+                tournament_name="DreamLeague",
+                team_a="BetBoom Team",
+                team_b="Team Liquid",
+                format="bo3",
+                status="upcoming",
+                start_time=datetime(2026, 7, 6, 14, 0, tzinfo=timezone.utc),
+                external_id="dreamleague",
+            ),
+        ]

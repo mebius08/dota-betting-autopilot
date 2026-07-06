@@ -235,11 +235,67 @@ Fetch match metadata explicitly:
 python -m app.cli fetch-matches --provider pandascore
 python -m app.cli fetch-matches --provider pandascore --status upcoming --limit 10
 python -m app.cli fetch-matches --provider pandascore --status live --limit 10
+python -m app.cli fetch-matches --provider pandascore --scope ewc-2026
 ```
 
 Network access happens only when the real provider command is used. Unit tests
 mock the network boundary and stay offline. API availability, rate limits, and
 provider plan behavior are controlled by PandaScore. Do not commit credentials.
+
+## Tournament competitive stage model
+
+The current product target is EWC 2026 Dota 2. EWC 2026 currently uses a
+single-elimination playoff path, but that is not treated as the only supported
+Dota tournament format. Historical professional Dota tournaments may use
+double-elimination brackets, so the domain keeps upper-bracket and lower-bracket
+contexts available for future historical features.
+
+The model-oriented competitive stages are:
+
+- `group`
+- `crossover`
+- `upper_bracket`
+- `lower_bracket`
+- `single_elimination`
+- `grand_final`
+- `placement`
+- `unknown`
+
+Round detail is preserved separately from the high-level competitive stage.
+Quarterfinal and semifinal are round metadata; when there is no upper/lower
+bracket context, they currently map to the broader `single_elimination` stage.
+Upper-bracket matches mean a loss may move a team to a lower bracket.
+Lower-bracket matches normally mean a loss eliminates the team.
+
+Current EWC 2026 stage mapping:
+
+- `Group Stage` -> `group`
+- `Survival` / crossover matches -> `crossover`
+- `Quarterfinal` / `Semifinal` -> `single_elimination`
+- `Grand Final` -> `grand_final`
+- `Third place` -> `placement`
+
+`Survival - Grand Final` is a survival-phase final, not the tournament grand
+final. Stage metadata is a future ML predictor and does not add a manual betting
+coefficient or change the current scorer. A future historical model should learn
+team-specific behavior in these contexts.
+
+Inspect persisted EWC 2026 scope locally:
+
+```bash
+python -m app.cli ewc-status --db data/autopilot.db
+```
+
+`ewc-status` is read-only. It makes no network calls, places no bets, creates no
+signals, and does not train or run the historical ML v2 layer. If no persisted
+EWC 2026 matches exist, it still prints the canonical tournament id and a
+friendly no-data message.
+
+Team organization tags are not treated as permanent competitive roster identity.
+For example, future roster-lineage work may relate a Tundra roster to current
+1W, or a HEROIC roster to current LGD Gaming, but those are not team aliases in
+the current system. Competitive relevance will later follow roster/player
+continuity instead of organization-name substitution.
 
 ## Real odds data adapter
 
