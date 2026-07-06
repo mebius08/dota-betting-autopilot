@@ -140,6 +140,27 @@ def create_parser() -> ArgumentParser:
         help="HTTP timeout in seconds.",
     )
 
+    fetch_odds_parser = subparsers.add_parser(
+        "fetch-odds",
+        help="Fetch read-only real Dota 2 odds from a provider.",
+    )
+    fetch_odds_parser.add_argument(
+        "--provider",
+        choices=("oddspapi",),
+        required=True,
+    )
+    fetch_odds_parser.add_argument("--limit", type=_positive_int, default=20)
+    fetch_odds_parser.add_argument(
+        "--bookmakers",
+        help="Optional comma-separated bookmaker filter.",
+    )
+    fetch_odds_parser.add_argument(
+        "--timeout",
+        type=_positive_float,
+        default=10.0,
+        help="HTTP timeout in seconds.",
+    )
+
     export_bets_parser = subparsers.add_parser(
         "export-bets",
         help="Export persisted paper bets to CSV.",
@@ -423,6 +444,8 @@ def main(
             return _report_command(args)
         if args.command == "fetch-matches":
             return _fetch_matches_command(args)
+        if args.command == "fetch-odds":
+            return _fetch_odds_command(args)
         if args.command == "export-bets":
             return _export_bets_command(args)
         if args.command == "export-candidates":
@@ -606,6 +629,44 @@ def _fetch_matches_command(args: Namespace) -> int:
         print(f"   Tournament: {match.tournament_name}")
         print(f"   Status: {match.status}")
         print(f"   Starts at: {_format_optional_datetime(match.start_time)}")
+    return 0
+
+
+def _fetch_odds_command(args: Namespace) -> int:
+    from app.collectors import OddsPapiError, OddsPapiOddsCollector
+
+    if args.provider != "oddspapi":
+        print(f"Unsupported provider: {args.provider}")
+        return 1
+
+    collector = OddsPapiOddsCollector(
+        timeout=args.timeout,
+        limit=args.limit,
+        bookmakers=_bookmaker_filter(args.bookmakers),
+    )
+    try:
+        fixture_odds = collector.collect()
+    except OddsPapiError as exc:
+        print(str(exc))
+        return 1
+
+    print("Provider: oddspapi")
+    print(f"Dota 2 fixtures with odds: {len(fixture_odds)}")
+    if not fixture_odds:
+        print()
+        print("No Dota 2 odds found.")
+        return 0
+
+    for index, item in enumerate(fixture_odds, start=1):
+        print()
+        print(f"{index}. {item.fixture.team_a} vs {item.fixture.team_b}")
+        print(f"   Fixture: {item.fixture.id}")
+        print(f"   Starts at: {_format_optional_datetime(item.fixture.start_time)}")
+        for bookmaker, snapshots in _odds_by_bookmaker(item.snapshots):
+            print(f"   Bookmaker: {bookmaker}")
+            print("   Market: map_winner")
+            for snapshot in snapshots:
+                print(f"   {snapshot.selection}: {snapshot.odds:.2f}")
     return 0
 
 
@@ -1216,6 +1277,21 @@ def _positive_float(value: str) -> float:
     if parsed <= 0:
         raise ArgumentTypeError("must be greater than 0")
     return parsed
+
+
+def _bookmaker_filter(value: str | None) -> list[str]:
+    if value is None:
+        return []
+    return [part.strip() for part in value.split(",") if part.strip()]
+
+
+def _odds_by_bookmaker(
+    snapshots: Sequence[OddsSnapshot],
+) -> list[tuple[str, list[OddsSnapshot]]]:
+    grouped: dict[str, list[OddsSnapshot]] = {}
+    for snapshot in snapshots:
+        grouped.setdefault(snapshot.bookmaker, []).append(snapshot)
+    return list(grouped.items())
 
 
 if __name__ == "__main__":

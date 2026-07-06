@@ -241,6 +241,34 @@ Network access happens only when the real provider command is used. Unit tests
 mock the network boundary and stay offline. API availability, rate limits, and
 provider plan behavior are controlled by PandaScore. Do not commit credentials.
 
+## Real odds data adapter
+
+The optional OddsPapi adapter is a read-only source for Dota 2 match-winner odds.
+It uses OddsPapi REST API v4 with Dota 2 `sportId=16`, maps supported
+match-winner prices into the existing internal `map_winner` odds convention, and
+does not run scoring, select candidates, create paper bets, settle bets, or place
+real bets. Fake odds remain the default local workflow.
+
+Set a local OddsPapi API key before using the real odds provider:
+
+```powershell
+$env:ODDSPAPI_API_KEY="your-api-key-here"
+```
+
+Fetch odds explicitly:
+
+```bash
+python -m app.cli fetch-odds --provider oddspapi
+python -m app.cli fetch-odds --provider oddspapi --limit 10
+python -m app.cli fetch-odds --provider oddspapi --bookmakers pinnacle,bet365
+```
+
+PandaScore match IDs and OddsPapi fixture IDs are different provider IDs. The
+adapter includes deterministic team-name and start-time reconciliation helpers,
+but ambiguous matches are skipped rather than attaching odds to the wrong match.
+Network access happens only when the explicit odds command is used. Do not commit
+credentials.
+
 ## ML Layer
 
 The bot still starts with rule-based scoring. The optional ML layer is a v1
