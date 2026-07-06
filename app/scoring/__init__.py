@@ -10,6 +10,7 @@ from app.scoring.market_classifier import classify_market, market_quality_score
 from app.scoring.streamer_analyzer import (
     analyze_streamer_utterance_text,
     map_raw_utterances_to_entities,
+    rank_utterances,
     streamer_score_for_candidate,
 )
 
@@ -22,6 +23,7 @@ __all__ = [
     "market_quality_score",
     "odds_quality_score",
     "phase_score",
+    "rank_utterances",
     "score_odds_snapshot",
     "select_bets",
     "streamer_score_for_candidate",

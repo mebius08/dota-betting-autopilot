@@ -1,10 +1,11 @@
 from datetime import datetime, timezone
 
 from app.collectors import RawStreamerUtterance
-from app.domain import OddsSnapshot
+from app.domain import OddsSnapshot, StreamerUtterance
 from app.scoring import (
     analyze_streamer_utterance_text,
     map_raw_utterances_to_entities,
+    rank_utterances,
     streamer_score_for_candidate,
 )
 
@@ -105,6 +106,41 @@ def test_skip_warning_penalizes_any_candidate() -> None:
     assert streamer_score_for_candidate(snapshot, utterances) <= -5
 
 
+def test_rank_utterances_sorts_without_mutating_input() -> None:
+    low_confidence = make_utterance(
+        utterance_id="low-confidence",
+        confidence=0.5,
+        strength=8.0,
+    )
+    low_strength = make_utterance(
+        utterance_id="low-strength",
+        confidence=0.9,
+        strength=2.0,
+    )
+    high_strength = make_utterance(
+        utterance_id="high-strength",
+        confidence=0.9,
+        strength=7.0,
+    )
+    highest_confidence = make_utterance(
+        utterance_id="highest-confidence",
+        confidence=1.0,
+        strength=1.0,
+    )
+    utterances = [low_confidence, low_strength, high_strength, highest_confidence]
+
+    ranked = rank_utterances(utterances)
+
+    assert ranked == [
+        highest_confidence,
+        high_strength,
+        low_strength,
+        low_confidence,
+    ]
+    assert utterances == [low_confidence, low_strength, high_strength, highest_confidence]
+    assert ranked is not utterances
+
+
 def make_snapshot(market: str, selection: str) -> OddsSnapshot:
     return OddsSnapshot(
         id="snapshot-1",
@@ -120,4 +156,27 @@ def make_snapshot(market: str, selection: str) -> OddsSnapshot:
         is_suspended=False,
         bookmaker="fakebook",
         created_at=datetime.now(timezone.utc),
+    )
+
+
+def make_utterance(
+    *,
+    utterance_id: str,
+    confidence: float,
+    strength: float,
+) -> StreamerUtterance:
+    return StreamerUtterance(
+        id=utterance_id,
+        session_id="session-1",
+        match_id="match-1",
+        source="transcript",
+        text=utterance_id,
+        detected_market=None,
+        detected_selection=None,
+        detected_team=None,
+        signal_type=None,
+        strength=strength,
+        confidence=confidence,
+        hype_flag=False,
+        created_at=datetime(2026, 7, 6, tzinfo=timezone.utc),
     )

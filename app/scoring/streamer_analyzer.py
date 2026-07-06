@@ -246,3 +246,11 @@ def _optional_string(value: object) -> str | None:
 
 def _clamp(value: float, minimum: float = -8.0, maximum: float = 8.0) -> float:
     return max(minimum, min(maximum, value))
+
+
+def rank_utterances(utterances: list[StreamerUtterance]) -> list[StreamerUtterance]:
+    return sorted(
+        utterances,
+        key=lambda utterance: (utterance.confidence, utterance.strength),
+        reverse=True,
+    )
