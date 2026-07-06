@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from app.domain import Bet, BetCandidate, StreamerUtterance
+from app.history import HistoricalMatch
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -65,6 +66,33 @@ UTTERANCE_COLUMNS = [
     "hype_flag",
     "created_at",
 ]
+HISTORY_COLUMNS = [
+    "id",
+    "source",
+    "source_match_id",
+    "started_at",
+    "ended_at",
+    "team_a_name",
+    "team_b_name",
+    "team_a_source_id",
+    "team_b_source_id",
+    "winner_name",
+    "winner_source_id",
+    "winner_side",
+    "tournament_name",
+    "tournament_source_id",
+    "league_name",
+    "league_source_id",
+    "series_name",
+    "series_source_id",
+    "raw_stage_label",
+    "competitive_stage",
+    "normalized_round",
+    "best_of",
+    "status",
+    "usable_for_match_winner_training",
+    "ingested_at",
+]
 
 
 @dataclass(frozen=True)
@@ -101,6 +129,17 @@ def export_utterances_to_csv(
         for utterance in repository.list_streamer_utterances()
     ]
     return _write_csv(output_path, UTTERANCE_COLUMNS, rows)
+
+
+def export_history_to_csv(
+    repository: SQLiteRepository,
+    output_path: str | Path,
+) -> ExportResult:
+    rows = [
+        _historical_match_to_row(match)
+        for match in repository.list_historical_matches()
+    ]
+    return _write_csv(output_path, HISTORY_COLUMNS, rows)
 
 
 def _write_csv(
@@ -177,6 +216,38 @@ def _utterance_to_row(utterance: StreamerUtterance) -> dict[str, object]:
         "confidence": utterance.confidence,
         "hype_flag": int(utterance.hype_flag),
         "created_at": _datetime_value(utterance.created_at),
+    }
+
+
+def _historical_match_to_row(match: HistoricalMatch) -> dict[str, object]:
+    return {
+        "id": match.id,
+        "source": match.source,
+        "source_match_id": match.source_match_id,
+        "started_at": _datetime_value(match.started_at),
+        "ended_at": _datetime_value(match.ended_at),
+        "team_a_name": match.team_a_name,
+        "team_b_name": match.team_b_name,
+        "team_a_source_id": _optional_value(match.team_a_source_id),
+        "team_b_source_id": _optional_value(match.team_b_source_id),
+        "winner_name": _optional_value(match.winner_name),
+        "winner_source_id": _optional_value(match.winner_source_id),
+        "winner_side": _optional_value(match.winner_side),
+        "tournament_name": _optional_value(match.tournament_name),
+        "tournament_source_id": _optional_value(match.tournament_source_id),
+        "league_name": _optional_value(match.league_name),
+        "league_source_id": _optional_value(match.league_source_id),
+        "series_name": _optional_value(match.series_name),
+        "series_source_id": _optional_value(match.series_source_id),
+        "raw_stage_label": _optional_value(match.raw_stage_label),
+        "competitive_stage": match.competitive_stage.value,
+        "normalized_round": match.normalized_round.value,
+        "best_of": _optional_value(match.best_of),
+        "status": match.status,
+        "usable_for_match_winner_training": int(
+            match.usable_for_match_winner_training
+        ),
+        "ingested_at": _datetime_value(match.ingested_at),
     }
 
 

@@ -242,6 +242,63 @@ Network access happens only when the real provider command is used. Unit tests
 mock the network boundary and stay offline. API availability, rate limits, and
 provider plan behavior are controlled by PandaScore. Do not commit credentials.
 
+## Historical professional Dota match dataset
+
+The future historical ML model v2 is expected to train on completed
+professional Dota match results, not on settled paper bets as its main data
+source. This stage adds the storage and inspection foundation only. It stores
+provider-listed past Dota matches, preserves provider tournament/league/series
+metadata, records explicit match-winner labels when they can be mapped safely,
+and keeps unresolved outcomes out of training queries.
+
+This layer does not claim that every internet match returned by a provider is
+Tier 1 or fully training-eligible. Provider metadata is preserved so tournament
+quality and eligibility rules can be refined later. The current `train-ml`
+command remains the old paper-bet v1 pipeline; historical ML v2, recency
+weighting, roster lineage, model retraining, and champion/challenger workflows
+are not implemented here.
+
+Set a local PandaScore token before running an explicit real sync:
+
+```powershell
+$env:PANDASCORE_TOKEN="your-token-here"
+```
+
+Sync a bounded historical window:
+
+```powershell
+python -m app.cli sync-history --provider pandascore --db data/autopilot.db --since 2025-01-01 --until 2026-07-06
+```
+
+The sync uses the PandaScore past Dota match source, bounded pagination, and an
+explicit date window. Repeating the same sync is idempotent through
+`source + source_match_id`, and later richer provider metadata can update an
+existing row. The command is read-only against the provider and does not place
+bets, create live signals, train models, or call bookmaker write APIs.
+
+Inspect and export the local historical dataset:
+
+```bash
+python -m app.cli history-status --db data/autopilot.db
+python -m app.cli export-history --db data/autopilot.db --out exports/history.csv
+```
+
+History export writes UTF-8 CSV with a stable header, creates the parent
+directory, and never includes API tokens. `history-status` is offline and
+reports total matches, usable winner records, point-in-time-ready records,
+date ranges, stage distribution, unique teams, and unique tournaments.
+
+Point-in-time safety is strict: a match is available to future features only
+after its result is known. If a prediction timestamp is January 3 at 12:00 and
+a match completed January 3 at 15:00, that match is not available for the 12:00
+prediction. Match start time is not result availability time.
+
+Team matching in this pre-roster layer is limited to PandaScore team IDs or a
+controlled normalized-name fallback inside the same organization identity. It
+does not create permanent aliases such as Tundra -> 1W or HEROIC -> LGD. A
+future roster-lineage layer will connect relevant history through player/roster
+continuity instead of organization-name aliases.
+
 ## Tournament competitive stage model
 
 The current product target is EWC 2026 Dota 2. EWC 2026 currently uses a

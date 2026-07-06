@@ -1,5 +1,6 @@
 from argparse import ArgumentParser, ArgumentTypeError, Namespace
 from collections.abc import Callable, Sequence
+from datetime import date, datetime, time as datetime_time, timezone
 import math
 from pathlib import Path
 import sys
@@ -147,6 +148,63 @@ def create_parser() -> ArgumentParser:
         help="HTTP timeout in seconds.",
     )
 
+    sync_history_parser = subparsers.add_parser(
+        "sync-history",
+        help="Sync bounded historical Dota match data from a provider.",
+    )
+    sync_history_parser.add_argument(
+        "--provider",
+        choices=("pandascore",),
+        required=True,
+    )
+    sync_history_parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("data") / "autopilot.db",
+        help="SQLite database path.",
+    )
+    sync_history_parser.add_argument(
+        "--since",
+        type=_utc_start_date,
+        required=True,
+        help="UTC start date for provider history, YYYY-MM-DD.",
+    )
+    sync_history_parser.add_argument(
+        "--until",
+        type=_utc_end_date,
+        required=True,
+        help="UTC end date for provider history, YYYY-MM-DD.",
+    )
+    sync_history_parser.add_argument(
+        "--page-size",
+        type=_pandascore_page_size,
+        default=50,
+        help="Provider page size, 1-100.",
+    )
+    sync_history_parser.add_argument(
+        "--max-pages",
+        type=_positive_int,
+        default=10,
+        help="Maximum provider pages to read.",
+    )
+    sync_history_parser.add_argument(
+        "--timeout",
+        type=_positive_float,
+        default=10.0,
+        help="HTTP timeout in seconds.",
+    )
+
+    history_status_parser = subparsers.add_parser(
+        "history-status",
+        help="Show offline historical Dota dataset status.",
+    )
+    history_status_parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("data") / "autopilot.db",
+        help="SQLite database path.",
+    )
+
     ewc_status_parser = subparsers.add_parser(
         "ewc-status",
         help="Show persisted EWC 2026 Dota match scope status.",
@@ -224,6 +282,23 @@ def create_parser() -> ArgumentParser:
         help="SQLite database path.",
     )
     export_utterances_parser.add_argument(
+        "--out",
+        type=Path,
+        required=True,
+        help="Output CSV path.",
+    )
+
+    export_history_parser = subparsers.add_parser(
+        "export-history",
+        help="Export persisted historical Dota matches to CSV.",
+    )
+    export_history_parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("data") / "autopilot.db",
+        help="SQLite database path.",
+    )
+    export_history_parser.add_argument(
         "--out",
         type=Path,
         required=True,
@@ -494,6 +569,10 @@ def main(
             return _report_command(args)
         if args.command == "fetch-matches":
             return _fetch_matches_command(args)
+        if args.command == "sync-history":
+            return _sync_history_command(args)
+        if args.command == "history-status":
+            return _history_status_command(args)
         if args.command == "ewc-status":
             return _ewc_status_command(args)
         if args.command == "fetch-odds":
@@ -504,6 +583,8 @@ def main(
             return _export_candidates_command(args)
         if args.command == "export-utterances":
             return _export_utterances_command(args)
+        if args.command == "export-history":
+            return _export_history_command(args)
         if args.command == "import-settlements":
             return _import_settlements_command(args)
         if args.command == "inspect-dataset":
@@ -692,6 +773,128 @@ def _fetch_matches_command(args: Namespace) -> int:
     return 0
 
 
+def _sync_history_command(args: Namespace) -> int:
+    import app.history as history
+
+    if args.provider != "pandascore":
+        print(f"Unsupported provider: {args.provider}")
+        return 1
+    if args.since > args.until:
+        print("--since must be before or equal to --until.")
+        return 1
+
+    repository = SQLiteRepository(args.db)
+    collector = history.PandaScoreHistoricalMatchCollector(timeout=args.timeout)
+    try:
+        result = history.sync_historical_matches(
+            repository=repository,
+            collector=collector,
+            since=args.since,
+            until=args.until,
+            page_size=args.page_size,
+            max_pages=args.max_pages,
+        )
+    except history.PandaScoreError as exc:
+        print(str(exc))
+        return 1
+
+    print("Historical Dota sync")
+    print()
+    print("Provider: pandascore")
+    print(f"Since: {_format_history_date(args.since)}")
+    print(f"Until: {_format_history_date(args.until)}")
+    print()
+    print(f"Fetched provider rows: {result.fetched_rows}")
+    print(f"Mapped historical matches: {result.mapped_matches}")
+    print(f"Usable winner records: {result.usable_matches}")
+    print(f"Skipped malformed/unresolved: {result.skipped}")
+    print()
+    print(f"Inserted: {result.inserted}")
+    print(f"Updated: {result.updated}")
+    print(f"Unchanged: {result.unchanged}")
+    if result.warnings:
+        print()
+        print(f"Warnings: {len(result.warnings)}")
+        for warning in result.warnings[:10]:
+            print(f"Warning: {warning}")
+    return 0
+
+
+def _history_status_command(args: Namespace) -> int:
+    import app.history as history
+
+    db_path = Path(args.db)
+    print("Historical Dota dataset")
+    print(f"Database: {db_path.as_posix()}")
+
+    if not db_path.exists():
+        _print_empty_history_status()
+        return 0
+    if not _sqlite_table_exists(db_path, "historical_matches"):
+        _print_empty_history_status()
+        return 0
+
+    repository = SQLiteRepository(db_path)
+    status = history.build_historical_status(repository)
+
+    print(f"Historical matches: {status.total_matches}")
+    print(f"Usable winner records: {status.usable_winner_records}")
+    print(f"Point-in-time ready matches: {status.point_in_time_ready_matches}")
+    print(
+        "Started range: "
+        f"{_format_datetime_range(status.started_at_min, status.started_at_max)}"
+    )
+    print(
+        "Completed range: "
+        f"{_format_datetime_range(status.completed_at_min, status.completed_at_max)}"
+    )
+    print(f"Unique teams: {status.unique_teams}")
+    print(f"Unique tournaments: {status.unique_tournaments}")
+    print("Competitive stages:")
+    for stage, count in status.stage_counts.items():
+        print(f"  {stage.value}: {count}")
+
+    if status.total_matches == 0:
+        print()
+        print("No historical matches found.")
+    return 0
+
+
+def _print_empty_history_status() -> None:
+    from app.tournaments import CompetitiveStage
+
+    print("Historical matches: 0")
+    print("Usable winner records: 0")
+    print("Point-in-time ready matches: 0")
+    print("Started range: -")
+    print("Completed range: -")
+    print("Unique teams: 0")
+    print("Unique tournaments: 0")
+    print("Competitive stages:")
+    for stage in CompetitiveStage:
+        print(f"  {stage.value}: 0")
+    print()
+    print("No historical matches found.")
+
+
+def _sqlite_table_exists(db_path: Path, table_name: str) -> bool:
+    from contextlib import closing
+
+    from app.storage import get_connection
+
+    with closing(get_connection(db_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT 1
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name = ?
+            """,
+            (table_name,),
+        ).fetchone()
+    return row is not None
+
+
 def _ewc_status_command(args: Namespace) -> int:
     from app.tournaments import (
         EWC_2026_DOTA,
@@ -829,6 +1032,18 @@ def _export_utterances_command(args: Namespace) -> int:
     result = export_utterances_to_csv(repository, args.out)
     print(
         f"Exported {result.row_count} utterances to "
+        f"{result.output_path.as_posix()}"
+    )
+    return 0
+
+
+def _export_history_command(args: Namespace) -> int:
+    from app.data_io import export_history_to_csv
+
+    repository = SQLiteRepository(args.db)
+    result = export_history_to_csv(repository, args.out)
+    print(
+        f"Exported {result.row_count} historical matches to "
         f"{result.output_path.as_posix()}"
     )
     return 0
@@ -1406,6 +1621,19 @@ def _format_optional_datetime(value: object) -> str:
     return str(value)
 
 
+def _format_datetime_range(
+    start: datetime | None,
+    end: datetime | None,
+) -> str:
+    if start is None or end is None:
+        return "-"
+    return f"{start.isoformat()} to {end.isoformat()}"
+
+
+def _format_history_date(value: datetime) -> str:
+    return value.date().isoformat()
+
+
 def _print_recent_utterances(utterances: list[StreamerUtterance]) -> None:
     print()
     print("Recent streamer utterances:")
@@ -1480,6 +1708,30 @@ def _positive_int(value: str) -> int:
     if parsed < 1:
         raise ArgumentTypeError("must be at least 1")
     return parsed
+
+
+def _pandascore_page_size(value: str) -> int:
+    parsed = _positive_int(value)
+    if parsed > 100:
+        raise ArgumentTypeError("must be at most 100")
+    return parsed
+
+
+def _utc_start_date(value: str) -> datetime:
+    parsed = _date_value(value)
+    return datetime.combine(parsed, datetime_time.min, tzinfo=timezone.utc)
+
+
+def _utc_end_date(value: str) -> datetime:
+    parsed = _date_value(value)
+    return datetime.combine(parsed, datetime_time.max, tzinfo=timezone.utc)
+
+
+def _date_value(value: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise ArgumentTypeError("must be a date in YYYY-MM-DD format") from exc
 
 
 def _non_empty_text(value: str) -> str:

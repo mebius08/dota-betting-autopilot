@@ -17,7 +17,12 @@ from app.domain import (
     Session,
     StreamerUtterance,
 )
+from app.history.domain import HistoricalMatch, WinnerSide
+from app.tournaments import CompetitiveStage, TournamentRound
 from app.storage.database import get_connection, init_db
+
+
+HistoricalUpsertResult = str
 
 
 class SQLiteRepository:
@@ -555,6 +560,198 @@ class SQLiteRepository:
 
         return [_row_to_streamer_utterance(row) for row in rows]
 
+    def save_historical_match(self, match: HistoricalMatch) -> None:
+        self.upsert_historical_match(match)
+
+    def upsert_historical_match(
+        self,
+        match: HistoricalMatch,
+    ) -> HistoricalUpsertResult:
+        existing = self.get_historical_match_by_source(
+            match.source,
+            match.source_match_id,
+        )
+        with closing(get_connection(self.db_path)) as connection:
+            if existing is None:
+                connection.execute(
+                    """
+                    INSERT INTO historical_matches (
+                        id,
+                        source,
+                        source_match_id,
+                        started_at,
+                        ended_at,
+                        team_a_name,
+                        team_b_name,
+                        team_a_source_id,
+                        team_b_source_id,
+                        winner_name,
+                        winner_source_id,
+                        winner_side,
+                        tournament_name,
+                        tournament_source_id,
+                        league_name,
+                        league_source_id,
+                        series_name,
+                        series_source_id,
+                        raw_stage_label,
+                        competitive_stage,
+                        normalized_round,
+                        best_of,
+                        status,
+                        ingested_at
+                    ) VALUES (
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?
+                    )
+                    """,
+                    _historical_match_values(match),
+                )
+                connection.commit()
+                return "inserted"
+
+            if _historical_matches_equivalent(existing, match):
+                return "unchanged"
+
+            connection.execute(
+                """
+                UPDATE historical_matches
+                SET id = ?,
+                    started_at = ?,
+                    ended_at = ?,
+                    team_a_name = ?,
+                    team_b_name = ?,
+                    team_a_source_id = ?,
+                    team_b_source_id = ?,
+                    winner_name = ?,
+                    winner_source_id = ?,
+                    winner_side = ?,
+                    tournament_name = ?,
+                    tournament_source_id = ?,
+                    league_name = ?,
+                    league_source_id = ?,
+                    series_name = ?,
+                    series_source_id = ?,
+                    raw_stage_label = ?,
+                    competitive_stage = ?,
+                    normalized_round = ?,
+                    best_of = ?,
+                    status = ?,
+                    ingested_at = ?
+                WHERE source = ?
+                  AND source_match_id = ?
+                """,
+                (
+                    match.id,
+                    _datetime_to_text(match.started_at),
+                    _datetime_to_text(match.ended_at),
+                    match.team_a_name,
+                    match.team_b_name,
+                    match.team_a_source_id,
+                    match.team_b_source_id,
+                    match.winner_name,
+                    match.winner_source_id,
+                    match.winner_side,
+                    match.tournament_name,
+                    match.tournament_source_id,
+                    match.league_name,
+                    match.league_source_id,
+                    match.series_name,
+                    match.series_source_id,
+                    match.raw_stage_label,
+                    match.competitive_stage.value,
+                    match.normalized_round.value,
+                    match.best_of,
+                    match.status,
+                    _datetime_to_text(match.ingested_at),
+                    match.source,
+                    match.source_match_id,
+                ),
+            )
+            connection.commit()
+            return "updated"
+
+    def get_historical_match(self, match_id: str) -> HistoricalMatch | None:
+        with closing(get_connection(self.db_path)) as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM historical_matches
+                WHERE id = ?
+                """,
+                (match_id,),
+            ).fetchone()
+
+        if row is None:
+            return None
+        return _row_to_historical_match(row)
+
+    def get_historical_match_by_source(
+        self,
+        source: str,
+        source_match_id: str,
+    ) -> HistoricalMatch | None:
+        with closing(get_connection(self.db_path)) as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM historical_matches
+                WHERE source = ?
+                  AND source_match_id = ?
+                """,
+                (source, source_match_id),
+            ).fetchone()
+
+        if row is None:
+            return None
+        return _row_to_historical_match(row)
+
+    def list_historical_matches(self) -> list[HistoricalMatch]:
+        with closing(get_connection(self.db_path)) as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM historical_matches
+                ORDER BY started_at, source, source_match_id
+                """
+            ).fetchall()
+
+        return [_row_to_historical_match(row) for row in rows]
+
+    def list_historical_matches_before(
+        self,
+        cutoff_timestamp: datetime,
+    ) -> list[HistoricalMatch]:
+        with closing(get_connection(self.db_path)) as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM historical_matches
+                WHERE ended_at IS NOT NULL
+                  AND ended_at < ?
+                  AND status IN ('finished', 'completed')
+                ORDER BY ended_at, started_at, source, source_match_id
+                """,
+                (_datetime_to_text(cutoff_timestamp),),
+            ).fetchall()
+
+        return [_row_to_historical_match(row) for row in rows]
+
+    def count_historical_matches(self, *, usable_only: bool = False) -> int:
+        if not usable_only:
+            with closing(get_connection(self.db_path)) as connection:
+                return int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM historical_matches"
+                    ).fetchone()[0]
+                )
+
+        return sum(
+            1
+            for match in self.list_historical_matches()
+            if match.usable_for_match_winner_training
+        )
+
 
 def _datetime_to_text(value: datetime | None) -> str | None:
     if value is None:
@@ -703,10 +900,106 @@ def _row_to_streamer_utterance(row: object) -> StreamerUtterance:
     )
 
 
+def _row_to_historical_match(row: object) -> HistoricalMatch:
+    data = cast("dict[str, object]", row)
+    return HistoricalMatch(
+        id=str(data["id"]),
+        source=str(data["source"]),
+        source_match_id=str(data["source_match_id"]),
+        started_at=_required_datetime_from_text(data["started_at"]),
+        ended_at=_datetime_from_text(data["ended_at"]),
+        team_a_name=str(data["team_a_name"]),
+        team_b_name=str(data["team_b_name"]),
+        team_a_source_id=_optional_text(data["team_a_source_id"]),
+        team_b_source_id=_optional_text(data["team_b_source_id"]),
+        winner_name=_optional_text(data["winner_name"]),
+        winner_source_id=_optional_text(data["winner_source_id"]),
+        winner_side=cast(WinnerSide | None, _optional_text(data["winner_side"])),
+        tournament_name=_optional_text(data["tournament_name"]),
+        tournament_source_id=_optional_text(data["tournament_source_id"]),
+        league_name=_optional_text(data["league_name"]),
+        league_source_id=_optional_text(data["league_source_id"]),
+        series_name=_optional_text(data["series_name"]),
+        series_source_id=_optional_text(data["series_source_id"]),
+        raw_stage_label=_optional_text(data["raw_stage_label"]),
+        competitive_stage=CompetitiveStage(str(data["competitive_stage"])),
+        normalized_round=TournamentRound(str(data["normalized_round"])),
+        best_of=_optional_int(data["best_of"]),
+        status=str(data["status"]),
+        ingested_at=_required_datetime_from_text(data["ingested_at"]),
+    )
+
+
+def _historical_match_values(match: HistoricalMatch) -> tuple[object, ...]:
+    return (
+        match.id,
+        match.source,
+        match.source_match_id,
+        _datetime_to_text(match.started_at),
+        _datetime_to_text(match.ended_at),
+        match.team_a_name,
+        match.team_b_name,
+        match.team_a_source_id,
+        match.team_b_source_id,
+        match.winner_name,
+        match.winner_source_id,
+        match.winner_side,
+        match.tournament_name,
+        match.tournament_source_id,
+        match.league_name,
+        match.league_source_id,
+        match.series_name,
+        match.series_source_id,
+        match.raw_stage_label,
+        match.competitive_stage.value,
+        match.normalized_round.value,
+        match.best_of,
+        match.status,
+        _datetime_to_text(match.ingested_at),
+    )
+
+
+def _historical_matches_equivalent(
+    existing: HistoricalMatch,
+    incoming: HistoricalMatch,
+) -> bool:
+    return (
+        existing.id == incoming.id
+        and existing.source == incoming.source
+        and existing.source_match_id == incoming.source_match_id
+        and existing.started_at == incoming.started_at
+        and existing.ended_at == incoming.ended_at
+        and existing.team_a_name == incoming.team_a_name
+        and existing.team_b_name == incoming.team_b_name
+        and existing.team_a_source_id == incoming.team_a_source_id
+        and existing.team_b_source_id == incoming.team_b_source_id
+        and existing.winner_name == incoming.winner_name
+        and existing.winner_source_id == incoming.winner_source_id
+        and existing.winner_side == incoming.winner_side
+        and existing.tournament_name == incoming.tournament_name
+        and existing.tournament_source_id == incoming.tournament_source_id
+        and existing.league_name == incoming.league_name
+        and existing.league_source_id == incoming.league_source_id
+        and existing.series_name == incoming.series_name
+        and existing.series_source_id == incoming.series_source_id
+        and existing.raw_stage_label == incoming.raw_stage_label
+        and existing.competitive_stage == incoming.competitive_stage
+        and existing.normalized_round == incoming.normalized_round
+        and existing.best_of == incoming.best_of
+        and existing.status == incoming.status
+    )
+
+
 def _optional_float(value: object) -> float | None:
     if value is None:
         return None
     return _required_float(value)
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    return _required_int(value)
 
 
 def _required_float(value: object) -> float:

@@ -105,3 +105,31 @@ CREATE TABLE IF NOT EXISTS streamer_utterances (
     FOREIGN KEY (session_id) REFERENCES sessions (id),
     FOREIGN KEY (match_id) REFERENCES matches (id)
 );
+
+CREATE TABLE IF NOT EXISTS historical_matches (
+    id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    source_match_id TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    ended_at TEXT NULL,
+    team_a_name TEXT NOT NULL,
+    team_b_name TEXT NOT NULL,
+    team_a_source_id TEXT NULL,
+    team_b_source_id TEXT NULL,
+    winner_name TEXT NULL,
+    winner_source_id TEXT NULL,
+    winner_side TEXT NULL,
+    tournament_name TEXT NULL,
+    tournament_source_id TEXT NULL,
+    league_name TEXT NULL,
+    league_source_id TEXT NULL,
+    series_name TEXT NULL,
+    series_source_id TEXT NULL,
+    raw_stage_label TEXT NULL,
+    competitive_stage TEXT NOT NULL,
+    normalized_round TEXT NOT NULL,
+    best_of INTEGER NULL,
+    status TEXT NOT NULL,
+    ingested_at TEXT NOT NULL,
+    UNIQUE (source, source_match_id)
+);
