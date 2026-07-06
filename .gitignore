@@ -11,3 +11,6 @@ venv/
 data/*.db
 data/models/
 exports/
+
+__pycache__/
+*.pyc
