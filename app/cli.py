@@ -244,6 +244,25 @@ def create_parser() -> ArgumentParser:
         help="SQLite database path.",
     )
 
+    lineage_status_parser = subparsers.add_parser(
+        "lineage-status",
+        help="Show offline derived roster lineage status.",
+    )
+    lineage_status_parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("data") / "autopilot.db",
+        help="SQLite database path.",
+    )
+    lineage_status_parser.add_argument(
+        "--as-of",
+        type=_utc_datetime,
+        help=(
+            "ISO-8601 UTC-aware cutoff timestamp, for example "
+            "2026-07-07T12:00:00Z."
+        ),
+    )
+
     ewc_status_parser = subparsers.add_parser(
         "ewc-status",
         help="Show persisted EWC 2026 Dota match scope status.",
@@ -616,6 +635,8 @@ def main(
             return _history_status_command(args)
         if args.command == "roster-status":
             return _roster_status_command(args)
+        if args.command == "lineage-status":
+            return _lineage_status_command(args)
         if args.command == "ewc-status":
             return _ewc_status_command(args)
         if args.command == "fetch-odds":
@@ -989,6 +1010,32 @@ def _roster_status_command(args: Namespace) -> int:
     return 0
 
 
+def _lineage_status_command(args: Namespace) -> int:
+    import app.history as history
+
+    db_path = Path(args.db)
+    as_of = args.as_of or datetime.now(timezone.utc)
+    print("Roster lineage status")
+    print(f"Database: {db_path.as_posix()}")
+    print(f"As of: {as_of.isoformat()}")
+
+    if not db_path.exists():
+        _print_empty_lineage_status()
+        return 0
+    if not _sqlite_table_exists(db_path, "roster_snapshots"):
+        _print_empty_lineage_status()
+        return 0
+
+    repository = SQLiteRepository(db_path)
+    status = history.build_roster_lineage_status(repository, as_of=as_of)
+    _print_lineage_status(status)
+
+    if status.available_roster_snapshots == 0:
+        print()
+        print("No roster snapshots found.")
+    return 0
+
+
 def _print_empty_history_status() -> None:
     from app.tournaments import CompetitiveStage
 
@@ -1018,6 +1065,67 @@ def _print_empty_roster_status() -> None:
     print("Unique player-roster fingerprints: 0")
     print()
     print("No roster snapshots found.")
+
+
+def _print_empty_lineage_status() -> None:
+    import app.history as history
+
+    print("Point-in-time available roster snapshots: 0")
+    print("Chronology sources:")
+    for source in history.RosterChronologySource:
+        print(f"  {source.value}: 0")
+    print("Exact continuity links: 0")
+    print("Strong continuity links: 0")
+    print("Coach-supported continuity links: 0")
+    print("Ambiguous predecessor resolutions: 0")
+    print("Unlinked/root snapshots: 0")
+    print("Derived lineage components: 0")
+    print("Cross-organization accepted links: 0")
+    print("Same-organization accepted links: 0")
+    print("Largest predecessor chain size: 0")
+    print()
+    print("No roster snapshots found.")
+
+
+def _print_lineage_status(status: object) -> None:
+    import app.history as history
+
+    lineage_status = cast(history.RosterLineageStatus, status)
+    print(
+        "Point-in-time available roster snapshots: "
+        f"{lineage_status.available_roster_snapshots}"
+    )
+    print("Chronology sources:")
+    for source in history.RosterChronologySource:
+        count = lineage_status.chronology_source_counts.get(source, 0)
+        print(f"  {source.value}: {count}")
+    print(f"Exact continuity links: {lineage_status.exact_continuity_links}")
+    print(f"Strong continuity links: {lineage_status.strong_continuity_links}")
+    print(
+        "Coach-supported continuity links: "
+        f"{lineage_status.coach_supported_continuity_links}"
+    )
+    print(
+        "Ambiguous predecessor resolutions: "
+        f"{lineage_status.ambiguous_predecessor_resolutions}"
+    )
+    print(f"Unlinked/root snapshots: {lineage_status.unlinked_root_snapshots}")
+    print(
+        "Derived lineage components: "
+        f"{lineage_status.derived_lineage_components}"
+    )
+    print(
+        "Cross-organization accepted links: "
+        f"{lineage_status.cross_organization_accepted_links}"
+    )
+    print(
+        "Same-organization accepted links: "
+        f"{lineage_status.same_organization_accepted_links}"
+    )
+    print(
+        "Largest predecessor chain size: "
+        f"{lineage_status.largest_predecessor_chain_size}"
+    )
 
 
 def _sqlite_table_exists(db_path: Path, table_name: str) -> bool:
@@ -1875,6 +1983,25 @@ def _date_value(value: str) -> date:
         return date.fromisoformat(value)
     except ValueError as exc:
         raise ArgumentTypeError("must be a date in YYYY-MM-DD format") from exc
+
+
+def _utc_datetime(value: str) -> datetime:
+    raw_value = value.strip()
+    if raw_value.endswith("Z"):
+        raw_value = f"{raw_value[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(raw_value)
+    except ValueError as exc:
+        raise ArgumentTypeError(
+            "must be an ISO-8601 timestamp with timezone, "
+            "for example 2026-07-07T12:00:00Z"
+        ) from exc
+
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ArgumentTypeError(
+            "must include a timezone, for example 2026-07-07T12:00:00Z"
+        )
+    return parsed.astimezone(timezone.utc)
 
 
 def _non_empty_text(value: str) -> str:

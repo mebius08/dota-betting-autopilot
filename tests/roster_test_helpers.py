@@ -31,6 +31,17 @@ def make_organization(
     )
 
 
+def make_coach(
+    source_coach_id: str | None = "coach-1",
+    name: str = "Coach",
+) -> RosterCoach:
+    return RosterCoach(
+        source="pandascore",
+        source_coach_id=source_coach_id,
+        name=name,
+    )
+
+
 def make_roster_snapshot(
     snapshot_label: str = "snapshot-1",
     *,

@@ -296,8 +296,8 @@ prediction. Match start time is not result availability time.
 Team matching in this pre-roster layer is limited to PandaScore team IDs or a
 controlled normalized-name fallback inside the same organization identity. It
 does not create permanent aliases such as Tundra -> 1W or HEROIC -> LGD. A
-future roster-lineage layer will connect relevant history through player/roster
-continuity instead of organization-name aliases.
+roster-lineage layer connects relevant history through player/roster continuity
+instead of organization-name aliases.
 
 ## Player and roster history foundation
 
@@ -320,9 +320,9 @@ The player-composition fingerprint is deterministic, order-independent, and
 based on stable player IDs only. Organization ID is not part of that player-only
 fingerprint, and coach data does not silently alter it. This means the same five
 players may appear under different organizations without merging those
-organizations or creating permanent transfer aliases. This stage does not infer
-roster lineage, continuity scores, player form, team form, or historical ML v2
-features.
+organizations or creating permanent transfer aliases. The storage foundation
+does not persist lineage truth; the derived lineage layer below computes
+continuity from snapshots at query time.
 
 Sync bounded roster history from PandaScore tournament contexts already present
 in the historical match table. The provider call uses PandaScore's tournament
@@ -351,9 +351,64 @@ coverage, observed timestamp range, and unique player-roster fingerprints.
 `observed_at` is the point-in-time availability boundary: future-observed roster
 information is not backfilled into earlier prediction timestamps. Provider
 validity is stored only when the provider supplies it; the project does not
-invent roster validity from tournament dates. Future lineage logic can compare
+invent roster validity from tournament dates. Derived lineage logic can compare
 historical roster continuity from these snapshots without adding permanent
 aliases such as Tundra -> 1W or HEROIC -> LGD.
+
+## Derived roster lineage / competitive continuity
+
+Competitive lineage is derived from roster snapshots at query time. It does not
+persist permanent transfer aliases, merge `TeamOrganization` rows, rewrite
+provider IDs, or create a global competitive-team identity. Organization
+identity is explanatory metadata; it is not lineage identity.
+
+Continuity evidence uses stable provider player IDs, not player display names.
+Exact player-set equality and strong player overlap are the primary evidence.
+Stable coach continuity is represented separately by stable provider coach ID
+and can support a qualifying three-player overlap, but coach names are ignored
+and coach continuity alone is insufficient. The default conservative policy is:
+
+- `EXACT`: same stable player set with at least five core players.
+- `STRONG`: at least four shared players and at least 0.8 overlap against the
+  smaller roster.
+- `COACH_SUPPORTED`: at least three shared players, at least 0.6 overlap against
+  the smaller roster, and the same stable coach provider ID.
+- `WEAK`: at least three shared players without enough evidence to auto-link.
+- `NONE`: insufficient stable player continuity.
+
+These thresholds are project heuristics for the current lineage foundation, not
+statistically proven optimal values. The policy is centralized so later
+evaluation can change it without rewriting the resolver.
+
+Availability time and competitive chronology are separate. `observed_at < as_of`
+controls whether a snapshot may participate in a point-in-time lineage graph,
+and a snapshot observed exactly at `as_of` is excluded. Competitive chronology
+only orders already-available snapshots. Chronology precedence is:
+
+1. explicit `valid_from`, when present;
+2. tournament historical-match context from point-in-time eligible completed
+   matches for the same provider tournament, using strict `ended_at < as_of`,
+   then the earliest eligible `historical_matches.started_at`, or the latest
+   eligible `ended_at` only if no start timestamp is available;
+3. `observed_at` fallback.
+
+Tournament match dates may help order already-available historical roster
+observations, but they never make a snapshot available before its `observed_at`.
+Lineage is directional: accepted edges point from previous snapshot to current
+snapshot, and predecessor history follows those edges backwards. Future
+competitive descendants are never returned as predecessor history.
+
+Inspect the derived lineage summary offline:
+
+```powershell
+python -m app.cli lineage-status --db data/autopilot.db --as-of 2026-07-07T12:00:00Z
+```
+
+`lineage-status` makes no network calls and prints point-in-time available
+snapshot count, chronology source counts, accepted exact/strong/coach-supported
+links, ambiguity count, root snapshots, derived components, organization-crossing
+links, and largest predecessor chain size. It does not print fake confidence
+percentages and it does not sync or persist lineages.
 
 ## Tournament competitive stage model
 

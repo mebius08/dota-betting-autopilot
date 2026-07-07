@@ -19,6 +19,7 @@ from app.domain import (
     StreamerUtterance,
 )
 from app.history.domain import HistoricalMatch, WinnerSide
+from app.history.roster_lineage import HistoricalTournamentChronologyContext
 from app.history.rosters import (
     PlayerIdentity,
     RosterCoach,
@@ -1053,6 +1054,41 @@ class SQLiteRepository:
         if limit is not None:
             return tournament_ids[:limit]
         return tournament_ids
+
+    def get_historical_tournament_chronology_context(
+        self,
+        *,
+        source: str,
+        tournament_source_id: str,
+        cutoff_timestamp: datetime,
+    ) -> HistoricalTournamentChronologyContext | None:
+        cutoff_text = _datetime_to_text(cutoff_timestamp)
+        with closing(get_connection(self.db_path)) as connection:
+            row = connection.execute(
+                """
+                SELECT MIN(started_at) AS earliest_started_at,
+                       MAX(ended_at) AS latest_ended_at
+                FROM historical_matches
+                WHERE source = ?
+                  AND tournament_source_id = ?
+                  AND ended_at IS NOT NULL
+                  AND ended_at < ?
+                """,
+                (source, tournament_source_id, cutoff_text),
+            ).fetchone()
+
+        if row is None:
+            return None
+        earliest_started_at = _datetime_from_text(row["earliest_started_at"])
+        latest_ended_at = _datetime_from_text(row["latest_ended_at"])
+        if earliest_started_at is None and latest_ended_at is None:
+            return None
+        return HistoricalTournamentChronologyContext(
+            source=source,
+            tournament_source_id=tournament_source_id,
+            earliest_started_at=earliest_started_at,
+            latest_ended_at=latest_ended_at,
+        )
 
     def count_players(self) -> int:
         return self._count_table_rows("players")

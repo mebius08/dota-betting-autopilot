@@ -188,6 +188,9 @@ CREATE TABLE IF NOT EXISTS roster_memberships (
     CHECK (role != 'coach' OR player_id IS NULL)
 );
 
+CREATE INDEX IF NOT EXISTS idx_historical_matches_tournament_context
+ON historical_matches (source, tournament_source_id, ended_at, started_at);
+
 CREATE INDEX IF NOT EXISTS idx_players_source_identity
 ON players (source, source_player_id);
 
