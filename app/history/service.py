@@ -46,7 +46,7 @@ class HistoricalCollector(Protocol):
         since: datetime | None,
         until: datetime | None,
         page_size: int,
-        max_pages: int,
+        max_pages: int | None,
     ) -> HistoricalCollectionResult:
         ...
 
@@ -58,7 +58,7 @@ def sync_historical_matches(
     since: datetime | None,
     until: datetime | None,
     page_size: int,
-    max_pages: int,
+    max_pages: int | None,
 ) -> HistoricalSyncResult:
     collection = collector.collect(
         since=since,

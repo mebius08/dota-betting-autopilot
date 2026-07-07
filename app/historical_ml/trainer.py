@@ -30,6 +30,7 @@ from app.historical_ml.split import (
     validate_minimum_training_rows,
 )
 from app.history import (
+    DEFAULT_HISTORICAL_COMPETITION_SCOPE,
     HistoricalFeaturePolicy,
     RecencyWeightingPolicy,
     build_historical_feature_dataset,
@@ -68,6 +69,7 @@ def train_historical_model_from_repository(
     feature_rows = build_historical_feature_dataset(
         repository,
         policy=feature_policy,
+        target_scope_policy=DEFAULT_HISTORICAL_COMPETITION_SCOPE,
     )
     dataset = build_historical_ml_dataset(feature_rows)
     split = split_historical_dataset(dataset, policy=temporal_policy)
@@ -137,6 +139,7 @@ def train_historical_model_from_repository(
             "validation": validation_metrics.as_dict(),
             "test": test_metrics.as_dict(),
         },
+        competition_scope_policy=DEFAULT_HISTORICAL_COMPETITION_SCOPE.as_dict(),
     )
     saved_path = save_historical_model(artifact, model_path)
     return HistoricalTrainingResult(
@@ -164,4 +167,5 @@ def _temporary_model(pipeline: object) -> HistoricalMatchWinModel:
         minimum_rows_policy=HistoricalMinimumRowsPolicy().as_dict(),
         row_counts={},
         evaluation_metrics={},
+        competition_scope_policy=DEFAULT_HISTORICAL_COMPETITION_SCOPE.as_dict(),
     )

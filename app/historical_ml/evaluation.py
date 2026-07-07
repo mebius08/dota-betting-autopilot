@@ -28,6 +28,7 @@ from app.historical_ml.split import (
     split_historical_dataset,
 )
 from app.history import (
+    DEFAULT_HISTORICAL_COMPETITION_SCOPE,
     HistoricalFeaturePolicy,
     RecencyWeightingPolicy,
     build_historical_feature_dataset,
@@ -121,6 +122,7 @@ def evaluate_historical_model_from_repository(
     feature_rows = build_historical_feature_dataset(
         repository,
         policy=feature_policy,
+        target_scope_policy=DEFAULT_HISTORICAL_COMPETITION_SCOPE,
     )
     dataset = build_historical_ml_dataset(feature_rows)
     split_policy = HistoricalTemporalSplitPolicy.from_mapping(

@@ -184,8 +184,11 @@ def create_parser() -> ArgumentParser:
     sync_history_parser.add_argument(
         "--max-pages",
         type=_positive_int,
-        default=10,
-        help="Maximum provider pages to read.",
+        default=None,
+        help=(
+            "Maximum provider pages to read. Omit to continue until provider "
+            "completion inside the explicit date window."
+        ),
     )
     sync_history_parser.add_argument(
         "--timeout",
@@ -969,6 +972,10 @@ def _sync_history_command(args: Namespace) -> int:
     print("Provider: pandascore")
     print(f"Since: {_format_history_date(args.since)}")
     print(f"Until: {_format_history_date(args.until)}")
+    if args.max_pages is None:
+        print("Max pages: provider completion")
+    else:
+        print(f"Max pages: {args.max_pages}")
     print()
     print(f"Fetched provider rows: {result.fetched_rows}")
     print(f"Mapped historical matches: {result.mapped_matches}")
@@ -1658,6 +1665,7 @@ def _train_historical_ml_command(args: Namespace) -> int:
         )
         return 1
 
+    from app.history import DEFAULT_HISTORICAL_COMPETITION_SCOPE
     from app.historical_ml import train_historical_model_from_repository
 
     repository = SQLiteRepository(db_path)
@@ -1667,6 +1675,7 @@ def _train_historical_ml_command(args: Namespace) -> int:
         decay_days=args.decay_days,
     )
     print("Historical ML v2 training")
+    _print_historical_competition_scope(DEFAULT_HISTORICAL_COMPETITION_SCOPE)
     print(f"usable feature rows: {result.rows}")
     print(f"feature count: {result.feature_count}")
     print(f"decay days: {args.decay_days:g}")
@@ -1684,16 +1693,21 @@ def _train_historical_ml_command(args: Namespace) -> int:
 
 
 def _historical_ml_status_command(args: Namespace) -> int:
+    from app.history import DEFAULT_HISTORICAL_COMPETITION_SCOPE
+
     print("Historical ML v2 status")
     print(f"Database: {Path(args.db).as_posix()}")
     print(f"Model artifact: {Path(args.model_path).as_posix()}")
     print(f"Decay days: {args.decay_days:g}")
+    _print_historical_competition_scope(DEFAULT_HISTORICAL_COMPETITION_SCOPE)
 
     db_path = Path(args.db)
     if not db_path.exists():
         from app.historical_ml import HISTORICAL_ML_FEATURE_NAMES
 
-        print("Historical matches: 0")
+        print("Raw historical matches: 0")
+        print("Raw usable winner records: 0")
+        print("Scope-eligible target matches: 0")
         print("Usable labeled feature rows: 0")
         print(f"Feature count: {len(HISTORICAL_ML_FEATURE_NAMES)}")
         print("Configured minimum rows: 100 total, 60 train, 15 validation, 15 test")
@@ -1711,7 +1725,9 @@ def _historical_ml_status_command(args: Namespace) -> int:
         decay_days=args.decay_days,
     )
     minimums = status.minimum_rows_policy
-    print(f"Historical matches: {status.historical_matches}")
+    print(f"Raw historical matches: {status.historical_matches}")
+    print(f"Raw usable winner records: {status.raw_usable_winner_records}")
+    print(f"Scope-eligible target matches: {status.scope_eligible_target_matches}")
     print(f"Usable labeled feature rows: {status.usable_feature_rows}")
     print(f"Feature count: {status.feature_count}")
     print(
@@ -1741,6 +1757,12 @@ def _historical_ml_status_command(args: Namespace) -> int:
         "Artifact training timestamp: "
         f"{_format_optional_datetime(status.artifact_training_timestamp)}"
     )
+    scope_id = (
+        status.artifact_competition_scope_policy.get("scope_id")
+        if status.artifact_competition_scope_policy is not None
+        else None
+    )
+    print(f"Artifact competition scope: {scope_id or 'unknown'}")
     _print_recorded_historical_metrics(status.artifact_recorded_metrics)
     return 0
 
@@ -1754,6 +1776,7 @@ def _evaluate_historical_ml_command(args: Namespace) -> int:
         )
         return 1
 
+    from app.history import DEFAULT_HISTORICAL_COMPETITION_SCOPE
     from app.historical_ml import (
         HistoricalModelCompatibilityError,
         evaluate_historical_model_from_repository,
@@ -1771,6 +1794,7 @@ def _evaluate_historical_ml_command(args: Namespace) -> int:
         return 1
 
     print("Historical ML v2 current-dataset evaluation")
+    _print_historical_competition_scope(DEFAULT_HISTORICAL_COMPETITION_SCOPE)
     print(f"usable feature rows: {result.rows}")
     print(f"feature count: {result.feature_count}")
     print(f"decay days: {args.decay_days:g}")
@@ -2130,6 +2154,25 @@ def _print_recorded_historical_metrics(
         )
 
 
+def _print_historical_competition_scope(policy: Any) -> None:
+    from app.history import HISTORICAL_COMPETITION_CLASSIFICATION_PRECEDENCE
+
+    ordered_families = [
+        family
+        for family in HISTORICAL_COMPETITION_CLASSIFICATION_PRECEDENCE
+        if family in policy.allowed_families
+    ]
+    family_names = ", ".join(family.name for family in ordered_families)
+    qualifier_policy = "excluded" if policy.exclude_qualifiers else "included"
+    print(f"Competition scope: {policy.scope_id}")
+    print(
+        "Scope target start: "
+        f"{policy.target_start_at.isoformat()} inclusive"
+    )
+    print(f"Allowed competition families: {family_names}")
+    print(f"Qualifier policy: {qualifier_policy}")
+
+
 def _print_historical_artifact_status(model_path: Path) -> None:
     from app.historical_ml import HistoricalModelCompatibilityError
     from app.historical_ml import load_historical_model
@@ -2139,6 +2182,7 @@ def _print_historical_artifact_status(model_path: Path) -> None:
         print("Artifact compatible: no")
         print("Artifact feature schema version: unknown")
         print("Artifact training timestamp: unavailable")
+        print("Artifact competition scope: unknown")
         return
 
     print("Model artifact exists: yes")
@@ -2149,6 +2193,7 @@ def _print_historical_artifact_status(model_path: Path) -> None:
         print(f"Artifact reason: {exc}")
         print("Artifact feature schema version: unknown")
         print("Artifact training timestamp: unavailable")
+        print("Artifact competition scope: unknown")
         return
 
     print("Artifact compatible: yes")
@@ -2156,6 +2201,10 @@ def _print_historical_artifact_status(model_path: Path) -> None:
     print(
         "Artifact training timestamp: "
         f"{_format_optional_datetime(artifact.training_timestamp)}"
+    )
+    print(
+        "Artifact competition scope: "
+        f"{artifact.competition_scope_policy.get('scope_id', 'unknown')}"
     )
     _print_recorded_historical_metrics(artifact.evaluation_metrics)
 

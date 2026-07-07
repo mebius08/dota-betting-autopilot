@@ -6,6 +6,20 @@ from app.collectors.pandascore_match_collector import (
     PandaScoreResponseError,
 )
 from app.history.domain import HistoricalMatch, WinnerSide
+from app.history.competition_scope import (
+    DEFAULT_HISTORICAL_COMPETITION_SCOPE,
+    EWC_2026_BASELINE_SCOPE,
+    HISTORICAL_COMPETITION_CLASSIFICATION_PRECEDENCE,
+    HistoricalCompetitionFamily,
+    HistoricalCompetitionScopePolicy,
+    classify_historical_competition_family,
+    competition_identity_fields,
+    competition_identity_text,
+    is_historical_competition_qualifier,
+    is_historical_match_scope_eligible_target,
+    normalize_competition_metadata_text,
+    validate_historical_scope_compatible,
+)
 from app.history.features import (
     HISTORICAL_NUMERIC_FEATURE_COLUMNS,
     STAGE_FEATURE_COLUMNS,
@@ -91,8 +105,13 @@ from app.history.service import (
 
 __all__ = [
     "CoachContinuity",
+    "DEFAULT_HISTORICAL_COMPETITION_SCOPE",
+    "EWC_2026_BASELINE_SCOPE",
+    "HISTORICAL_COMPETITION_CLASSIFICATION_PRECEDENCE",
     "HISTORICAL_NUMERIC_FEATURE_COLUMNS",
     "HistoricalCollectionResult",
+    "HistoricalCompetitionFamily",
+    "HistoricalCompetitionScopePolicy",
     "HistoricalFeaturePolicy",
     "HistoricalFeatureRow",
     "HistoricalFeatureStatus",
@@ -154,15 +173,22 @@ __all__ = [
     "build_roster_snapshot_source_id",
     "build_staff_roster_fingerprint",
     "calculate_recency_weight",
+    "classify_historical_competition_family",
+    "competition_identity_fields",
+    "competition_identity_text",
     "evaluate_coach_continuity",
     "fetch_pandascore_past_match_page",
     "fetch_pandascore_past_match_rows",
     "fetch_pandascore_tournament_roster_payload",
     "get_team_history_before",
+    "is_historical_competition_qualifier",
+    "is_historical_match_scope_eligible_target",
     "list_training_matches_before",
     "map_pandascore_historical_match",
     "map_pandascore_historical_matches",
     "map_pandascore_tournament_rosters",
+    "normalize_competition_metadata_text",
     "sync_historical_matches",
     "sync_roster_history",
+    "validate_historical_scope_compatible",
 ]

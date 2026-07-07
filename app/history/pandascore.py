@@ -86,7 +86,7 @@ class PandaScoreHistoricalMatchCollector:
         since: datetime | None,
         until: datetime | None,
         page_size: int = 50,
-        max_pages: int = 10,
+        max_pages: int | None = None,
     ) -> HistoricalCollectionResult:
         rows = fetch_pandascore_past_match_rows(
             token=self._required_token(),
@@ -136,7 +136,7 @@ def fetch_pandascore_past_match_rows(
     since: datetime | None = None,
     until: datetime | None = None,
     page_size: int = 50,
-    max_pages: int = 10,
+    max_pages: int | None = None,
     endpoint: str = PANDASCORE_DOTA_PAST_MATCHES_URL,
     urlopen_func: _UrlOpen = DEFAULT_URL_OPEN,
 ) -> list[object]:
@@ -150,7 +150,9 @@ def fetch_pandascore_past_match_rows(
     )
 
     rows: list[object] = []
-    for page_number in range(1, max_pages + 1):
+    seen_page_signatures: set[tuple[str, ...]] = set()
+    page_number = 1
+    while max_pages is None or page_number <= max_pages:
         page_rows = fetch_pandascore_past_match_page(
             token=token,
             timeout=timeout,
@@ -161,9 +163,16 @@ def fetch_pandascore_past_match_rows(
             endpoint=endpoint,
             urlopen_func=urlopen_func,
         )
+        page_signature = _page_signature(page_rows)
+        if page_rows and page_signature in seen_page_signatures:
+            raise PandaScoreResponseError(
+                "PandaScore repeated a past-match page; aborting pagination."
+            )
+        seen_page_signatures.add(page_signature)
         rows.extend(page_rows)
         if not page_rows or len(page_rows) < page_size:
             break
+        page_number += 1
     return rows
 
 
@@ -324,7 +333,7 @@ def _validate_fetch_options(
     since: datetime | None,
     until: datetime | None,
     page_size: int,
-    max_pages: int,
+    max_pages: int | None,
 ) -> None:
     if not token.strip():
         raise PandaScoreConfigurationError(PANDASCORE_MISSING_TOKEN_MESSAGE)
@@ -332,10 +341,25 @@ def _validate_fetch_options(
         raise ValueError("timeout must be greater than 0")
     if not 1 <= page_size <= 100:
         raise ValueError("page_size must be between 1 and 100")
-    if max_pages < 1:
+    if max_pages is not None and max_pages < 1:
         raise ValueError("max_pages must be at least 1")
     if since is not None and until is not None and since > until:
         raise ValueError("since must be before or equal to until")
+
+
+def _page_signature(rows: list[object]) -> tuple[str, ...]:
+    signatures: list[str] = []
+    for row in rows:
+        if isinstance(row, Mapping):
+            provider_id = _text_from_value(row.get("id"))
+            if provider_id is not None:
+                signatures.append(f"id:{provider_id}")
+                continue
+        try:
+            signatures.append(f"json:{json.dumps(row, sort_keys=True)}")
+        except TypeError:
+            signatures.append(f"text:{row!r}")
+    return tuple(signatures)
 
 
 def _history_query_params(

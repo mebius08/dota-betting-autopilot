@@ -267,11 +267,15 @@ $env:PANDASCORE_TOKEN="your-token-here"
 Sync a bounded historical window:
 
 ```powershell
-python -m app.cli sync-history --provider pandascore --db data/autopilot.db --since 2025-01-01 --until 2026-07-06
+python -m app.cli sync-history --provider pandascore --db data/autopilot.db --since 2025-07-08 --until 2026-07-07 --page-size 100 --timeout 30
 ```
 
-The sync uses the PandaScore past Dota match source, bounded pagination, and an
-explicit date window. Repeating the same sync is idempotent through
+The sync uses the PandaScore past Dota match source and an explicit date
+window. `--since` and `--until` are mandatory. If `--max-pages` is supplied,
+the sync reads at most that many provider pages. If `--max-pages` is omitted,
+pagination continues until the provider returns an empty or short terminal page
+inside the explicit date window, with repeated-page detection to avoid endless
+loops. Repeating the same sync is idempotent through
 `source + source_match_id`, and later richer provider metadata can update an
 existing row. The command is read-only against the provider and does not place
 bets, create live signals, train models, or call bookmaker write APIs.
@@ -634,6 +638,34 @@ contribute. Roster observations also remain point-in-time safe with
 `observed_at < prediction_timestamp`; future roster snapshots are represented
 as missing rather than backfilled.
 
+The default Historical ML v2 EWC 2026 baseline target scope is
+`ewc_2026_baseline`. It starts at `2025-07-08T00:00:00Z` inclusive and allows
+main-event target rows from these competition families:
+
+* The International
+* Esports World Cup / EWC
+* DreamLeague
+* BLAST
+* ESL
+* PGL
+* FISSURE Playground
+* BetBoom Dacha
+
+Qualifiers are excluded. Competition family classification is based on
+normalized provider tournament, league, and series metadata; season, year, and
+edition variations do not need exact full-string equality. `FISSURE Playground`
+is allowed, but `FISSURE Universe` and generic FISSURE tournaments are not
+automatically allowed. BetBoom Dacha requires both BetBoom and Dacha identity;
+generic BetBoom events are not automatically allowed.
+
+Historical SQLite storage remains broad. The raw `historical_matches` table may
+contain other professional Dota matches, and those records are not deleted or
+rewritten merely because the default model target scope is curated. Target scope
+and feature history are distinct concepts: scoped target rows may still draw
+point-in-time-safe history from the existing feature engine, but no match can
+contribute before its result is available. The strict feature-history rule stays
+`ended_at < prediction_timestamp`.
+
 The numeric schema is explicit and deterministic. Metadata such as source IDs,
 team names, player names, tournament names, winner fields, and labels are not
 model inputs. Competitive stage is represented as one-hot features:
@@ -675,13 +707,20 @@ data/models/historical_match_win.joblib
 
 The artifact stores the fitted pipeline, model type, feature schema version,
 ordered feature names, training timestamp, recency decay policy, temporal split
-policy, minimum-row policy, row counts, and recorded metrics. Loading is strict:
-schema version and ordered feature names must match the current code.
+policy, minimum-row policy, competition scope metadata, row counts, and
+recorded metrics. Loading is strict: schema version, ordered feature names, and
+competition scope metadata must match the current code.
+
+Patch-aware Historical ML features remain a future data-source/enrichment task
+because the currently confirmed PandaScore historical match payload represented
+by this integration does not expose a trusted patch/version field. The current
+pipeline does not infer Dota patches from match dates and does not hardcode a
+patch calendar.
 
 PowerShell workflow:
 
 ```powershell
-python -m app.cli sync-history --provider pandascore --db data/autopilot.db --since 2025-01-01 --until 2026-07-07
+python -m app.cli sync-history --provider pandascore --db data/autopilot.db --since 2025-07-08 --until 2026-07-07 --page-size 100 --timeout 30
 python -m app.cli sync-rosters --provider pandascore --db data/autopilot.db
 python -m app.cli historical-ml-status --db data/autopilot.db
 python -m app.cli train-historical-ml --db data/autopilot.db --decay-days 90

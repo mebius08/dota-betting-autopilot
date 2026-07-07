@@ -58,10 +58,43 @@ def test_sync_history_command_prints_summary_and_persists(
     assert "Provider: pandascore" in output
     assert "Since: 2026-01-01" in output
     assert "Until: 2026-01-31" in output
+    assert "Max pages: 3" in output
     assert "Fetched provider rows: 2" in output
     assert "Mapped historical matches: 1" in output
     assert "Usable winner records: 1" in output
     assert "Inserted: 1" in output
+    assert SQLiteRepository(db_path).count_historical_matches() == 1
+
+
+def test_sync_history_without_max_pages_passes_provider_completion_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        app.history,
+        "PandaScoreHistoricalMatchCollector",
+        _NoMaxPagesHistoryCollector,
+    )
+    db_path = tmp_path / "test.db"
+
+    exit_code = cli.main(
+        [
+            "sync-history",
+            "--provider",
+            "pandascore",
+            "--db",
+            str(db_path),
+            "--since",
+            "2025-07-08",
+            "--until",
+            "2026-07-07",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Max pages: provider completion" in output
     assert SQLiteRepository(db_path).count_historical_matches() == 1
 
 
@@ -174,7 +207,7 @@ class _FakeHistoryCollector:
         since: datetime | None,
         until: datetime | None,
         page_size: int,
-        max_pages: int,
+        max_pages: int | None,
     ) -> HistoricalCollectionResult:
         assert since is not None
         assert since.isoformat() == "2026-01-01T00:00:00+00:00"
@@ -200,9 +233,33 @@ class _TokenErrorCollector:
         since: datetime | None,
         until: datetime | None,
         page_size: int,
-        max_pages: int,
+        max_pages: int | None,
     ) -> HistoricalCollectionResult:
         raise app.history.PandaScoreConfigurationError(
             "PandaScore token is not configured.\n"
             "Set PANDASCORE_TOKEN before using the pandascore provider."
+        )
+
+
+class _NoMaxPagesHistoryCollector:
+    def __init__(self, *, timeout: float) -> None:
+        assert timeout == 10.0
+
+    def collect(
+        self,
+        *,
+        since: datetime | None,
+        until: datetime | None,
+        page_size: int,
+        max_pages: int | None,
+    ) -> HistoricalCollectionResult:
+        assert since is not None
+        assert until is not None
+        assert page_size == 50
+        assert max_pages is None
+        return HistoricalCollectionResult(
+            matches=[make_historical_match("history-unbounded")],
+            fetched_rows=1,
+            skipped_rows=0,
+            warnings=[],
         )

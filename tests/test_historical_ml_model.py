@@ -15,6 +15,7 @@ from app.historical_ml import (
     load_historical_model,
     save_historical_model,
 )
+from app.history import EWC_2026_BASELINE_SCOPE, HistoricalCompetitionFamily
 
 
 def test_historical_model_probability_and_artifact_round_trip(
@@ -40,6 +41,8 @@ def test_historical_model_probability_and_artifact_round_trip(
     loaded = load_historical_model(path)
 
     assert loaded.predict_team_a_probability(x[0]) == pytest.approx(probability)
+    assert loaded.competition_scope_policy == EWC_2026_BASELINE_SCOPE.as_dict()
+    assert loaded.competition_scope_policy["exclude_qualifiers"] is True
 
 
 def test_incompatible_feature_schema_is_rejected(tmp_path: Path) -> None:
@@ -51,10 +54,45 @@ def test_incompatible_feature_schema_is_rejected(tmp_path: Path) -> None:
         load_historical_model(path)
 
 
+def test_incompatible_competition_scope_start_is_rejected(tmp_path: Path) -> None:
+    scope = EWC_2026_BASELINE_SCOPE.as_dict()
+    scope["target_start_at"] = "2025-07-09T00:00:00Z"
+    model = _model(
+        create_historical_model_pipeline(),
+        competition_scope_policy=scope,
+    )
+    path = tmp_path / "bad-scope-start.joblib"
+    joblib.dump(model, path)
+
+    with pytest.raises(HistoricalModelCompatibilityError, match="start mismatch"):
+        load_historical_model(path)
+
+
+def test_incompatible_competition_scope_family_set_is_rejected(
+    tmp_path: Path,
+) -> None:
+    scope = EWC_2026_BASELINE_SCOPE.as_dict()
+    scope["allowed_families"] = [
+        family
+        for family in scope["allowed_families"]
+        if family != HistoricalCompetitionFamily.PGL.value
+    ]
+    model = _model(
+        create_historical_model_pipeline(),
+        competition_scope_policy=scope,
+    )
+    path = tmp_path / "bad-scope-family.joblib"
+    joblib.dump(model, path)
+
+    with pytest.raises(HistoricalModelCompatibilityError, match="family set"):
+        load_historical_model(path)
+
+
 def _model(
     pipeline: object,
     *,
     feature_names: tuple[str, ...] = HISTORICAL_ML_FEATURE_NAMES,
+    competition_scope_policy: dict[str, object] | None = None,
 ) -> HistoricalMatchWinModel:
     return HistoricalMatchWinModel(
         pipeline=pipeline,
@@ -76,4 +114,7 @@ def _model(
         },
         row_counts={"train": 70, "validation": 15, "test": 15},
         evaluation_metrics={},
+        competition_scope_policy=(
+            competition_scope_policy or EWC_2026_BASELINE_SCOPE.as_dict()
+        ),
     )

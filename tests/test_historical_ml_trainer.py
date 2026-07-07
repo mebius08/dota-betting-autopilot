@@ -9,8 +9,10 @@ from app.historical_ml import (
     HistoricalMatchRowMetadata,
     HistoricalMinimumRowsPolicy,
     HistoricalTemporalSplitPolicy,
+    load_historical_model,
     train_historical_model_from_repository,
 )
+from app.history import EWC_2026_BASELINE_SCOPE
 import app.historical_ml.trainer as trainer_module
 
 
@@ -22,7 +24,7 @@ def test_historical_trainer_saves_artifact_with_small_explicit_policy(
     monkeypatch.setattr(
         trainer_module,
         "build_historical_feature_dataset",
-        lambda repository, policy: [],
+        lambda repository, policy, target_scope_policy: [],
     )
     monkeypatch.setattr(
         trainer_module,
@@ -54,6 +56,10 @@ def test_historical_trainer_saves_artifact_with_small_explicit_policy(
     assert result.validation_metrics is not None
     assert result.test_metrics is not None
     assert model_path.exists()
+    assert (
+        load_historical_model(model_path).competition_scope_policy
+        == EWC_2026_BASELINE_SCOPE.as_dict()
+    )
 
 
 def test_historical_trainer_rejects_single_class_train_split(
@@ -64,7 +70,7 @@ def test_historical_trainer_rejects_single_class_train_split(
     monkeypatch.setattr(
         trainer_module,
         "build_historical_feature_dataset",
-        lambda repository, policy: [],
+        lambda repository, policy, target_scope_policy: [],
     )
     monkeypatch.setattr(
         trainer_module,

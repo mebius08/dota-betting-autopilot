@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -16,6 +16,10 @@ from app.historical_ml.dataset import (
     HISTORICAL_FEATURE_SCHEMA_VERSION,
     HISTORICAL_ML_FEATURE_NAMES,
     feature_mapping_to_vector,
+)
+from app.history.competition_scope import (
+    DEFAULT_HISTORICAL_COMPETITION_SCOPE,
+    validate_historical_scope_compatible,
 )
 
 
@@ -41,6 +45,9 @@ class HistoricalMatchWinModel:
     minimum_rows_policy: Mapping[str, object]
     row_counts: Mapping[str, int]
     evaluation_metrics: Mapping[str, Mapping[str, object]]
+    competition_scope_policy: Mapping[str, object] = field(
+        default_factory=DEFAULT_HISTORICAL_COMPETITION_SCOPE.as_dict
+    )
 
     def validate_compatible(self) -> None:
         if self.feature_schema_version != HISTORICAL_FEATURE_SCHEMA_VERSION:
@@ -58,6 +65,12 @@ class HistoricalMatchWinModel:
                 "Historical model type mismatch: "
                 f"artifact={self.model_type}, expected={HISTORICAL_MODEL_TYPE}."
             )
+        try:
+            validate_historical_scope_compatible(
+                getattr(self, "competition_scope_policy", None)
+            )
+        except ValueError as exc:
+            raise HistoricalModelCompatibilityError(str(exc)) from exc
 
     def predict_team_a_probability(
         self,

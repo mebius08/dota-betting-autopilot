@@ -83,6 +83,55 @@ def test_fetch_respects_max_pages() -> None:
     assert [row["id"] for row in rows if isinstance(row, dict)] == [1, 2]
 
 
+def test_fetch_without_max_pages_reads_until_provider_completion() -> None:
+    requested_pages: list[int] = []
+    pages = {page: [_payload(page)] for page in range(1, 13)}
+
+    rows = fetch_pandascore_past_match_rows(
+        token="token",
+        page_size=1,
+        max_pages=None,
+        urlopen_func=_paged_urlopen(pages, requested_pages=requested_pages),
+    )
+
+    assert [row["id"] for row in rows if isinstance(row, dict)] == list(
+        range(1, 13)
+    )
+    assert requested_pages == list(range(1, 14))
+
+
+def test_fetch_stops_on_empty_terminal_page() -> None:
+    requested_pages: list[int] = []
+
+    rows = fetch_pandascore_past_match_rows(
+        token="token",
+        page_size=2,
+        max_pages=None,
+        urlopen_func=_paged_urlopen(
+            {1: [_payload(1), _payload(2)], 2: []},
+            requested_pages=requested_pages,
+        ),
+    )
+
+    assert [row["id"] for row in rows if isinstance(row, dict)] == [1, 2]
+    assert requested_pages == [1, 2]
+
+
+def test_repeated_page_detection_prevents_endless_pagination() -> None:
+    with pytest.raises(PandaScoreResponseError, match="repeated"):
+        fetch_pandascore_past_match_rows(
+            token="token",
+            page_size=1,
+            max_pages=None,
+            urlopen_func=_paged_urlopen(
+                {
+                    1: [_payload(1)],
+                    2: [_payload(1)],
+                }
+            ),
+        )
+
+
 def test_collect_maps_rows_and_deduplicates_provider_ids() -> None:
     collector = PandaScoreHistoricalMatchCollector(
         token="token",
@@ -230,10 +279,14 @@ class _RawFakeResponse:
 
 def _paged_urlopen(
     pages: dict[int, list[object]],
+    *,
+    requested_pages: list[int] | None = None,
 ) -> Callable[[Request, float], _FakeResponse]:
     def fake_urlopen(request: Request, timeout: float) -> _FakeResponse:
         query = parse_qs(urlparse(request.full_url).query)
         page_number = int(query.get("page[number]", ["1"])[0])
+        if requested_pages is not None:
+            requested_pages.append(page_number)
         return _FakeResponse(pages.get(page_number, []))
 
     return fake_urlopen

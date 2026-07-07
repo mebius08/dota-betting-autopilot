@@ -7,6 +7,10 @@ import math
 from typing import Literal, Protocol
 
 from app.history.domain import HistoricalMatch
+from app.history.competition_scope import (
+    HistoricalCompetitionScopePolicy,
+    is_historical_match_scope_eligible_target,
+)
 from app.history.roster_lineage import (
     HistoricalTournamentChronologyContext,
     RosterLineageGraph,
@@ -713,10 +717,19 @@ def build_historical_feature_dataset(
     repository: HistoricalFeatureRepository,
     *,
     policy: HistoricalFeaturePolicy | None = None,
+    target_scope_policy: HistoricalCompetitionScopePolicy | None = None,
 ) -> list[LabeledHistoricalFeatureRow]:
     matches = tuple(repository.list_historical_matches())
     rows: list[LabeledHistoricalFeatureRow] = []
     for match in sorted(matches, key=_match_target_order_key):
+        if (
+            target_scope_policy is not None
+            and not is_historical_match_scope_eligible_target(
+                match,
+                target_scope_policy,
+            )
+        ):
+            continue
         if not match.usable_for_match_winner_training:
             continue
         row = build_labeled_historical_feature_row(

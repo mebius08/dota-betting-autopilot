@@ -3,7 +3,8 @@ from pathlib import Path
 import pytest
 
 from app import cli
-from app.storage import init_db
+from app.storage import SQLiteRepository, init_db
+from tests.history_test_helpers import make_historical_match
 
 
 def test_cli_help_includes_historical_ml_commands(
@@ -34,8 +35,63 @@ def test_historical_ml_status_handles_missing_database(
     output = capsys.readouterr().out
 
     assert exit_code == 0
-    assert "Historical matches: 0" in output
+    assert "Competition scope: ewc_2026_baseline" in output
+    assert "Scope target start: 2025-07-08T00:00:00+00:00 inclusive" in output
+    assert "Raw historical matches: 0" in output
+    assert "Scope-eligible target matches: 0" in output
     assert "Model artifact exists: no" in output
+
+
+def test_historical_ml_status_distinguishes_raw_and_scoped_targets(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    db_path = tmp_path / "test.db"
+    repository = SQLiteRepository(db_path)
+    repository.save_historical_match(
+        make_historical_match(
+            "allowed",
+            tournament_name="DreamLeague Season 28",
+            league_name=None,
+            series_name=None,
+        )
+    )
+    repository.save_historical_match(
+        make_historical_match(
+            "outside-scope",
+            tournament_name="FISSURE Universe",
+            league_name=None,
+            series_name=None,
+        )
+    )
+    repository.save_historical_match(
+        make_historical_match(
+            "qualifier",
+            tournament_name="DreamLeague Closed Qualifier",
+            league_name=None,
+            series_name=None,
+        )
+    )
+
+    exit_code = cli.main(
+        [
+            "historical-ml-status",
+            "--db",
+            str(db_path),
+            "--model-path",
+            str(tmp_path / "missing.joblib"),
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Raw historical matches: 3" in output
+    assert "Raw usable winner records: 3" in output
+    assert "Scope-eligible target matches: 1" in output
+    assert "Usable labeled feature rows: 1" in output
+    assert "THE_INTERNATIONAL" in output
+    assert "ESPORTS_WORLD_CUP" in output
+    assert "FISSURE_PLAYGROUND" in output
 
 
 def test_train_historical_ml_insufficient_data_fails_cleanly(
