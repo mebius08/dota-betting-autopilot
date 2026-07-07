@@ -18,6 +18,13 @@ from app.domain import (
     Session,
     StreamerUtterance,
 )
+from app.draft_history.domain import (
+    DraftActionKind,
+    DotaSide,
+    DraftWinnerSide,
+    HistoricalDotaGame,
+    HistoricalDraftAction,
+)
 from app.history.domain import HistoricalMatch, WinnerSide
 from app.history.roster_lineage import HistoricalTournamentChronologyContext
 from app.history.rosters import (
@@ -34,6 +41,7 @@ from app.storage.database import get_connection, init_db
 
 
 HistoricalUpsertResult = str
+DraftUpsertResult = str
 RosterUpsertResult = str
 
 
@@ -748,6 +756,214 @@ class SQLiteRepository:
             ).fetchall()
 
         return [_row_to_historical_match(row) for row in rows]
+
+    def upsert_historical_dota_game(
+        self,
+        game: HistoricalDotaGame,
+        actions: tuple[HistoricalDraftAction, ...] | list[HistoricalDraftAction],
+    ) -> DraftUpsertResult:
+        existing = self.get_historical_dota_game_by_source(
+            game.source,
+            game.source_game_id,
+        )
+        with closing(get_connection(self.db_path)) as connection:
+            if existing is not None:
+                _raise_if_conflicting_draft_game(existing, game)
+
+            if existing is None:
+                connection.execute(
+                    """
+                    INSERT INTO historical_dota_games (
+                        id,
+                        source,
+                        source_game_id,
+                        parent_series_source_id,
+                        linked_historical_match_id,
+                        started_at,
+                        ended_at,
+                        team_a_name,
+                        team_b_name,
+                        team_a_source_id,
+                        team_b_source_id,
+                        winner_side,
+                        game_number,
+                        best_of,
+                        team_a_series_wins_before,
+                        team_b_series_wins_before,
+                        team_a_side,
+                        patch,
+                        draft_complete,
+                        tournament_name,
+                        tournament_source_id,
+                        league_name,
+                        league_source_id,
+                        raw_stage_label,
+                        ingested_at
+                    ) VALUES (
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?
+                    )
+                    """,
+                    _historical_dota_game_values(game),
+                )
+                result: DraftUpsertResult = "inserted"
+            elif _historical_dota_games_equivalent(existing, game):
+                result = "unchanged"
+            else:
+                connection.execute(
+                    """
+                    UPDATE historical_dota_games
+                    SET id = ?,
+                        parent_series_source_id = ?,
+                        linked_historical_match_id = ?,
+                        started_at = ?,
+                        ended_at = ?,
+                        team_a_name = ?,
+                        team_b_name = ?,
+                        team_a_source_id = ?,
+                        team_b_source_id = ?,
+                        winner_side = ?,
+                        game_number = ?,
+                        best_of = ?,
+                        team_a_series_wins_before = ?,
+                        team_b_series_wins_before = ?,
+                        team_a_side = ?,
+                        patch = ?,
+                        draft_complete = ?,
+                        tournament_name = ?,
+                        tournament_source_id = ?,
+                        league_name = ?,
+                        league_source_id = ?,
+                        raw_stage_label = ?,
+                        ingested_at = ?
+                    WHERE source = ?
+                      AND source_game_id = ?
+                    """,
+                    (
+                        game.id,
+                        game.parent_series_source_id,
+                        game.linked_historical_match_id,
+                        _datetime_to_text(game.started_at),
+                        _datetime_to_text(game.ended_at),
+                        game.team_a_name,
+                        game.team_b_name,
+                        game.team_a_source_id,
+                        game.team_b_source_id,
+                        game.winner_side,
+                        game.game_number,
+                        game.best_of,
+                        game.team_a_series_wins_before,
+                        game.team_b_series_wins_before,
+                        game.team_a_side,
+                        game.patch,
+                        int(game.draft_complete),
+                        game.tournament_name,
+                        game.tournament_source_id,
+                        game.league_name,
+                        game.league_source_id,
+                        game.raw_stage_label,
+                        _datetime_to_text(game.ingested_at),
+                        game.source,
+                        game.source_game_id,
+                    ),
+                )
+                result = "updated"
+
+            connection.execute(
+                """
+                DELETE FROM historical_draft_actions
+                WHERE game_id = ?
+                """,
+                (game.id,),
+            )
+            for action in sorted(actions, key=lambda item: item.action_order):
+                if action.game_id != game.id:
+                    raise ValueError("draft action game_id must match game id")
+                connection.execute(
+                    """
+                    INSERT INTO historical_draft_actions (
+                        id,
+                        game_id,
+                        source,
+                        source_game_id,
+                        action_order,
+                        action_kind,
+                        team_side,
+                        team_source_id,
+                        hero_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    _historical_draft_action_values(action),
+                )
+            connection.commit()
+            return result
+
+    def get_historical_dota_game_by_source(
+        self,
+        source: str,
+        source_game_id: str,
+    ) -> HistoricalDotaGame | None:
+        with closing(get_connection(self.db_path)) as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM historical_dota_games
+                WHERE source = ?
+                  AND source_game_id = ?
+                """,
+                (source, source_game_id),
+            ).fetchone()
+
+        if row is None:
+            return None
+        return _row_to_historical_dota_game(row)
+
+    def list_historical_dota_games(self) -> list[HistoricalDotaGame]:
+        with closing(get_connection(self.db_path)) as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM historical_dota_games
+                ORDER BY started_at, source, source_game_id
+                """
+            ).fetchall()
+
+        return [_row_to_historical_dota_game(row) for row in rows]
+
+    def list_historical_dota_games_before(
+        self,
+        cutoff_timestamp: datetime,
+    ) -> list[HistoricalDotaGame]:
+        with closing(get_connection(self.db_path)) as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM historical_dota_games
+                WHERE ended_at IS NOT NULL
+                  AND ended_at < ?
+                ORDER BY ended_at, started_at, source, source_game_id
+                """,
+                (_datetime_to_text(cutoff_timestamp),),
+            ).fetchall()
+
+        return [_row_to_historical_dota_game(row) for row in rows]
+
+    def list_historical_draft_actions(
+        self,
+        game_id: str,
+    ) -> list[HistoricalDraftAction]:
+        with closing(get_connection(self.db_path)) as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM historical_draft_actions
+                WHERE game_id = ?
+                ORDER BY action_order, id
+                """,
+                (game_id,),
+            ).fetchall()
+
+        return [_row_to_historical_draft_action(row) for row in rows]
 
     def count_historical_matches(self, *, usable_only: bool = False) -> int:
         if not usable_only:
@@ -1685,6 +1901,52 @@ def _row_to_historical_match(row: object) -> HistoricalMatch:
     )
 
 
+def _row_to_historical_dota_game(row: object) -> HistoricalDotaGame:
+    data = cast("dict[str, object]", row)
+    return HistoricalDotaGame(
+        id=str(data["id"]),
+        source=str(data["source"]),
+        source_game_id=str(data["source_game_id"]),
+        parent_series_source_id=_optional_text(data["parent_series_source_id"]),
+        linked_historical_match_id=_optional_text(data["linked_historical_match_id"]),
+        started_at=_required_datetime_from_text(data["started_at"]),
+        ended_at=_datetime_from_text(data["ended_at"]),
+        team_a_name=str(data["team_a_name"]),
+        team_b_name=str(data["team_b_name"]),
+        team_a_source_id=_optional_text(data["team_a_source_id"]),
+        team_b_source_id=_optional_text(data["team_b_source_id"]),
+        winner_side=cast(DraftWinnerSide | None, _optional_text(data["winner_side"])),
+        game_number=_optional_int(data["game_number"]),
+        best_of=_optional_int(data["best_of"]),
+        team_a_series_wins_before=_optional_int(data["team_a_series_wins_before"]),
+        team_b_series_wins_before=_optional_int(data["team_b_series_wins_before"]),
+        team_a_side=cast(DotaSide, str(data["team_a_side"])),
+        patch=_optional_text(data["patch"]),
+        draft_complete=_required_bool(data["draft_complete"]),
+        tournament_name=_optional_text(data["tournament_name"]),
+        tournament_source_id=_optional_text(data["tournament_source_id"]),
+        league_name=_optional_text(data["league_name"]),
+        league_source_id=_optional_text(data["league_source_id"]),
+        raw_stage_label=_optional_text(data["raw_stage_label"]),
+        ingested_at=_required_datetime_from_text(data["ingested_at"]),
+    )
+
+
+def _row_to_historical_draft_action(row: object) -> HistoricalDraftAction:
+    data = cast("dict[str, object]", row)
+    return HistoricalDraftAction(
+        id=str(data["id"]),
+        game_id=str(data["game_id"]),
+        source=str(data["source"]),
+        source_game_id=str(data["source_game_id"]),
+        action_order=_required_int(data["action_order"]),
+        action_kind=cast(DraftActionKind, str(data["action_kind"])),
+        team_side=cast(DotaSide, str(data["team_side"])),
+        team_source_id=_optional_text(data["team_source_id"]),
+        hero_id=_required_int(data["hero_id"]),
+    )
+
+
 def _historical_match_values(match: HistoricalMatch) -> tuple[object, ...]:
     return (
         match.id,
@@ -1711,6 +1973,52 @@ def _historical_match_values(match: HistoricalMatch) -> tuple[object, ...]:
         match.best_of,
         match.status,
         _datetime_to_text(match.ingested_at),
+    )
+
+
+def _historical_dota_game_values(game: HistoricalDotaGame) -> tuple[object, ...]:
+    return (
+        game.id,
+        game.source,
+        game.source_game_id,
+        game.parent_series_source_id,
+        game.linked_historical_match_id,
+        _datetime_to_text(game.started_at),
+        _datetime_to_text(game.ended_at),
+        game.team_a_name,
+        game.team_b_name,
+        game.team_a_source_id,
+        game.team_b_source_id,
+        game.winner_side,
+        game.game_number,
+        game.best_of,
+        game.team_a_series_wins_before,
+        game.team_b_series_wins_before,
+        game.team_a_side,
+        game.patch,
+        int(game.draft_complete),
+        game.tournament_name,
+        game.tournament_source_id,
+        game.league_name,
+        game.league_source_id,
+        game.raw_stage_label,
+        _datetime_to_text(game.ingested_at),
+    )
+
+
+def _historical_draft_action_values(
+    action: HistoricalDraftAction,
+) -> tuple[object, ...]:
+    return (
+        action.id,
+        action.game_id,
+        action.source,
+        action.source_game_id,
+        action.action_order,
+        action.action_kind,
+        action.team_side,
+        action.team_source_id,
+        action.hero_id,
     )
 
 
@@ -1743,6 +2051,68 @@ def _historical_matches_equivalent(
         and existing.best_of == incoming.best_of
         and existing.status == incoming.status
     )
+
+
+def _historical_dota_games_equivalent(
+    existing: HistoricalDotaGame,
+    incoming: HistoricalDotaGame,
+) -> bool:
+    return (
+        existing.id == incoming.id
+        and existing.source == incoming.source
+        and existing.source_game_id == incoming.source_game_id
+        and existing.parent_series_source_id == incoming.parent_series_source_id
+        and existing.linked_historical_match_id == incoming.linked_historical_match_id
+        and existing.started_at == incoming.started_at
+        and existing.ended_at == incoming.ended_at
+        and existing.team_a_name == incoming.team_a_name
+        and existing.team_b_name == incoming.team_b_name
+        and existing.team_a_source_id == incoming.team_a_source_id
+        and existing.team_b_source_id == incoming.team_b_source_id
+        and existing.winner_side == incoming.winner_side
+        and existing.game_number == incoming.game_number
+        and existing.best_of == incoming.best_of
+        and existing.team_a_series_wins_before == incoming.team_a_series_wins_before
+        and existing.team_b_series_wins_before == incoming.team_b_series_wins_before
+        and existing.team_a_side == incoming.team_a_side
+        and existing.patch == incoming.patch
+        and existing.draft_complete == incoming.draft_complete
+        and existing.tournament_name == incoming.tournament_name
+        and existing.tournament_source_id == incoming.tournament_source_id
+        and existing.league_name == incoming.league_name
+        and existing.league_source_id == incoming.league_source_id
+        and existing.raw_stage_label == incoming.raw_stage_label
+    )
+
+
+def _raise_if_conflicting_draft_game(
+    existing: HistoricalDotaGame,
+    incoming: HistoricalDotaGame,
+) -> None:
+    checks = (
+        ("started_at", existing.started_at, incoming.started_at),
+        ("team_a_source_id", existing.team_a_source_id, incoming.team_a_source_id),
+        ("team_b_source_id", existing.team_b_source_id, incoming.team_b_source_id),
+    )
+    for field_name, existing_value, incoming_value in checks:
+        if (
+            existing_value is not None
+            and incoming_value is not None
+            and existing_value != incoming_value
+        ):
+            raise ValueError(
+                "Conflicting historical Dota game identity for "
+                f"{incoming.source}:{incoming.source_game_id}: {field_name}."
+            )
+    if (
+        existing.winner_side is not None
+        and incoming.winner_side is not None
+        and existing.winner_side != incoming.winner_side
+    ):
+        raise ValueError(
+            "Conflicting historical Dota game winner for "
+            f"{incoming.source}:{incoming.source_game_id}."
+        )
 
 
 def _optional_float(value: object) -> float | None:

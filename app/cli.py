@@ -197,6 +197,52 @@ def create_parser() -> ArgumentParser:
         help="HTTP timeout in seconds.",
     )
 
+    sync_drafts_parser = subparsers.add_parser(
+        "sync-drafts",
+        help="Sync bounded historical Dota game draft data from a provider.",
+    )
+    sync_drafts_parser.add_argument(
+        "--provider",
+        choices=("opendota",),
+        required=True,
+    )
+    sync_drafts_parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("data") / "autopilot.db",
+        help="SQLite database path.",
+    )
+    sync_drafts_parser.add_argument(
+        "--since",
+        type=_utc_start_date,
+        required=True,
+        help="UTC start date for provider game history, YYYY-MM-DD.",
+    )
+    sync_drafts_parser.add_argument(
+        "--until",
+        type=_utc_end_date,
+        required=True,
+        help="UTC end date for provider game history, YYYY-MM-DD.",
+    )
+    sync_drafts_parser.add_argument(
+        "--page-size",
+        type=_pandascore_page_size,
+        default=100,
+        help="Provider page size, 1-100.",
+    )
+    sync_drafts_parser.add_argument(
+        "--max-pages",
+        type=_positive_int,
+        default=None,
+        help="Maximum provider pages to read.",
+    )
+    sync_drafts_parser.add_argument(
+        "--timeout",
+        type=_positive_float,
+        default=10.0,
+        help="HTTP timeout in seconds.",
+    )
+
     sync_rosters_parser = subparsers.add_parser(
         "sync-rosters",
         help="Sync bounded historical Dota roster data from a provider.",
@@ -234,6 +280,23 @@ def create_parser() -> ArgumentParser:
         type=Path,
         default=Path("data") / "autopilot.db",
         help="SQLite database path.",
+    )
+
+    draft_history_status_parser = subparsers.add_parser(
+        "draft-history-status",
+        help="Show offline historical Dota game/draft dataset status.",
+    )
+    draft_history_status_parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("data") / "autopilot.db",
+        help="SQLite database path.",
+    )
+    draft_history_status_parser.add_argument(
+        "--provider",
+        choices=("opendota",),
+        default="opendota",
+        help="Draft data provider namespace to inspect.",
     )
 
     roster_status_parser = subparsers.add_parser(
@@ -548,6 +611,74 @@ def create_parser() -> ArgumentParser:
         help="Recency exponential decay baseline in days.",
     )
 
+    diagnose_historical_ml_parser = subparsers.add_parser(
+        "diagnose-historical-ml",
+        help="Run read-only Historical ML baseline and CatBoost diagnostics.",
+    )
+    diagnose_historical_ml_parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("data") / "autopilot.db",
+        help="SQLite database path.",
+    )
+    diagnose_historical_ml_parser.add_argument(
+        "--model-path",
+        type=Path,
+        default=Path("data") / "models" / "historical_match_win.joblib",
+        help="Existing logistic artifact path. It is not overwritten.",
+    )
+
+    draft_ml_status_parser = subparsers.add_parser(
+        "draft-ml-status",
+        help="Show POST_DRAFT map ML readiness and artifact status.",
+    )
+    draft_ml_status_parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("data") / "autopilot.db",
+        help="SQLite database path.",
+    )
+    draft_ml_status_parser.add_argument(
+        "--model-path",
+        type=Path,
+        default=Path("data") / "models" / "historical_draft_map_win_catboost.joblib",
+        help="POST_DRAFT map model artifact path.",
+    )
+
+    train_draft_ml_parser = subparsers.add_parser(
+        "train-draft-ml",
+        help="Train only the POST_DRAFT map CatBoost model.",
+    )
+    train_draft_ml_parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("data") / "autopilot.db",
+        help="SQLite database path.",
+    )
+    train_draft_ml_parser.add_argument(
+        "--model-path",
+        type=Path,
+        default=Path("data") / "models" / "historical_draft_map_win_catboost.joblib",
+        help="Path where the POST_DRAFT map model artifact is saved.",
+    )
+
+    evaluate_draft_ml_parser = subparsers.add_parser(
+        "evaluate-draft-ml",
+        help="Evaluate an existing POST_DRAFT map model without retraining.",
+    )
+    evaluate_draft_ml_parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("data") / "autopilot.db",
+        help="SQLite database path.",
+    )
+    evaluate_draft_ml_parser.add_argument(
+        "--model-path",
+        type=Path,
+        default=Path("data") / "models" / "historical_draft_map_win_catboost.joblib",
+        help="POST_DRAFT map model artifact path.",
+    )
+
     evaluate_ml_parser = subparsers.add_parser(
         "evaluate-ml",
         help="Backtest ML scoring against rule-based scoring on settled paper bets.",
@@ -726,10 +857,14 @@ def main(
             return _fetch_matches_command(args)
         if args.command == "sync-history":
             return _sync_history_command(args)
+        if args.command == "sync-drafts":
+            return _sync_drafts_command(args)
         if args.command == "sync-rosters":
             return _sync_rosters_command(args)
         if args.command == "history-status":
             return _history_status_command(args)
+        if args.command == "draft-history-status":
+            return _draft_history_status_command(args)
         if args.command == "roster-status":
             return _roster_status_command(args)
         if args.command == "lineage-status":
@@ -766,6 +901,14 @@ def main(
             return _historical_ml_status_command(args)
         if args.command == "evaluate-historical-ml":
             return _evaluate_historical_ml_command(args)
+        if args.command == "diagnose-historical-ml":
+            return _diagnose_historical_ml_command(args)
+        if args.command == "draft-ml-status":
+            return _draft_ml_status_command(args)
+        if args.command == "train-draft-ml":
+            return _train_draft_ml_command(args)
+        if args.command == "evaluate-draft-ml":
+            return _evaluate_draft_ml_command(args)
         if args.command == "evaluate-ml":
             return _evaluate_ml_command(args)
         if args.command == "analyze-edge":
@@ -993,6 +1136,62 @@ def _sync_history_command(args: Namespace) -> int:
     return 0
 
 
+def _sync_drafts_command(args: Namespace) -> int:
+    import app.draft_history as draft_history
+
+    if args.provider != "opendota":
+        print(f"Unsupported provider: {args.provider}")
+        return 1
+    if args.since > args.until:
+        print("--since must be before or equal to --until.")
+        return 1
+
+    repository = SQLiteRepository(args.db)
+    collector = draft_history.OpenDotaDraftCollector(timeout=args.timeout)
+    try:
+        result = draft_history.sync_draft_history(
+            repository=repository,
+            collector=collector,
+            since=args.since,
+            until=args.until,
+            page_size=args.page_size,
+            max_pages=args.max_pages,
+        )
+    except (
+        draft_history.OpenDotaRequestError,
+        draft_history.OpenDotaResponseError,
+        ValueError,
+    ) as exc:
+        print(str(exc))
+        return 1
+
+    print("Historical Dota draft sync")
+    print()
+    print("Provider: opendota")
+    print(f"Since: {_format_history_date(args.since)}")
+    print(f"Until: {_format_history_date(args.until)}")
+    print("Schema source: OpenDota structured API /matches/{match_id}")
+    print("PandaScore draft data: insufficient in current match mapping")
+    if args.max_pages is None:
+        print("Max pages: provider completion")
+    else:
+        print(f"Max pages: {args.max_pages}")
+    print()
+    print(f"Fetched provider rows: {result.fetched_rows}")
+    print(f"Mapped historical games: {result.mapped_games}")
+    print(f"Skipped malformed/incomplete: {result.skipped}")
+    print()
+    print(f"Inserted: {result.inserted}")
+    print(f"Updated: {result.updated}")
+    print(f"Unchanged: {result.unchanged}")
+    if result.warnings:
+        print()
+        print(f"Warnings: {len(result.warnings)}")
+        for warning in result.warnings[:10]:
+            print(f"Warning: {warning}")
+    return 0
+
+
 def _sync_rosters_command(args: Namespace) -> int:
     import app.history as history
 
@@ -1071,6 +1270,68 @@ def _history_status_command(args: Namespace) -> int:
     if status.total_matches == 0:
         print()
         print("No historical matches found.")
+    return 0
+
+
+def _draft_history_status_command(args: Namespace) -> int:
+    import app.draft_history as draft_history
+
+    db_path = Path(args.db)
+    print("Historical Dota draft dataset")
+    print(f"Database: {db_path.as_posix()}")
+    print(f"Provider: {args.provider}")
+    print("PandaScore draft data: insufficient in current match fixture mapping")
+    print("Fallback draft provider: OpenDota structured API")
+    print("Patch provenance: trusted provider patch only; no date inference")
+
+    if not db_path.exists():
+        _print_empty_draft_history_status()
+        return 0
+    if not _sqlite_table_exists(db_path, "historical_dota_games"):
+        _print_empty_draft_history_status()
+        return 0
+
+    repository = SQLiteRepository(db_path)
+    status = draft_history.build_draft_history_status(
+        repository,
+        provider=args.provider,
+    )
+    print(f"Historical games: {status.historical_games}")
+    print(f"Games with usable winner: {status.games_with_usable_winner}")
+    print(
+        "Games with complete 5v5 picks: "
+        f"{status.games_with_complete_5v5_picks}"
+    )
+    print(f"Games with bans: {status.games_with_bans}")
+    print(
+        "Games with ordered draft actions: "
+        f"{status.games_with_ordered_draft_actions}"
+    )
+    print(
+        "Games with patch/version provenance: "
+        f"{status.games_with_patch_provenance}"
+    )
+    print(f"Unique heroes: {status.unique_heroes}")
+    print(
+        "Source-link coverage: "
+        f"{status.linked_games}/{status.historical_games} "
+        f"({status.source_link_coverage:.1%})"
+    )
+    print(
+        "Scope-eligible post-draft target games: "
+        f"{status.scope_eligible_post_draft_target_games}"
+    )
+    print(
+        "Started range: "
+        f"{_format_datetime_range(status.started_at_min, status.started_at_max)}"
+    )
+    print(
+        "Completed range: "
+        f"{_format_datetime_range(status.completed_at_min, status.completed_at_max)}"
+    )
+    if status.historical_games == 0:
+        print()
+        print("No historical draft games found.")
     return 0
 
 
@@ -1194,6 +1455,22 @@ def _print_empty_history_status() -> None:
         print(f"  {stage.value}: 0")
     print()
     print("No historical matches found.")
+
+
+def _print_empty_draft_history_status() -> None:
+    print("Historical games: 0")
+    print("Games with usable winner: 0")
+    print("Games with complete 5v5 picks: 0")
+    print("Games with bans: 0")
+    print("Games with ordered draft actions: 0")
+    print("Games with patch/version provenance: 0")
+    print("Unique heroes: 0")
+    print("Source-link coverage: 0/0 (0.0%)")
+    print("Scope-eligible post-draft target games: 0")
+    print("Started range: -")
+    print("Completed range: -")
+    print()
+    print("No historical draft games found.")
 
 
 def _print_empty_roster_status() -> None:
@@ -1831,6 +2108,219 @@ def _evaluate_historical_ml_command(args: Namespace) -> int:
     return 0 if result.evaluated else 1
 
 
+def _diagnose_historical_ml_command(args: Namespace) -> int:
+    db_path = Path(args.db)
+    if not db_path.exists():
+        print(f"Database not found: {db_path.as_posix()}. Run sync-history first.")
+        return 1
+
+    from app.history import DEFAULT_HISTORICAL_COMPETITION_SCOPE
+    from app.historical_ml import diagnose_historical_ml_from_repository
+
+    repository = SQLiteRepository(db_path)
+    result = diagnose_historical_ml_from_repository(
+        repository,
+        logistic_model_path=args.model_path,
+    )
+    print("Historical ML diagnostics")
+    _print_historical_competition_scope(DEFAULT_HISTORICAL_COMPETITION_SCOPE)
+    print("Prediction mode: PRE_MATCH series winner")
+    print("Draft usage: forbidden for PRE_MATCH")
+    print(f"Rows: {result.rows}")
+    print(f"Feature count: {result.feature_count}")
+    if result.split is not None:
+        print(f"Train rows: {result.split.train_rows}")
+        print(f"Validation rows: {result.split.validation_rows}")
+        print(f"Test rows: {result.split.test_rows}")
+    for partition, rate in result.split_positive_label_rates.items():
+        print(f"{partition} positive label rate: {rate:.3f}")
+    if not result.evaluated:
+        print(f"message: {result.message}")
+        return 1
+
+    for baseline in result.baselines:
+        print()
+        print(f"Baseline: {baseline.name}")
+        print(f"Train prior probability: {baseline.train_probability:.6f}")
+        _print_historical_metrics("train", baseline.diagnostics.train_metrics)
+        _print_historical_metrics(
+            "validation",
+            baseline.diagnostics.validation_metrics,
+        )
+        _print_historical_metrics("test", baseline.diagnostics.test_metrics)
+    if result.logistic is not None:
+        print()
+        print("LOGISTIC baseline (in-memory, current pipeline)")
+        _print_historical_metrics("train", result.logistic.train_metrics)
+        _print_historical_metrics("validation", result.logistic.validation_metrics)
+        _print_historical_metrics("test", result.logistic.test_metrics)
+        _print_probability_buckets(result.logistic.test_probability_buckets)
+        _print_chronological_buckets(result.logistic.test_chronological_buckets)
+    print()
+    if not result.catboost_available:
+        print("CatBoost candidate comparison unavailable: CatBoost is not installed.")
+    else:
+        print("CatBoost deterministic configuration:")
+        print("  loss_function=Logloss")
+        print("  random_seed=42")
+        print("  verbose=False")
+        print("  allow_writing_files=False")
+        print("  learning_rate=0.03")
+        print("  iterations=300")
+        print("Candidate selection: validation Brier, log loss, accuracy")
+        print("Top CatBoost candidates:")
+        for candidate in result.catboost_candidates[:5]:
+            config = candidate.config
+            metrics = candidate.diagnostics.validation_metrics
+            print(
+                "  "
+                f"decay={config.decay_days:g} depth={config.depth} "
+                f"l2={config.l2_leaf_reg:g} "
+                f"val_brier={metrics.brier_score:.6f} "
+                f"val_log_loss={metrics.log_loss:.6f} "
+                f"val_accuracy={metrics.accuracy:.3f}"
+            )
+        if result.selected_catboost is not None:
+            selected = result.selected_catboost
+            config = selected.config
+            print("Selected CatBoost candidate:")
+            print(
+                f"  decay={config.decay_days:g} depth={config.depth} "
+                f"l2={config.l2_leaf_reg:g}"
+            )
+            _print_historical_metrics("train", selected.diagnostics.train_metrics)
+            _print_historical_metrics(
+                "validation",
+                selected.diagnostics.validation_metrics,
+            )
+            _print_historical_metrics("test", selected.diagnostics.test_metrics)
+            print("CatBoost feature importance:")
+            for name, importance in selected.feature_importance:
+                print(f"  {name}: {importance:.6f}")
+    print()
+    _print_feature_drift("Validation feature drift", result.validation_feature_drift)
+    _print_feature_drift("Test feature drift", result.test_feature_drift)
+    print(f"message: {result.message}")
+    return 0
+
+
+def _draft_ml_status_command(args: Namespace) -> int:
+    db_path = Path(args.db)
+    print("Draft ML status")
+    print(f"Database: {db_path.as_posix()}")
+    print(f"Model artifact: {Path(args.model_path).as_posix()}")
+
+    if not db_path.exists() or not _sqlite_table_exists(db_path, "historical_dota_games"):
+        _print_empty_draft_ml_status(Path(args.model_path))
+        return 0
+
+    from app.draft_ml import build_draft_ml_status
+
+    repository = SQLiteRepository(db_path)
+    status = build_draft_ml_status(repository, model_path=args.model_path)
+    print(f"Prediction mode: {status.prediction_mode}")
+    print(f"Draft provider: {status.provider}")
+    print(f"Raw historical games: {status.raw_historical_games}")
+    print(f"Complete draft target games: {status.complete_draft_target_games}")
+    print(f"Usable post-draft feature rows: {status.usable_post_draft_feature_rows}")
+    print(f"Categorical feature count: {status.categorical_feature_count}")
+    print(f"Numeric feature count: {status.numeric_feature_count}")
+    print(f"Feature schema version: {status.feature_schema_version}")
+    print(f"Projected train rows: {status.split.train_rows}")
+    print(f"Projected validation rows: {status.split.validation_rows}")
+    print(f"Projected test rows: {status.split.test_rows}")
+    print(f"Temporal split ready: {'yes' if status.split_ready else 'no'}")
+    print(f"Reason: {status.readiness_reason}")
+    print(f"Patch semantics: {status.patch_semantics}")
+    print(f"Source-link coverage: {status.source_link_coverage:.1%}")
+    print(f"Artifact exists: {'yes' if status.artifact_exists else 'no'}")
+    print(f"Artifact compatible: {'yes' if status.artifact_compatible else 'no'}")
+    if status.artifact_reason is not None:
+        print(f"Artifact reason: {status.artifact_reason}")
+    return 0
+
+
+def _train_draft_ml_command(args: Namespace) -> int:
+    db_path = Path(args.db)
+    if not db_path.exists():
+        print(f"Database not found: {db_path.as_posix()}. Run sync-drafts first.")
+        return 1
+
+    from app.draft_ml import train_draft_model_from_repository
+    from app.draft_ml.model import DraftModelCompatibilityError
+
+    repository = SQLiteRepository(db_path)
+    try:
+        result = train_draft_model_from_repository(
+            repository,
+            model_path=args.model_path,
+        )
+    except DraftModelCompatibilityError as exc:
+        print(str(exc))
+        return 1
+
+    print("POST_DRAFT map ML training")
+    print("Prediction mode: POST_DRAFT_MAP")
+    print("Provider: opendota")
+    print(f"Usable rows: {result.rows}")
+    print(f"Categorical feature count: {result.categorical_feature_count}")
+    print(f"Numeric feature count: {result.numeric_feature_count}")
+    if result.split is not None:
+        print(f"Train rows: {result.split.train_rows}")
+        print(f"Validation rows: {result.split.validation_rows}")
+        print(f"Test rows: {result.split.test_rows}")
+    if result.selected_candidate is not None:
+        candidate = result.selected_candidate
+        print(
+            "Selected CatBoost parameters: "
+            f"depth={candidate.config.depth}, "
+            f"l2_leaf_reg={candidate.config.l2_leaf_reg:g}, "
+            f"learning_rate={candidate.config.learning_rate:g}"
+        )
+        _print_historical_metrics("train", candidate.train_metrics)
+        _print_historical_metrics("validation", candidate.validation_metrics)
+        _print_historical_metrics("test", candidate.test_metrics)
+    print(f"model artifact path: {_format_optional_path(result.model_path)}")
+    print(f"trained: {result.trained}")
+    print(f"message: {result.message}")
+    return 0 if result.trained else 1
+
+
+def _evaluate_draft_ml_command(args: Namespace) -> int:
+    db_path = Path(args.db)
+    if not db_path.exists():
+        print(f"Database not found: {db_path.as_posix()}. Run sync-drafts first.")
+        return 1
+
+    from app.draft_ml import (
+        DraftModelCompatibilityError,
+        evaluate_draft_model_from_repository,
+    )
+
+    repository = SQLiteRepository(db_path)
+    try:
+        result = evaluate_draft_model_from_repository(
+            repository,
+            model_path=args.model_path,
+        )
+    except (FileNotFoundError, DraftModelCompatibilityError) as exc:
+        print(str(exc))
+        return 1
+
+    print("POST_DRAFT map ML evaluation")
+    print(f"Rows: {result.rows}")
+    print("Recorded artifact metrics:")
+    if isinstance(result.recorded_metrics, Mapping):
+        _print_recorded_historical_metrics(
+            cast(Mapping[str, Mapping[str, object]], result.recorded_metrics)
+        )
+    print("Current dataset metrics:")
+    _print_historical_metrics("current", result.current_metrics)
+    print(f"evaluated: {result.evaluated}")
+    print(f"message: {result.message}")
+    return 0 if result.evaluated else 1
+
+
 def _evaluate_ml_command(args: Namespace) -> int:
     db_path = Path(args.db)
     if not db_path.exists():
@@ -2148,6 +2638,75 @@ def _print_historical_metrics(label: str, metrics: Any | None) -> None:
         f"{label} average predicted probability: "
         f"{metrics.average_predicted_probability:.3f}"
     )
+
+
+def _print_probability_buckets(buckets: Sequence[Any]) -> None:
+    if not buckets:
+        print("Test probability buckets: unavailable")
+        return
+    print("Test probability buckets:")
+    for bucket in buckets:
+        print(
+            f"  [{bucket.lower:.1f}, {bucket.upper:.1f}): "
+            f"rows={bucket.rows}, "
+            f"mean_p={bucket.mean_predicted_probability:.3f}, "
+            f"observed={bucket.observed_positive_rate:.3f}, "
+            f"gap={bucket.absolute_calibration_gap:.3f}"
+        )
+
+
+def _print_chronological_buckets(buckets: Sequence[Any]) -> None:
+    if not buckets:
+        print("Test chronological buckets: unavailable")
+        return
+    print("Test chronological buckets:")
+    for index, bucket in enumerate(buckets, start=1):
+        metrics = bucket.metrics
+        print(
+            f"  {index}. rows={bucket.rows}, "
+            f"range={bucket.timestamp_start.isoformat()} to "
+            f"{bucket.timestamp_end.isoformat()}, "
+            f"label_rate={metrics.positive_label_rate:.3f}, "
+            f"avg_p={metrics.average_predicted_probability:.3f}, "
+            f"brier={metrics.brier_score:.6f}, "
+            f"log_loss={metrics.log_loss:.6f}, "
+            f"accuracy={metrics.accuracy:.3f}"
+        )
+
+
+def _print_feature_drift(label: str, drifts: Sequence[Any]) -> None:
+    print(label + ":")
+    if not drifts:
+        print("  unavailable")
+        return
+    for drift in drifts:
+        print(
+            f"  {drift.feature_name}: "
+            f"shift={drift.standardized_mean_shift:.3f}, "
+            f"train_mean={drift.train_mean:.3f}, "
+            f"other_mean={drift.other_mean:.3f}, "
+            f"train_std={drift.train_std:.3f}"
+        )
+
+
+def _print_empty_draft_ml_status(model_path: Path) -> None:
+    print("Prediction mode: POST_DRAFT_MAP")
+    print("Draft provider: opendota")
+    print("Raw historical games: 0")
+    print("Complete draft target games: 0")
+    print("Usable post-draft feature rows: 0")
+    print("Categorical feature count: 0")
+    print("Numeric feature count: 0")
+    print("Feature schema version: 1")
+    print("Projected train rows: 0")
+    print("Projected validation rows: 0")
+    print("Projected test rows: 0")
+    print("Temporal split ready: no")
+    print("Reason: No draft history found. Run sync-drafts first.")
+    print("Patch semantics: trusted provider patch when present; no date inference")
+    print("Source-link coverage: 0.0%")
+    print(f"Artifact exists: {'yes' if model_path.exists() else 'no'}")
+    print("Artifact compatible: no")
 
 
 def _print_recorded_historical_metrics(

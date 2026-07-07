@@ -134,6 +134,50 @@ CREATE TABLE IF NOT EXISTS historical_matches (
     UNIQUE (source, source_match_id)
 );
 
+CREATE TABLE IF NOT EXISTS historical_dota_games (
+    id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    source_game_id TEXT NOT NULL,
+    parent_series_source_id TEXT NULL,
+    linked_historical_match_id TEXT NULL,
+    started_at TEXT NOT NULL,
+    ended_at TEXT NULL,
+    team_a_name TEXT NOT NULL,
+    team_b_name TEXT NOT NULL,
+    team_a_source_id TEXT NULL,
+    team_b_source_id TEXT NULL,
+    winner_side TEXT NULL,
+    game_number INTEGER NULL,
+    best_of INTEGER NULL,
+    team_a_series_wins_before INTEGER NULL,
+    team_b_series_wins_before INTEGER NULL,
+    team_a_side TEXT NOT NULL,
+    patch TEXT NULL,
+    draft_complete INTEGER NOT NULL,
+    tournament_name TEXT NULL,
+    tournament_source_id TEXT NULL,
+    league_name TEXT NULL,
+    league_source_id TEXT NULL,
+    raw_stage_label TEXT NULL,
+    ingested_at TEXT NOT NULL,
+    UNIQUE (source, source_game_id)
+);
+
+CREATE TABLE IF NOT EXISTS historical_draft_actions (
+    id TEXT PRIMARY KEY,
+    game_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    source_game_id TEXT NOT NULL,
+    action_order INTEGER NOT NULL,
+    action_kind TEXT NOT NULL CHECK (action_kind IN ('pick', 'ban')),
+    team_side TEXT NOT NULL,
+    team_source_id TEXT NULL,
+    hero_id INTEGER NOT NULL,
+    UNIQUE (game_id, action_order),
+    FOREIGN KEY (game_id) REFERENCES historical_dota_games (id)
+        ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS players (
     id TEXT PRIMARY KEY,
     source TEXT NOT NULL,
@@ -190,6 +234,18 @@ CREATE TABLE IF NOT EXISTS roster_memberships (
 
 CREATE INDEX IF NOT EXISTS idx_historical_matches_tournament_context
 ON historical_matches (source, tournament_source_id, ended_at, started_at);
+
+CREATE INDEX IF NOT EXISTS idx_historical_dota_games_source
+ON historical_dota_games (source, source_game_id);
+
+CREATE INDEX IF NOT EXISTS idx_historical_dota_games_started
+ON historical_dota_games (started_at, source, source_game_id);
+
+CREATE INDEX IF NOT EXISTS idx_historical_dota_games_completed
+ON historical_dota_games (ended_at, started_at, source, source_game_id);
+
+CREATE INDEX IF NOT EXISTS idx_historical_draft_actions_game
+ON historical_draft_actions (game_id, action_order);
 
 CREATE INDEX IF NOT EXISTS idx_players_source_identity
 ON players (source, source_player_id);

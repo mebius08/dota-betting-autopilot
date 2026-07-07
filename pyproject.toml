@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Rule-based paper betting autopilot MVP for Dota 2 research."
 requires-python = ">=3.11"
 dependencies = [
+    "catboost>=1.2.7",
     "joblib>=1.4.0",
     "numpy>=1.26.0",
     "pandas>=2.2.0",
@@ -36,5 +37,5 @@ line-length = 88
 target-version = "py311"
 
 [[tool.mypy.overrides]]
-module = ["joblib", "pandas", "sklearn.*"]
+module = ["catboost", "joblib", "pandas", "sklearn.*"]
 ignore_missing_imports = true

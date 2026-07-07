@@ -751,6 +751,136 @@ cleanly without writing a model artifact. `historical-ml-status`,
 match-history universe so it is visible that the default baseline uses the
 same curated scope for targets and match-derived features.
 
+### Pre-match CatBoost diagnostics
+
+The pre-match Historical ML target is a series-level target:
+
+```text
+P(Team A wins the series | information available before the series)
+```
+
+Future drafts are not valid inputs for this mode. Completed historical game
+drafts inside the target series are also excluded because they would be future
+leakage at pre-series prediction time. The existing logistic regression model
+remains the baseline/comparator and still uses
+`data/models/historical_match_win.joblib`.
+
+`diagnose-historical-ml` is a read-only comparison command. It builds the
+current temporal historical dataset, keeps the current grouped chronological
+split, evaluates `CONSTANT_0_5`, `TRAIN_LABEL_PRIOR`, the current logistic
+pipeline in memory, and a small deterministic CatBoost candidate matrix. It
+does not overwrite the logistic artifact and does not save a production
+CatBoost artifact by default.
+
+```powershell
+python -m app.cli diagnose-historical-ml --db data/autopilot.db
+```
+
+The CatBoost candidate uses the existing numeric Historical ML schema directly;
+it is not wrapped in `StandardScaler`, does not treat IDs or timestamps as new
+numeric model features, and is configured with `loss_function=Logloss`,
+`random_seed=42`, `verbose=False`, `allow_writing_files=False`,
+`learning_rate=0.03`, and bounded iterations with validation early stopping.
+The controlled matrix evaluates decay days `30, 60, 90, 120, 180` with
+`depth in {4, 6}` and `l2_leaf_reg in {3, 10}`. Candidate ranking uses
+validation Brier first, validation log loss second, validation accuracy third,
+then deterministic numeric tie breakers. Test metrics are report-only.
+
+The diagnostic output includes train/validation/test Brier, log loss, accuracy,
+positive label rate, and average predicted probability. It also reports test
+probability buckets, chronological test buckets, sufficiently sized test
+competition/stage groups when available, top standardized feature drift, and
+CatBoost feature importance for the validation-selected candidate.
+
+### Historical draft data and post-draft model
+
+Hero draft information is modeled as a separate target:
+
+```text
+P(Team A wins the current map | completed draft and pre-map context)
+```
+
+This is a POST_DRAFT map/game model, not the pre-match series model. The target
+draft is a valid input only for this mode. The target winner is never a feature,
+future game drafts cannot contribute, and prior hero history uses strict
+`ended_at < target.started_at` completion semantics. A historical game that
+ended exactly at the target start timestamp is excluded.
+
+The current PandaScore historical match mapping in this repository preserves
+match-level fixture fields, teams, winner, tournament/league/series metadata,
+stage, and best-of, but it does not expose complete stable per-game draft
+actions. Draft sync therefore uses a separate OpenDota read-only adapter. The
+adapter maps the structured OpenDota match payload fields used by this project:
+`match_id`, `start_time`, `duration`, `radiant_win`, radiant/dire team IDs and
+names, `series_id`, `series_type`, `leagueid`, `league_name`, optional `patch`,
+and ordered `picks_bans` entries with `is_pick`, `hero_id`, `team`, and
+`order`/`ord`. No HTML scraping, Selenium, Playwright, or browser automation is
+used.
+
+PandaScore and OpenDota identities remain separate namespaces. OpenDota team
+IDs are source-local IDs; the code does not assume they equal PandaScore team
+IDs and does not create permanent team aliases from normalized names. Any future
+cross-provider linkage must be explicit and evidence-based. The current draft
+status reports source-link coverage rather than guessing.
+
+Sync a bounded draft window explicitly:
+
+```powershell
+python -m app.cli sync-drafts --provider opendota --db data/autopilot.db --since 2025-07-08 --until 2026-07-07 --max-pages 3
+```
+
+Inspect local draft coverage without network calls:
+
+```powershell
+python -m app.cli draft-history-status --db data/autopilot.db
+python -m app.cli draft-ml-status --db data/autopilot.db
+```
+
+Draft persistence is relational. `historical_dota_games` stores source/provider
+game identity, parent series identity when available, nullable explicit
+cross-provider link, timestamps, source-local teams, winner, game number,
+best-of, series score before game when safely available, Team A side
+(`radiant`/`dire`), optional trusted patch provenance, and draft completeness.
+`historical_draft_actions` stores deterministic action order, pick/ban,
+team/side, optional team source ID, and stable hero ID. Upsert is idempotent by
+`source + source_game_id`; repeated sync does not duplicate actions, and
+conflicting source identity or winner semantics are rejected instead of silently
+merged.
+
+Post-draft features represent hero IDs as categorical values in the provider
+namespace, for example `opendota:hero:100`; hero ID `100` is not treated as
+numerically larger than hero ID `10`. Team A and Team B pick slots preserve
+provider draft order and require exactly five picks per side for a complete
+target. Ban slots are categorical and filled when trusted provider bans are
+present, with explicit missing sentinels otherwise. Team A side and trusted
+patch are categorical; patch is not inferred from date.
+
+Numeric post-draft context includes game number, best-of, series score before
+game when available, point-in-time hero prior form, same-team hero-pair synergy,
+cross-team hero matchup history from Team A perspective, sample coverage,
+unseen hero/pair counts, and source-local team hero familiarity when team IDs
+make that safe. Missing familiarity is distinct from poor familiarity.
+
+The post-draft artifact is separate from the pre-match artifact:
+
+```text
+data/models/historical_draft_map_win_catboost.joblib
+```
+
+Artifact metadata validates model kind, prediction mode, feature schema,
+provider, hero namespace, competition scope, cutoff semantics, patch semantics,
+categorical feature list, temporal split metadata, and metrics. It is not loaded
+through the pre-match historical predictor.
+
+```powershell
+python -m app.cli train-draft-ml --db data/autopilot.db
+python -m app.cli evaluate-draft-ml --db data/autopilot.db
+```
+
+`train-draft-ml` trains only the POST_DRAFT map model and never overwrites the
+pre-match logistic model. If there are too few complete draft rows, it exits
+cleanly with a readiness message instead of creating an artifact.
+
 ## ML Layer
 
 The bot still starts with rule-based scoring. The optional ML layer is a v1
