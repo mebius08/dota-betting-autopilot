@@ -133,3 +133,78 @@ CREATE TABLE IF NOT EXISTS historical_matches (
     ingested_at TEXT NOT NULL,
     UNIQUE (source, source_match_id)
 );
+
+CREATE TABLE IF NOT EXISTS players (
+    id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    source_player_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    ingested_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (source, source_player_id)
+);
+
+CREATE TABLE IF NOT EXISTS team_organizations (
+    id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    source_team_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    ingested_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (source, source_team_id)
+);
+
+CREATE TABLE IF NOT EXISTS roster_snapshots (
+    id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    source_snapshot_id TEXT NOT NULL,
+    organization_id TEXT NOT NULL,
+    source_context TEXT NULL,
+    tournament_source_id TEXT NULL,
+    tournament_name TEXT NULL,
+    observed_at TEXT NOT NULL,
+    valid_from TEXT NULL,
+    valid_until TEXT NULL,
+    player_roster_fingerprint TEXT NOT NULL,
+    staff_roster_fingerprint TEXT NULL,
+    ingested_at TEXT NOT NULL,
+    UNIQUE (source, source_snapshot_id),
+    FOREIGN KEY (organization_id) REFERENCES team_organizations (id)
+);
+
+CREATE TABLE IF NOT EXISTS roster_memberships (
+    id TEXT PRIMARY KEY,
+    roster_snapshot_id TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('player', 'coach')),
+    player_id TEXT NULL,
+    source TEXT NOT NULL,
+    source_member_id TEXT NULL,
+    member_name TEXT NOT NULL,
+    position_index INTEGER NOT NULL,
+    FOREIGN KEY (roster_snapshot_id) REFERENCES roster_snapshots (id)
+        ON DELETE CASCADE,
+    FOREIGN KEY (player_id) REFERENCES players (id),
+    CHECK (role != 'player' OR player_id IS NOT NULL),
+    CHECK (role != 'coach' OR player_id IS NULL)
+);
+
+CREATE INDEX IF NOT EXISTS idx_players_source_identity
+ON players (source, source_player_id);
+
+CREATE INDEX IF NOT EXISTS idx_team_organizations_source_identity
+ON team_organizations (source, source_team_id);
+
+CREATE INDEX IF NOT EXISTS idx_roster_snapshots_organization
+ON roster_snapshots (organization_id, observed_at);
+
+CREATE INDEX IF NOT EXISTS idx_roster_snapshots_available
+ON roster_snapshots (observed_at, valid_from, valid_until);
+
+CREATE INDEX IF NOT EXISTS idx_roster_snapshots_player_fingerprint
+ON roster_snapshots (player_roster_fingerprint);
+
+CREATE INDEX IF NOT EXISTS idx_roster_memberships_player
+ON roster_memberships (player_id, roster_snapshot_id);
+
+CREATE INDEX IF NOT EXISTS idx_roster_memberships_role
+ON roster_memberships (role, roster_snapshot_id);

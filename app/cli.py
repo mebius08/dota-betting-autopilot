@@ -194,11 +194,50 @@ def create_parser() -> ArgumentParser:
         help="HTTP timeout in seconds.",
     )
 
+    sync_rosters_parser = subparsers.add_parser(
+        "sync-rosters",
+        help="Sync bounded historical Dota roster data from a provider.",
+    )
+    sync_rosters_parser.add_argument(
+        "--provider",
+        choices=("pandascore",),
+        required=True,
+    )
+    sync_rosters_parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("data") / "autopilot.db",
+        help="SQLite database path.",
+    )
+    sync_rosters_parser.add_argument(
+        "--max-tournaments",
+        type=_positive_int,
+        default=25,
+        help="Maximum persisted historical tournaments to request.",
+    )
+    sync_rosters_parser.add_argument(
+        "--timeout",
+        type=_positive_float,
+        default=10.0,
+        help="HTTP timeout in seconds.",
+    )
+
     history_status_parser = subparsers.add_parser(
         "history-status",
         help="Show offline historical Dota dataset status.",
     )
     history_status_parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("data") / "autopilot.db",
+        help="SQLite database path.",
+    )
+
+    roster_status_parser = subparsers.add_parser(
+        "roster-status",
+        help="Show offline historical Dota roster dataset status.",
+    )
+    roster_status_parser.add_argument(
         "--db",
         type=Path,
         default=Path("data") / "autopilot.db",
@@ -571,8 +610,12 @@ def main(
             return _fetch_matches_command(args)
         if args.command == "sync-history":
             return _sync_history_command(args)
+        if args.command == "sync-rosters":
+            return _sync_rosters_command(args)
         if args.command == "history-status":
             return _history_status_command(args)
+        if args.command == "roster-status":
+            return _roster_status_command(args)
         if args.command == "ewc-status":
             return _ewc_status_command(args)
         if args.command == "fetch-odds":
@@ -820,6 +863,47 @@ def _sync_history_command(args: Namespace) -> int:
     return 0
 
 
+def _sync_rosters_command(args: Namespace) -> int:
+    import app.history as history
+
+    if args.provider != "pandascore":
+        print(f"Unsupported provider: {args.provider}")
+        return 1
+
+    repository = SQLiteRepository(args.db)
+    collector = history.PandaScoreRosterCollector(timeout=args.timeout)
+    try:
+        result = history.sync_roster_history(
+            repository=repository,
+            collector=collector,
+            max_tournaments=args.max_tournaments,
+        )
+    except history.PandaScoreError as exc:
+        print(str(exc))
+        return 1
+
+    print("Roster history sync")
+    print()
+    print("Provider: pandascore")
+    print(f"Max tournaments: {args.max_tournaments}")
+    print()
+    print(f"Tournaments requested: {result.tournaments_requested}")
+    print(f"Rosters fetched: {result.rosters_fetched}")
+    print(f"Unique players seen: {result.unique_players_seen}")
+    print(f"Unique organizations seen: {result.unique_organizations_seen}")
+    print(f"Skipped incomplete records: {result.skipped_records}")
+    print()
+    print(f"Snapshots inserted: {result.snapshots_inserted}")
+    print(f"Snapshots updated: {result.snapshots_updated}")
+    print(f"Snapshots unchanged: {result.snapshots_unchanged}")
+    if result.warnings:
+        print()
+        print(f"Warnings: {len(result.warnings)}")
+        for warning in result.warnings[:10]:
+            print(f"Warning: {warning}")
+    return 0
+
+
 def _history_status_command(args: Namespace) -> int:
     import app.history as history
 
@@ -860,6 +944,51 @@ def _history_status_command(args: Namespace) -> int:
     return 0
 
 
+def _roster_status_command(args: Namespace) -> int:
+    import app.history as history
+
+    db_path = Path(args.db)
+    print("Roster history dataset")
+    print(f"Database: {db_path.as_posix()}")
+
+    if not db_path.exists():
+        _print_empty_roster_status()
+        return 0
+    if not _sqlite_table_exists(db_path, "roster_snapshots"):
+        _print_empty_roster_status()
+        return 0
+
+    repository = SQLiteRepository(db_path)
+    status = history.build_roster_history_status(repository)
+
+    print(f"Players: {status.players}")
+    print(f"Organizations: {status.organizations}")
+    print(f"Roster snapshots: {status.roster_snapshots}")
+    print(f"Player memberships: {status.player_memberships}")
+    print(f"Coach memberships: {status.coach_memberships}")
+    print(
+        "Snapshots with temporal validity: "
+        f"{status.snapshots_with_temporal_validity}"
+    )
+    print(
+        "Snapshots without explicit validity: "
+        f"{status.snapshots_without_explicit_validity}"
+    )
+    print(
+        "Observed range: "
+        f"{_format_datetime_range(status.observed_at_min, status.observed_at_max)}"
+    )
+    print(
+        "Unique player-roster fingerprints: "
+        f"{status.unique_player_roster_fingerprints}"
+    )
+
+    if status.roster_snapshots == 0:
+        print()
+        print("No roster snapshots found.")
+    return 0
+
+
 def _print_empty_history_status() -> None:
     from app.tournaments import CompetitiveStage
 
@@ -875,6 +1004,20 @@ def _print_empty_history_status() -> None:
         print(f"  {stage.value}: 0")
     print()
     print("No historical matches found.")
+
+
+def _print_empty_roster_status() -> None:
+    print("Players: 0")
+    print("Organizations: 0")
+    print("Roster snapshots: 0")
+    print("Player memberships: 0")
+    print("Coach memberships: 0")
+    print("Snapshots with temporal validity: 0")
+    print("Snapshots without explicit validity: 0")
+    print("Observed range: -")
+    print("Unique player-roster fingerprints: 0")
+    print()
+    print("No roster snapshots found.")
 
 
 def _sqlite_table_exists(db_path: Path, table_name: str) -> bool:

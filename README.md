@@ -299,6 +299,62 @@ does not create permanent aliases such as Tundra -> 1W or HEROIC -> LGD. A
 future roster-lineage layer will connect relevant history through player/roster
 continuity instead of organization-name aliases.
 
+## Player and roster history foundation
+
+The roster-history layer stores player identities separately from team
+organizations. Player identity is keyed by provider `source + source_player_id`;
+team organization identity is keyed by `source + source_team_id`. Display names
+and nicknames can change without creating a new identity, and organization names
+are not treated as complete competitive roster identity.
+
+Roster snapshots are temporal, provider-observed records. They preserve the
+provider context where the roster was seen, optional tournament identity,
+`observed_at`, nullable provider validity metadata, player memberships, optional
+coach membership when the provider payload actually contains stable coach data,
+and provider provenance. Missing player IDs are not converted into name-only
+global identities, missing team IDs are not converted into name-only
+organizations, and coaches without stable provider IDs are ignored
+conservatively instead of becoming global name-based identities.
+
+The player-composition fingerprint is deterministic, order-independent, and
+based on stable player IDs only. Organization ID is not part of that player-only
+fingerprint, and coach data does not silently alter it. This means the same five
+players may appear under different organizations without merging those
+organizations or creating permanent transfer aliases. This stage does not infer
+roster lineage, continuity scores, player form, team form, or historical ML v2
+features.
+
+Sync bounded roster history from PandaScore tournament contexts already present
+in the historical match table. The provider call uses PandaScore's tournament
+roster endpoint, `GET /tournaments/{tournament_id_or_slug}/rosters`:
+
+```powershell
+$env:PANDASCORE_TOKEN="your-token-here"
+python -m app.cli sync-rosters --provider pandascore --db data/autopilot.db --max-tournaments 25
+```
+
+`sync-rosters` is read-only against PandaScore, bounded by
+`--max-tournaments`, and derives the most recent tournament IDs from persisted
+historical matches. It stores provider-observed or expected tournament rosters.
+The sync does not crawl the entire provider universe, place bets, train models,
+or call bookmaker APIs.
+
+Inspect the local roster dataset offline:
+
+```powershell
+python -m app.cli roster-status --db data/autopilot.db
+```
+
+`roster-status` makes no network calls. It reports player and organization
+counts, roster snapshot counts, player and coach memberships, temporal-validity
+coverage, observed timestamp range, and unique player-roster fingerprints.
+`observed_at` is the point-in-time availability boundary: future-observed roster
+information is not backfilled into earlier prediction timestamps. Provider
+validity is stored only when the provider supplies it; the project does not
+invent roster validity from tournament dates. Future lineage logic can compare
+historical roster continuity from these snapshots without adding permanent
+aliases such as Tundra -> 1W or HEROIC -> LGD.
+
 ## Tournament competitive stage model
 
 The current product target is EWC 2026 Dota 2. EWC 2026 currently uses a
