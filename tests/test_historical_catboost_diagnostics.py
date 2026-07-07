@@ -19,6 +19,7 @@ from app.historical_ml import (
     ModelDiagnostics,
     catboost_base_params,
     load_historical_catboost_model,
+    rank_catboost_candidates,
     save_historical_catboost_model,
     select_catboost_candidate,
 )
@@ -115,6 +116,40 @@ def test_catboost_selection_uses_validation_brier_first() -> None:
     assert selected is worse_test_better_validation
 
 
+def test_catboost_ranked_list_sorts_generation_order_by_validation_policy() -> None:
+    generated_first_but_worse = _candidate(
+        validation_brier=0.204,
+        validation_log_loss=0.61,
+        validation_accuracy=0.50,
+        test_brier=0.01,
+        depth=4,
+        decay_days=30.0,
+    )
+    selected_best = _candidate(
+        validation_brier=0.202,
+        validation_log_loss=0.59,
+        validation_accuracy=0.70,
+        test_brier=0.99,
+        depth=4,
+        decay_days=120.0,
+    )
+    middle = _candidate(
+        validation_brier=0.203,
+        validation_log_loss=0.60,
+        validation_accuracy=0.60,
+        test_brier=0.50,
+        depth=4,
+        decay_days=60.0,
+    )
+
+    ranked = rank_catboost_candidates(
+        [generated_first_but_worse, middle, selected_best]
+    )
+
+    assert ranked == (selected_best, middle, generated_first_but_worse)
+    assert select_catboost_candidate(ranked) is selected_best
+
+
 def test_catboost_selection_tie_breaks_without_test_metrics() -> None:
     depth_6 = _candidate(
         validation_brier=0.20,
@@ -143,10 +178,11 @@ def _candidate(
     validation_accuracy: float,
     test_brier: float,
     depth: int,
+    decay_days: float = 90.0,
 ) -> CatBoostCandidateDiagnostics:
     return CatBoostCandidateDiagnostics(
         config=CatBoostCandidateConfig(
-            decay_days=90.0,
+            decay_days=decay_days,
             depth=depth,
             l2_leaf_reg=3.0,
         ),

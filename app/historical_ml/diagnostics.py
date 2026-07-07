@@ -230,11 +230,13 @@ def diagnose_historical_ml_from_repository(
     catboost_candidates: tuple[CatBoostCandidateDiagnostics, ...] = ()
     selected_catboost: CatBoostCandidateDiagnostics | None = None
     if catboost_available:
-        catboost_candidates = _evaluate_catboost_candidates(
-            repository,
-            reference_bundle=reference_bundle,
-            split_policy=temporal_policy,
-            decay_candidates=decay_candidates,
+        catboost_candidates = rank_catboost_candidates(
+            _evaluate_catboost_candidates(
+                repository,
+                reference_bundle=reference_bundle,
+                split_policy=temporal_policy,
+                decay_candidates=decay_candidates,
+            )
         )
         selected_catboost = select_catboost_candidate(catboost_candidates)
 
@@ -256,25 +258,33 @@ def diagnose_historical_ml_from_repository(
     )
 
 
+def rank_catboost_candidates(
+    candidates: Iterable[CatBoostCandidateDiagnostics],
+) -> tuple[CatBoostCandidateDiagnostics, ...]:
+    return tuple(
+        sorted(
+            candidates,
+            key=lambda candidate: (
+                candidate.diagnostics.validation_metrics.brier_score,
+                candidate.diagnostics.validation_metrics.log_loss,
+                -candidate.diagnostics.validation_metrics.accuracy,
+                candidate.config.decay_days,
+                candidate.config.depth,
+                candidate.config.l2_leaf_reg,
+                candidate.config.learning_rate,
+                candidate.config.iterations,
+            ),
+        )
+    )
+
+
 def select_catboost_candidate(
     candidates: Iterable[CatBoostCandidateDiagnostics],
 ) -> CatBoostCandidateDiagnostics | None:
-    ordered = tuple(candidates)
-    if not ordered:
+    ranked = rank_catboost_candidates(candidates)
+    if not ranked:
         return None
-    return min(
-        ordered,
-        key=lambda candidate: (
-            candidate.diagnostics.validation_metrics.brier_score,
-            candidate.diagnostics.validation_metrics.log_loss,
-            -candidate.diagnostics.validation_metrics.accuracy,
-            candidate.config.decay_days,
-            candidate.config.depth,
-            candidate.config.l2_leaf_reg,
-            candidate.config.learning_rate,
-            candidate.config.iterations,
-        ),
-    )
+    return ranked[0]
 
 
 def catboost_base_params(config: CatBoostCandidateConfig) -> dict[str, object]:

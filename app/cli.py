@@ -2115,7 +2115,10 @@ def _diagnose_historical_ml_command(args: Namespace) -> int:
         return 1
 
     from app.history import DEFAULT_HISTORICAL_COMPETITION_SCOPE
-    from app.historical_ml import diagnose_historical_ml_from_repository
+    from app.historical_ml import (
+        diagnose_historical_ml_from_repository,
+        rank_catboost_candidates,
+    )
 
     repository = SQLiteRepository(db_path)
     result = diagnose_historical_ml_from_repository(
@@ -2169,7 +2172,8 @@ def _diagnose_historical_ml_command(args: Namespace) -> int:
         print("  iterations=300")
         print("Candidate selection: validation Brier, log loss, accuracy")
         print("Top CatBoost candidates:")
-        for candidate in result.catboost_candidates[:5]:
+        top_candidates = rank_catboost_candidates(result.catboost_candidates)[:5]
+        for candidate in top_candidates:
             config = candidate.config
             metrics = candidate.diagnostics.validation_metrics
             print(

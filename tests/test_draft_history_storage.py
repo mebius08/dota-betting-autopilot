@@ -1,12 +1,14 @@
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.request import Request
 
 from app.draft_history import (
     OPENDOTA_SOURCE,
     HistoricalDotaGame,
     HistoricalDraftAction,
     draft_action_id,
+    fetch_opendota_match_detail,
     historical_dota_game_id,
     map_opendota_match_detail,
 )
@@ -56,6 +58,31 @@ def test_opendota_mapping_preserves_order_side_winner_and_patch() -> None:
         14,
         24,
     ]
+
+
+def test_opendota_fetch_uses_keyword_timeout_not_positional_data() -> None:
+    seen: dict[str, object] = {}
+
+    def stdlib_shaped_urlopen(
+        request: Request,
+        data: object | None = None,
+        timeout: float | None = None,
+    ) -> _RawFakeResponse:
+        seen["request"] = request
+        seen["data"] = data
+        seen["timeout"] = timeout
+        return _RawFakeResponse(b'{"match_id": 1001}')
+
+    detail = fetch_opendota_match_detail(
+        1001,
+        timeout=2.5,
+        urlopen_func=stdlib_shaped_urlopen,
+    )
+
+    assert detail == {"match_id": 1001}
+    assert isinstance(seen["request"], Request)
+    assert seen["data"] is None
+    assert seen["timeout"] == 2.5
 
 
 def test_draft_game_upsert_is_idempotent_and_replaces_actions(tmp_path: Path) -> None:
@@ -129,6 +156,25 @@ def _opendota_payload() -> dict[str, object]:
         "patch": "7.36",
         "picks_bans": picks_bans,
     }
+
+
+class _RawFakeResponse:
+    def __init__(self, body: bytes) -> None:
+        self.body = body
+
+    def read(self) -> bytes:
+        return self.body
+
+    def __enter__(self) -> "_RawFakeResponse":
+        return self
+
+    def __exit__(
+        self,
+        exc_type: object,
+        exc: object,
+        traceback: object,
+    ) -> object:
+        return False
 
 
 def _game(source_game_id: str, *, winner_side: str) -> HistoricalDotaGame:

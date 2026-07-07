@@ -32,6 +32,7 @@ from app.historical_ml.diagnostics import (
     ProbabilityBucket,
     catboost_base_params,
     diagnose_historical_ml_from_repository,
+    rank_catboost_candidates,
     select_catboost_candidate,
 )
 from app.historical_ml.model import (
@@ -119,6 +120,7 @@ __all__ = [
     "load_historical_catboost_model",
     "load_historical_model",
     "predict_historical_match",
+    "rank_catboost_candidates",
     "row_to_feature_vector",
     "save_historical_catboost_model",
     "save_historical_model",

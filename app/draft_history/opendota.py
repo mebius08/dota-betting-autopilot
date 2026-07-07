@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
@@ -40,7 +40,16 @@ class _Response(Protocol):
         ...
 
 
-_UrlOpen = Callable[[Request, float], _Response]
+class _UrlOpen(Protocol):
+    def __call__(
+        self,
+        request: Request,
+        data: object | None = None,
+        timeout: float = 10.0,
+    ) -> _Response:
+        ...
+
+
 DEFAULT_URL_OPEN: _UrlOpen = cast(_UrlOpen, urlopen)
 
 
@@ -410,7 +419,7 @@ def _fetch_json(
 ) -> object:
     request = Request(url, headers={"Accept": "application/json"}, method="GET")
     try:
-        with urlopen_func(request, timeout) as response:
+        with urlopen_func(request, timeout=timeout) as response:
             raw_body = response.read()
     except HTTPError as exc:
         raise OpenDotaRequestError(f"OpenDota HTTP {exc.code}.") from exc
