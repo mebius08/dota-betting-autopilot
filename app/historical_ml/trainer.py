@@ -16,6 +16,7 @@ from app.historical_ml.evaluation import (
 )
 from app.historical_ml.model import (
     DEFAULT_HISTORICAL_MODEL_PATH,
+    HISTORICAL_FEATURE_HISTORY_SCOPE_SEMANTICS,
     HISTORICAL_MODEL_TYPE,
     HistoricalMatchWinModel,
     create_historical_model_pipeline,
@@ -69,7 +70,7 @@ def train_historical_model_from_repository(
     feature_rows = build_historical_feature_dataset(
         repository,
         policy=feature_policy,
-        target_scope_policy=DEFAULT_HISTORICAL_COMPETITION_SCOPE,
+        competition_scope_policy=DEFAULT_HISTORICAL_COMPETITION_SCOPE,
     )
     dataset = build_historical_ml_dataset(feature_rows)
     split = split_historical_dataset(dataset, policy=temporal_policy)
@@ -140,6 +141,12 @@ def train_historical_model_from_repository(
             "test": test_metrics.as_dict(),
         },
         competition_scope_policy=DEFAULT_HISTORICAL_COMPETITION_SCOPE.as_dict(),
+        feature_history_scope_policy=(
+            DEFAULT_HISTORICAL_COMPETITION_SCOPE.as_dict()
+        ),
+        feature_history_scope_semantics=(
+            HISTORICAL_FEATURE_HISTORY_SCOPE_SEMANTICS
+        ),
     )
     saved_path = save_historical_model(artifact, model_path)
     return HistoricalTrainingResult(
@@ -168,4 +175,10 @@ def _temporary_model(pipeline: object) -> HistoricalMatchWinModel:
         row_counts={},
         evaluation_metrics={},
         competition_scope_policy=DEFAULT_HISTORICAL_COMPETITION_SCOPE.as_dict(),
+        feature_history_scope_policy=(
+            DEFAULT_HISTORICAL_COMPETITION_SCOPE.as_dict()
+        ),
+        feature_history_scope_semantics=(
+            HISTORICAL_FEATURE_HISTORY_SCOPE_SEMANTICS
+        ),
     )

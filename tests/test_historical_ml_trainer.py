@@ -24,7 +24,7 @@ def test_historical_trainer_saves_artifact_with_small_explicit_policy(
     monkeypatch.setattr(
         trainer_module,
         "build_historical_feature_dataset",
-        lambda repository, policy, target_scope_policy: [],
+        lambda repository, policy, competition_scope_policy: [],
     )
     monkeypatch.setattr(
         trainer_module,
@@ -60,6 +60,10 @@ def test_historical_trainer_saves_artifact_with_small_explicit_policy(
         load_historical_model(model_path).competition_scope_policy
         == EWC_2026_BASELINE_SCOPE.as_dict()
     )
+    assert (
+        load_historical_model(model_path).feature_history_scope_policy
+        == EWC_2026_BASELINE_SCOPE.as_dict()
+    )
 
 
 def test_historical_trainer_rejects_single_class_train_split(
@@ -70,7 +74,7 @@ def test_historical_trainer_rejects_single_class_train_split(
     monkeypatch.setattr(
         trainer_module,
         "build_historical_feature_dataset",
-        lambda repository, policy, target_scope_policy: [],
+        lambda repository, policy, competition_scope_policy: [],
     )
     monkeypatch.setattr(
         trainer_module,

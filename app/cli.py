@@ -1707,6 +1707,7 @@ def _historical_ml_status_command(args: Namespace) -> int:
 
         print("Raw historical matches: 0")
         print("Raw usable winner records: 0")
+        print("Scope-eligible feature-history matches: 0")
         print("Scope-eligible target matches: 0")
         print("Usable labeled feature rows: 0")
         print(f"Feature count: {len(HISTORICAL_ML_FEATURE_NAMES)}")
@@ -1727,6 +1728,10 @@ def _historical_ml_status_command(args: Namespace) -> int:
     minimums = status.minimum_rows_policy
     print(f"Raw historical matches: {status.historical_matches}")
     print(f"Raw usable winner records: {status.raw_usable_winner_records}")
+    print(
+        "Scope-eligible feature-history matches: "
+        f"{status.scope_eligible_feature_history_matches}"
+    )
     print(f"Scope-eligible target matches: {status.scope_eligible_target_matches}")
     print(f"Usable labeled feature rows: {status.usable_feature_rows}")
     print(f"Feature count: {status.feature_count}")
@@ -1762,7 +1767,20 @@ def _historical_ml_status_command(args: Namespace) -> int:
         if status.artifact_competition_scope_policy is not None
         else None
     )
+    feature_history_scope_id = (
+        status.artifact_feature_history_scope_policy.get("scope_id")
+        if status.artifact_feature_history_scope_policy is not None
+        else None
+    )
     print(f"Artifact competition scope: {scope_id or 'unknown'}")
+    print(
+        "Artifact feature history scope: "
+        f"{feature_history_scope_id or 'unknown'}"
+    )
+    print(
+        "Artifact feature history semantics: "
+        f"{status.artifact_feature_history_scope_semantics or 'unknown'}"
+    )
     _print_recorded_historical_metrics(status.artifact_recorded_metrics)
     return 0
 
@@ -2171,6 +2189,7 @@ def _print_historical_competition_scope(policy: Any) -> None:
     )
     print(f"Allowed competition families: {family_names}")
     print(f"Qualifier policy: {qualifier_policy}")
+    print(f"Match-history universe: {policy.scope_id} (same as target scope)")
 
 
 def _print_historical_artifact_status(model_path: Path) -> None:
@@ -2183,6 +2202,8 @@ def _print_historical_artifact_status(model_path: Path) -> None:
         print("Artifact feature schema version: unknown")
         print("Artifact training timestamp: unavailable")
         print("Artifact competition scope: unknown")
+        print("Artifact feature history scope: unknown")
+        print("Artifact feature history semantics: unknown")
         return
 
     print("Model artifact exists: yes")
@@ -2194,6 +2215,8 @@ def _print_historical_artifact_status(model_path: Path) -> None:
         print("Artifact feature schema version: unknown")
         print("Artifact training timestamp: unavailable")
         print("Artifact competition scope: unknown")
+        print("Artifact feature history scope: unknown")
+        print("Artifact feature history semantics: unknown")
         return
 
     print("Artifact compatible: yes")
@@ -2205,6 +2228,14 @@ def _print_historical_artifact_status(model_path: Path) -> None:
     print(
         "Artifact competition scope: "
         f"{artifact.competition_scope_policy.get('scope_id', 'unknown')}"
+    )
+    print(
+        "Artifact feature history scope: "
+        f"{artifact.feature_history_scope_policy.get('scope_id', 'unknown')}"
+    )
+    print(
+        "Artifact feature history semantics: "
+        f"{artifact.feature_history_scope_semantics}"
     )
     _print_recorded_historical_metrics(artifact.evaluation_metrics)
 

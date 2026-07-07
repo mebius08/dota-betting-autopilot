@@ -9,6 +9,7 @@ from typing import Literal, Protocol
 from app.history.domain import HistoricalMatch
 from app.history.competition_scope import (
     HistoricalCompetitionScopePolicy,
+    is_historical_match_scope_eligible,
     is_historical_match_scope_eligible_target,
 )
 from app.history.roster_lineage import (
@@ -437,12 +438,14 @@ def build_historical_match_features(
     *,
     policy: HistoricalFeaturePolicy | None = None,
     historical_matches: Iterable[HistoricalMatch] | None = None,
+    competition_scope_policy: HistoricalCompetitionScopePolicy | None = None,
 ) -> HistoricalFeatureRow:
     feature_policy = policy or HistoricalFeaturePolicy()
     eligible_matches = _eligible_matches(
         repository=repository,
         context=context,
         historical_matches=historical_matches,
+        competition_scope_policy=competition_scope_policy,
     )
     strength_state = build_point_in_time_strength_state(
         context.prediction_timestamp,
@@ -694,6 +697,7 @@ def build_labeled_historical_feature_row(
     *,
     policy: HistoricalFeaturePolicy | None = None,
     historical_matches: Iterable[HistoricalMatch] | None = None,
+    competition_scope_policy: HistoricalCompetitionScopePolicy | None = None,
 ) -> LabeledHistoricalFeatureRow | None:
     if match.winner_side not in ("team_a", "team_b"):
         return None
@@ -706,6 +710,7 @@ def build_labeled_historical_feature_row(
         context,
         policy=policy,
         historical_matches=historical_matches,
+        competition_scope_policy=competition_scope_policy,
     )
     return LabeledHistoricalFeatureRow(
         feature_row=feature_row,
@@ -717,16 +722,25 @@ def build_historical_feature_dataset(
     repository: HistoricalFeatureRepository,
     *,
     policy: HistoricalFeaturePolicy | None = None,
+    competition_scope_policy: HistoricalCompetitionScopePolicy | None = None,
     target_scope_policy: HistoricalCompetitionScopePolicy | None = None,
 ) -> list[LabeledHistoricalFeatureRow]:
+    active_scope_policy = _resolve_dataset_competition_scope_policy(
+        competition_scope_policy=competition_scope_policy,
+        target_scope_policy=target_scope_policy,
+    )
     matches = tuple(repository.list_historical_matches())
+    feature_history_matches = _scope_filtered_historical_matches(
+        matches,
+        active_scope_policy,
+    )
     rows: list[LabeledHistoricalFeatureRow] = []
     for match in sorted(matches, key=_match_target_order_key):
         if (
-            target_scope_policy is not None
+            active_scope_policy is not None
             and not is_historical_match_scope_eligible_target(
                 match,
-                target_scope_policy,
+                active_scope_policy,
             )
         ):
             continue
@@ -736,7 +750,7 @@ def build_historical_feature_dataset(
             match,
             repository,
             policy=policy,
-            historical_matches=matches,
+            historical_matches=feature_history_matches,
         )
         if row is not None:
             rows.append(row)
@@ -748,6 +762,7 @@ def build_point_in_time_strength_state(
     historical_matches: Iterable[HistoricalMatch],
     *,
     policy: HistoricalFeaturePolicy | None = None,
+    competition_scope_policy: HistoricalCompetitionScopePolicy | None = None,
 ) -> PointInTimeStrengthState:
     feature_policy = policy or HistoricalFeaturePolicy()
     eligible_matches = tuple(
@@ -755,7 +770,14 @@ def build_point_in_time_strength_state(
             (
                 match
                 for match in historical_matches
-                if match.completed_before(prediction_timestamp)
+                if (
+                    competition_scope_policy is None
+                    or is_historical_match_scope_eligible(
+                        match,
+                        competition_scope_policy,
+                    )
+                )
+                and match.completed_before(prediction_timestamp)
             ),
             key=_match_history_order_key,
         )
@@ -787,9 +809,13 @@ def build_historical_feature_status(
     *,
     as_of: datetime,
     policy: HistoricalFeaturePolicy | None = None,
+    competition_scope_policy: HistoricalCompetitionScopePolicy | None = None,
 ) -> HistoricalFeatureStatus:
     feature_policy = policy or HistoricalFeaturePolicy()
-    available_matches = tuple(repository.list_historical_matches_before(as_of))
+    available_matches = _scope_filtered_historical_matches(
+        repository.list_historical_matches_before(as_of),
+        competition_scope_policy,
+    )
     state = build_point_in_time_strength_state(
         as_of,
         available_matches,
@@ -1095,6 +1121,7 @@ def _eligible_matches(
     repository: HistoricalFeatureRepository,
     context: HistoricalPredictionContext,
     historical_matches: Iterable[HistoricalMatch] | None,
+    competition_scope_policy: HistoricalCompetitionScopePolicy | None,
 ) -> tuple[HistoricalMatch, ...]:
     candidates: Iterable[HistoricalMatch]
     if historical_matches is None:
@@ -1109,7 +1136,14 @@ def _eligible_matches(
             (
                 match
                 for match in candidates
-                if match.completed_before(context.prediction_timestamp)
+                if (
+                    competition_scope_policy is None
+                    or is_historical_match_scope_eligible(
+                        match,
+                        competition_scope_policy,
+                    )
+                )
+                and match.completed_before(context.prediction_timestamp)
                 and not _same_source_match(match, context)
             ),
             key=_match_history_order_key,
@@ -1124,6 +1158,35 @@ def _same_source_match(
     return (
         match.source == context.source
         and match.source_match_id == context.source_match_id
+    )
+
+
+def _resolve_dataset_competition_scope_policy(
+    *,
+    competition_scope_policy: HistoricalCompetitionScopePolicy | None,
+    target_scope_policy: HistoricalCompetitionScopePolicy | None,
+) -> HistoricalCompetitionScopePolicy | None:
+    if (
+        competition_scope_policy is not None
+        and target_scope_policy is not None
+        and competition_scope_policy != target_scope_policy
+    ):
+        raise ValueError(
+            "target and feature-history competition scopes must match"
+        )
+    return competition_scope_policy or target_scope_policy
+
+
+def _scope_filtered_historical_matches(
+    matches: Iterable[HistoricalMatch],
+    competition_scope_policy: HistoricalCompetitionScopePolicy | None,
+) -> tuple[HistoricalMatch, ...]:
+    if competition_scope_policy is None:
+        return tuple(matches)
+    return tuple(
+        match
+        for match in matches
+        if is_historical_match_scope_eligible(match, competition_scope_policy)
     )
 
 

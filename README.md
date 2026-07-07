@@ -660,11 +660,25 @@ generic BetBoom events are not automatically allowed.
 
 Historical SQLite storage remains broad. The raw `historical_matches` table may
 contain other professional Dota matches, and those records are not deleted or
-rewritten merely because the default model target scope is curated. Target scope
-and feature history are distinct concepts: scoped target rows may still draw
-point-in-time-safe history from the existing feature engine, but no match can
-contribute before its result is available. The strict feature-history rule stays
+rewritten merely because the default model scope is curated. For the default
+EWC 2026 baseline, target rows and match-derived feature history use the same
+`ewc_2026_baseline` competition policy. Only allowed main-event competition
+families from the inclusive scope start may contribute to form, recent win
+rate, recency-weighted form, opponent-adjusted strength, roster
+matches-together, player match aggregates, and other match-derived values.
+Qualifiers do not contribute. `FISSURE Universe`, generic FISSURE events, and
+lower-level or unrelated tournaments outside the curated top-level competition
+scope do not improve modeled top-level form. `FISSURE Playground` may
+contribute when the other point-in-time requirements pass. The strict
+feature-history rule still applies after competition eligibility:
 `ended_at < prediction_timestamp`.
+
+Roster observations remain a separate point-in-time input governed by
+`observed_at < prediction_timestamp`. A roster snapshot is not discarded merely
+because it is not itself a match result, but any roster or player aggregate
+derived from historical match results uses only the same scoped match-history
+universe. Broad raw historical rows remain available in SQLite for future
+experimental scopes.
 
 The numeric schema is explicit and deterministic. Metadata such as source IDs,
 team names, player names, tournament names, winner fields, and labels are not
@@ -707,9 +721,12 @@ data/models/historical_match_win.joblib
 
 The artifact stores the fitted pipeline, model type, feature schema version,
 ordered feature names, training timestamp, recency decay policy, temporal split
-policy, minimum-row policy, competition scope metadata, row counts, and
-recorded metrics. Loading is strict: schema version, ordered feature names, and
-competition scope metadata must match the current code.
+policy, minimum-row policy, competition scope metadata, feature-history scope
+semantics, row counts, and recorded metrics. Loading is strict: schema version,
+ordered feature names, competition scope metadata, and feature-history scope
+semantics must match the current code. Artifacts trained under older broad
+feature-history semantics are not compatible with the corrected default
+baseline.
 
 Patch-aware Historical ML features remain a future data-source/enrichment task
 because the currently confirmed PandaScore historical match payload represented
@@ -729,7 +746,10 @@ python -m app.cli evaluate-historical-ml --db data/autopilot.db
 
 `train-historical-ml` does not sync or download data. If the database has no
 historical matches, or fewer than the configured minimum usable rows, it fails
-cleanly without writing a model artifact.
+cleanly without writing a model artifact. `historical-ml-status`,
+`train-historical-ml`, and `evaluate-historical-ml` print the active
+match-history universe so it is visible that the default baseline uses the
+same curated scope for targets and match-derived features.
 
 ## ML Layer
 

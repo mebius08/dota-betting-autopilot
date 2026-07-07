@@ -37,7 +37,9 @@ def test_historical_ml_status_handles_missing_database(
     assert exit_code == 0
     assert "Competition scope: ewc_2026_baseline" in output
     assert "Scope target start: 2025-07-08T00:00:00+00:00 inclusive" in output
+    assert "Match-history universe: ewc_2026_baseline" in output
     assert "Raw historical matches: 0" in output
+    assert "Scope-eligible feature-history matches: 0" in output
     assert "Scope-eligible target matches: 0" in output
     assert "Model artifact exists: no" in output
 
@@ -87,6 +89,7 @@ def test_historical_ml_status_distinguishes_raw_and_scoped_targets(
     assert exit_code == 0
     assert "Raw historical matches: 3" in output
     assert "Raw usable winner records: 3" in output
+    assert "Scope-eligible feature-history matches: 1" in output
     assert "Scope-eligible target matches: 1" in output
     assert "Usable labeled feature rows: 1" in output
     assert "THE_INTERNATIONAL" in output

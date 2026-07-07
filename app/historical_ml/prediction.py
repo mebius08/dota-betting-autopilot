@@ -11,6 +11,8 @@ from app.historical_ml.model import (
     load_historical_model,
 )
 from app.history import (
+    DEFAULT_HISTORICAL_COMPETITION_SCOPE,
+    HistoricalCompetitionScopePolicy,
     HistoricalFeaturePolicy,
     HistoricalPredictionContext,
     build_historical_match_features,
@@ -40,12 +42,16 @@ def predict_historical_match(
     *,
     model_path: str | Path = DEFAULT_HISTORICAL_MODEL_PATH,
     policy: HistoricalFeaturePolicy | None = None,
+    competition_scope_policy: HistoricalCompetitionScopePolicy = (
+        DEFAULT_HISTORICAL_COMPETITION_SCOPE
+    ),
 ) -> HistoricalMatchPrediction:
     model = load_historical_model(model_path)
     feature_row = build_historical_match_features(
         repository,
         context,
         policy=policy,
+        competition_scope_policy=competition_scope_policy,
     )
     probability = model.predict_team_a_probability(
         row_to_feature_vector(feature_row, feature_names=model.feature_names)

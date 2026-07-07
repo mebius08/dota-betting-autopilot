@@ -29,6 +29,7 @@ from app.history import (
     HistoricalFeaturePolicy,
     RecencyWeightingPolicy,
     build_historical_feature_dataset,
+    is_historical_match_scope_eligible,
     is_historical_match_scope_eligible_target,
 )
 
@@ -42,6 +43,7 @@ class HistoricalMLStatus:
     raw_usable_winner_records: int
     competition_scope_policy: HistoricalCompetitionScopePolicy
     scope_eligible_target_matches: int
+    scope_eligible_feature_history_matches: int
     usable_feature_rows: int
     feature_count: int
     minimum_rows_policy: HistoricalMinimumRowsPolicy
@@ -55,6 +57,8 @@ class HistoricalMLStatus:
     artifact_feature_schema_version: int | None
     artifact_training_timestamp: datetime | None
     artifact_competition_scope_policy: Mapping[str, object] | None
+    artifact_feature_history_scope_policy: Mapping[str, object] | None
+    artifact_feature_history_scope_semantics: str | None
     artifact_recorded_metrics: Mapping[str, Mapping[str, object]]
 
 
@@ -79,10 +83,15 @@ def build_historical_ml_status(
         for match in historical_matches_raw
         if is_historical_match_scope_eligible_target(match, scope_policy)
     )
+    scope_feature_history_matches = sum(
+        1
+        for match in historical_matches_raw
+        if is_historical_match_scope_eligible(match, scope_policy)
+    )
     feature_rows = build_historical_feature_dataset(
         repository,
         policy=feature_policy,
-        target_scope_policy=scope_policy,
+        competition_scope_policy=scope_policy,
     )
     dataset = build_historical_ml_dataset(feature_rows)
     split = split_historical_dataset(dataset, policy=temporal_policy)
@@ -106,6 +115,8 @@ def build_historical_ml_status(
     artifact_feature_schema_version: int | None = None
     artifact_training_timestamp: datetime | None = None
     artifact_competition_scope_policy: Mapping[str, object] | None = None
+    artifact_feature_history_scope_policy: Mapping[str, object] | None = None
+    artifact_feature_history_scope_semantics: str | None = None
     artifact_recorded_metrics: Mapping[str, Mapping[str, object]] = {}
     if artifact_exists:
         try:
@@ -117,6 +128,12 @@ def build_historical_ml_status(
             artifact_feature_schema_version = artifact.feature_schema_version
             artifact_training_timestamp = artifact.training_timestamp
             artifact_competition_scope_policy = artifact.competition_scope_policy
+            artifact_feature_history_scope_policy = (
+                artifact.feature_history_scope_policy
+            )
+            artifact_feature_history_scope_semantics = (
+                artifact.feature_history_scope_semantics
+            )
             artifact_recorded_metrics = artifact.evaluation_metrics
 
     return HistoricalMLStatus(
@@ -128,6 +145,7 @@ def build_historical_ml_status(
         ),
         competition_scope_policy=scope_policy,
         scope_eligible_target_matches=scope_target_matches,
+        scope_eligible_feature_history_matches=scope_feature_history_matches,
         usable_feature_rows=len(dataset),
         feature_count=len(HISTORICAL_ML_FEATURE_NAMES),
         minimum_rows_policy=minimum_policy,
@@ -141,5 +159,9 @@ def build_historical_ml_status(
         artifact_feature_schema_version=artifact_feature_schema_version,
         artifact_training_timestamp=artifact_training_timestamp,
         artifact_competition_scope_policy=artifact_competition_scope_policy,
+        artifact_feature_history_scope_policy=artifact_feature_history_scope_policy,
+        artifact_feature_history_scope_semantics=(
+            artifact_feature_history_scope_semantics
+        ),
         artifact_recorded_metrics=artifact_recorded_metrics,
     )

@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from app.historical_ml import (
+    HISTORICAL_FEATURE_HISTORY_SCOPE_SEMANTICS,
     HISTORICAL_FEATURE_SCHEMA_VERSION,
     HISTORICAL_ML_FEATURE_NAMES,
     HISTORICAL_MODEL_TYPE,
@@ -42,6 +43,13 @@ def test_historical_model_probability_and_artifact_round_trip(
 
     assert loaded.predict_team_a_probability(x[0]) == pytest.approx(probability)
     assert loaded.competition_scope_policy == EWC_2026_BASELINE_SCOPE.as_dict()
+    assert (
+        loaded.feature_history_scope_policy == EWC_2026_BASELINE_SCOPE.as_dict()
+    )
+    assert (
+        loaded.feature_history_scope_semantics
+        == HISTORICAL_FEATURE_HISTORY_SCOPE_SEMANTICS
+    )
     assert loaded.competition_scope_policy["exclude_qualifiers"] is True
 
 
@@ -88,11 +96,33 @@ def test_incompatible_competition_scope_family_set_is_rejected(
         load_historical_model(path)
 
 
+def test_old_broad_feature_history_artifact_is_rejected(
+    tmp_path: Path,
+) -> None:
+    model = _model(
+        create_historical_model_pipeline(),
+        feature_history_scope_policy=None,
+        feature_history_scope_semantics="broad_history_v0",
+    )
+    path = tmp_path / "bad-feature-history.joblib"
+    joblib.dump(model, path)
+
+    with pytest.raises(
+        HistoricalModelCompatibilityError,
+        match="feature history scope semantics mismatch",
+    ):
+        load_historical_model(path)
+
+
 def _model(
     pipeline: object,
     *,
     feature_names: tuple[str, ...] = HISTORICAL_ML_FEATURE_NAMES,
     competition_scope_policy: dict[str, object] | None = None,
+    feature_history_scope_policy: dict[str, object] | None = None,
+    feature_history_scope_semantics: str = (
+        HISTORICAL_FEATURE_HISTORY_SCOPE_SEMANTICS
+    ),
 ) -> HistoricalMatchWinModel:
     return HistoricalMatchWinModel(
         pipeline=pipeline,
@@ -117,4 +147,8 @@ def _model(
         competition_scope_policy=(
             competition_scope_policy or EWC_2026_BASELINE_SCOPE.as_dict()
         ),
+        feature_history_scope_policy=(
+            feature_history_scope_policy or EWC_2026_BASELINE_SCOPE.as_dict()
+        ),
+        feature_history_scope_semantics=feature_history_scope_semantics,
     )

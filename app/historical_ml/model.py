@@ -27,6 +27,7 @@ DEFAULT_HISTORICAL_MODEL_PATH = (
     Path("data") / "models" / "historical_match_win.joblib"
 )
 HISTORICAL_MODEL_TYPE = "historical_match_win_logistic_regression_v1"
+HISTORICAL_FEATURE_HISTORY_SCOPE_SEMANTICS = "same_as_target_scope_v1"
 
 
 class HistoricalModelCompatibilityError(RuntimeError):
@@ -47,6 +48,12 @@ class HistoricalMatchWinModel:
     evaluation_metrics: Mapping[str, Mapping[str, object]]
     competition_scope_policy: Mapping[str, object] = field(
         default_factory=DEFAULT_HISTORICAL_COMPETITION_SCOPE.as_dict
+    )
+    feature_history_scope_policy: Mapping[str, object] = field(
+        default_factory=DEFAULT_HISTORICAL_COMPETITION_SCOPE.as_dict
+    )
+    feature_history_scope_semantics: str = (
+        HISTORICAL_FEATURE_HISTORY_SCOPE_SEMANTICS
     )
 
     def validate_compatible(self) -> None:
@@ -71,6 +78,24 @@ class HistoricalMatchWinModel:
             )
         except ValueError as exc:
             raise HistoricalModelCompatibilityError(str(exc)) from exc
+        if (
+            getattr(self, "feature_history_scope_semantics", None)
+            != HISTORICAL_FEATURE_HISTORY_SCOPE_SEMANTICS
+        ):
+            raise HistoricalModelCompatibilityError(
+                "Historical model feature history scope semantics mismatch: "
+                f"artifact={getattr(self, 'feature_history_scope_semantics', None)}, "
+                f"expected={HISTORICAL_FEATURE_HISTORY_SCOPE_SEMANTICS}."
+            )
+        try:
+            validate_historical_scope_compatible(
+                getattr(self, "feature_history_scope_policy", None)
+            )
+        except ValueError as exc:
+            raise HistoricalModelCompatibilityError(
+                "Historical model feature history scope mismatch: "
+                f"{exc}"
+            ) from exc
 
     def predict_team_a_probability(
         self,

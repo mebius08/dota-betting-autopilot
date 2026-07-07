@@ -16,6 +16,7 @@ from app.historical_ml.evaluation import (
 )
 from app.historical_ml.model import (
     DEFAULT_HISTORICAL_MODEL_PATH,
+    HISTORICAL_FEATURE_HISTORY_SCOPE_SEMANTICS,
     HISTORICAL_MODEL_TYPE,
     HistoricalMatchWinModel,
     HistoricalModelCompatibilityError,
@@ -45,6 +46,7 @@ from app.historical_ml.trainer import (
 __all__ = [
     "DEFAULT_HISTORICAL_MODEL_PATH",
     "HISTORICAL_FEATURE_SCHEMA_VERSION",
+    "HISTORICAL_FEATURE_HISTORY_SCOPE_SEMANTICS",
     "HISTORICAL_ML_FEATURE_NAMES",
     "HISTORICAL_MODEL_TYPE",
     "HistoricalCurrentEvaluationResult",

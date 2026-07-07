@@ -151,7 +151,7 @@ def is_historical_competition_qualifier(match: HistoricalMatch) -> bool:
     )
 
 
-def is_historical_match_scope_eligible_target(
+def is_historical_match_scope_eligible(
     match: HistoricalMatch,
     policy: HistoricalCompetitionScopePolicy = DEFAULT_HISTORICAL_COMPETITION_SCOPE,
 ) -> bool:
@@ -161,6 +161,15 @@ def is_historical_match_scope_eligible_target(
     if family not in policy.allowed_families:
         return False
     if policy.exclude_qualifiers and is_historical_competition_qualifier(match):
+        return False
+    return True
+
+
+def is_historical_match_scope_eligible_target(
+    match: HistoricalMatch,
+    policy: HistoricalCompetitionScopePolicy = DEFAULT_HISTORICAL_COMPETITION_SCOPE,
+) -> bool:
+    if not is_historical_match_scope_eligible(match, policy):
         return False
     return match.usable_for_match_winner_training
 

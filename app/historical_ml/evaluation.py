@@ -122,7 +122,7 @@ def evaluate_historical_model_from_repository(
     feature_rows = build_historical_feature_dataset(
         repository,
         policy=feature_policy,
-        target_scope_policy=DEFAULT_HISTORICAL_COMPETITION_SCOPE,
+        competition_scope_policy=DEFAULT_HISTORICAL_COMPETITION_SCOPE,
     )
     dataset = build_historical_ml_dataset(feature_rows)
     split_policy = HistoricalTemporalSplitPolicy.from_mapping(
