@@ -1,5 +1,5 @@
 from argparse import ArgumentParser, ArgumentTypeError, Namespace
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime, time as datetime_time, timezone
 import math
 from pathlib import Path
@@ -476,6 +476,75 @@ def create_parser() -> ArgumentParser:
     )
     ml_status_parser.add_argument("--min-rows", type=_positive_int, default=30)
 
+    train_historical_ml_parser = subparsers.add_parser(
+        "train-historical-ml",
+        help="Train Historical ML v2 match winner model from historical matches.",
+    )
+    train_historical_ml_parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("data") / "autopilot.db",
+        help="SQLite database path.",
+    )
+    train_historical_ml_parser.add_argument(
+        "--model-path",
+        type=Path,
+        default=Path("data") / "models" / "historical_match_win.joblib",
+        help="Path where the Historical ML v2 artifact is saved.",
+    )
+    train_historical_ml_parser.add_argument(
+        "--decay-days",
+        type=_positive_float,
+        default=90.0,
+        help="Recency exponential decay baseline in days.",
+    )
+
+    historical_ml_status_parser = subparsers.add_parser(
+        "historical-ml-status",
+        help="Show Historical ML v2 data and artifact readiness.",
+    )
+    historical_ml_status_parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("data") / "autopilot.db",
+        help="SQLite database path.",
+    )
+    historical_ml_status_parser.add_argument(
+        "--model-path",
+        type=Path,
+        default=Path("data") / "models" / "historical_match_win.joblib",
+        help="Historical ML v2 model artifact path.",
+    )
+    historical_ml_status_parser.add_argument(
+        "--decay-days",
+        type=_positive_float,
+        default=90.0,
+        help="Recency exponential decay baseline in days.",
+    )
+
+    evaluate_historical_ml_parser = subparsers.add_parser(
+        "evaluate-historical-ml",
+        help="Evaluate an existing Historical ML v2 model on current data.",
+    )
+    evaluate_historical_ml_parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("data") / "autopilot.db",
+        help="SQLite database path.",
+    )
+    evaluate_historical_ml_parser.add_argument(
+        "--model-path",
+        type=Path,
+        default=Path("data") / "models" / "historical_match_win.joblib",
+        help="Historical ML v2 model artifact path.",
+    )
+    evaluate_historical_ml_parser.add_argument(
+        "--decay-days",
+        type=_positive_float,
+        default=90.0,
+        help="Recency exponential decay baseline in days.",
+    )
+
     evaluate_ml_parser = subparsers.add_parser(
         "evaluate-ml",
         help="Backtest ML scoring against rule-based scoring on settled paper bets.",
@@ -688,6 +757,12 @@ def main(
             return _train_ml_command(args)
         if args.command == "ml-status":
             return _ml_status_command(args)
+        if args.command == "train-historical-ml":
+            return _train_historical_ml_command(args)
+        if args.command == "historical-ml-status":
+            return _historical_ml_status_command(args)
+        if args.command == "evaluate-historical-ml":
+            return _evaluate_historical_ml_command(args)
         if args.command == "evaluate-ml":
             return _evaluate_ml_command(args)
         if args.command == "analyze-edge":
@@ -1574,6 +1649,146 @@ def _ml_status_command(args: Namespace) -> int:
     return 0
 
 
+def _train_historical_ml_command(args: Namespace) -> int:
+    db_path = Path(args.db)
+    if not db_path.exists():
+        print(
+            f"Database not found: {db_path.as_posix()}. "
+            "Run sync-history first."
+        )
+        return 1
+
+    from app.historical_ml import train_historical_model_from_repository
+
+    repository = SQLiteRepository(db_path)
+    result = train_historical_model_from_repository(
+        repository,
+        model_path=args.model_path,
+        decay_days=args.decay_days,
+    )
+    print("Historical ML v2 training")
+    print(f"usable feature rows: {result.rows}")
+    print(f"feature count: {result.feature_count}")
+    print(f"decay days: {args.decay_days:g}")
+    if result.split is not None:
+        print(f"train rows: {result.split.train_rows}")
+        print(f"validation rows: {result.split.validation_rows}")
+        print(f"test rows: {result.split.test_rows}")
+    _print_historical_metrics("train", result.train_metrics)
+    _print_historical_metrics("validation", result.validation_metrics)
+    _print_historical_metrics("test", result.test_metrics)
+    print(f"model artifact path: {_format_optional_path(result.model_path)}")
+    print(f"trained: {result.trained}")
+    print(f"message: {result.message}")
+    return 0 if result.trained else 1
+
+
+def _historical_ml_status_command(args: Namespace) -> int:
+    print("Historical ML v2 status")
+    print(f"Database: {Path(args.db).as_posix()}")
+    print(f"Model artifact: {Path(args.model_path).as_posix()}")
+    print(f"Decay days: {args.decay_days:g}")
+
+    db_path = Path(args.db)
+    if not db_path.exists():
+        from app.historical_ml import HISTORICAL_ML_FEATURE_NAMES
+
+        print("Historical matches: 0")
+        print("Usable labeled feature rows: 0")
+        print(f"Feature count: {len(HISTORICAL_ML_FEATURE_NAMES)}")
+        print("Configured minimum rows: 100 total, 60 train, 15 validation, 15 test")
+        print("Temporal split ready: no")
+        print("Reason: Database not found. Run sync-history first.")
+        _print_historical_artifact_status(Path(args.model_path))
+        return 0
+
+    from app.historical_ml import build_historical_ml_status
+
+    repository = SQLiteRepository(db_path)
+    status = build_historical_ml_status(
+        repository,
+        model_path=args.model_path,
+        decay_days=args.decay_days,
+    )
+    minimums = status.minimum_rows_policy
+    print(f"Historical matches: {status.historical_matches}")
+    print(f"Usable labeled feature rows: {status.usable_feature_rows}")
+    print(f"Feature count: {status.feature_count}")
+    print(
+        "Configured minimum rows: "
+        f"{minimums.minimum_total_rows} total, "
+        f"{minimums.minimum_train_rows} train, "
+        f"{minimums.minimum_validation_rows} validation, "
+        f"{minimums.minimum_test_rows} test"
+    )
+    print(f"Temporal split ready: {'yes' if status.split_ready else 'no'}")
+    print(f"Projected train rows: {status.split.train_rows}")
+    print(f"Projected validation rows: {status.split.validation_rows}")
+    print(f"Projected test rows: {status.split.test_rows}")
+    print(f"Reason: {status.readiness_reason}")
+    print(f"Model artifact exists: {'yes' if status.model_artifact_exists else 'no'}")
+    print(
+        "Artifact compatible: "
+        f"{'yes' if status.model_artifact_compatible else 'no'}"
+    )
+    if status.artifact_incompatibility_reason is not None:
+        print(f"Artifact reason: {status.artifact_incompatibility_reason}")
+    print(
+        "Artifact feature schema version: "
+        f"{status.artifact_feature_schema_version or 'unknown'}"
+    )
+    print(
+        "Artifact training timestamp: "
+        f"{_format_optional_datetime(status.artifact_training_timestamp)}"
+    )
+    _print_recorded_historical_metrics(status.artifact_recorded_metrics)
+    return 0
+
+
+def _evaluate_historical_ml_command(args: Namespace) -> int:
+    db_path = Path(args.db)
+    if not db_path.exists():
+        print(
+            f"Database not found: {db_path.as_posix()}. "
+            "Run sync-history first."
+        )
+        return 1
+
+    from app.historical_ml import (
+        HistoricalModelCompatibilityError,
+        evaluate_historical_model_from_repository,
+    )
+
+    repository = SQLiteRepository(db_path)
+    try:
+        result = evaluate_historical_model_from_repository(
+            repository,
+            model_path=args.model_path,
+            decay_days=args.decay_days,
+        )
+    except (FileNotFoundError, HistoricalModelCompatibilityError) as exc:
+        print(str(exc))
+        return 1
+
+    print("Historical ML v2 current-dataset evaluation")
+    print(f"usable feature rows: {result.rows}")
+    print(f"feature count: {result.feature_count}")
+    print(f"decay days: {args.decay_days:g}")
+    if result.split is not None:
+        print(f"train rows: {result.split.train_rows}")
+        print(f"validation rows: {result.split.validation_rows}")
+        print(f"test rows: {result.split.test_rows}")
+    print("Recorded artifact metrics:")
+    _print_recorded_historical_metrics(result.recorded_metrics)
+    print("Current dataset metrics:")
+    _print_historical_metrics("train", result.train_metrics)
+    _print_historical_metrics("validation", result.validation_metrics)
+    _print_historical_metrics("test", result.test_metrics)
+    print(f"evaluated: {result.evaluated}")
+    print(f"message: {result.message}")
+    return 0 if result.evaluated else 1
+
+
 def _evaluate_ml_command(args: Namespace) -> int:
     db_path = Path(args.db)
     if not db_path.exists():
@@ -1874,6 +2089,89 @@ def _format_optional_path(path: Path | None) -> str:
     if path is None:
         return "-"
     return path.as_posix()
+
+
+def _print_historical_metrics(label: str, metrics: Any | None) -> None:
+    if metrics is None:
+        print(f"{label} metrics: unavailable")
+        return
+
+    print(
+        f"{label} Brier / log loss / accuracy: "
+        f"{metrics.brier_score:.6f} / {metrics.log_loss:.6f} / "
+        f"{metrics.accuracy:.3f}"
+    )
+    print(f"{label} positive label rate: {metrics.positive_label_rate:.3f}")
+    print(
+        f"{label} average predicted probability: "
+        f"{metrics.average_predicted_probability:.3f}"
+    )
+
+
+def _print_recorded_historical_metrics(
+    metrics: Mapping[str, Mapping[str, object]],
+) -> None:
+    if not metrics:
+        print("Recorded metrics: unavailable")
+        return
+
+    for partition in ("train", "validation", "test"):
+        partition_metrics = metrics.get(partition)
+        if partition_metrics is None:
+            continue
+        brier = _metric_float(partition_metrics, "brier_score")
+        logloss = _metric_float(partition_metrics, "log_loss")
+        accuracy = _metric_float(partition_metrics, "accuracy")
+        row_count = _metric_int(partition_metrics, "row_count")
+        print(
+            f"Recorded {partition}: rows={row_count}, "
+            f"Brier={brier:.6f}, log_loss={logloss:.6f}, "
+            f"accuracy={accuracy:.3f}"
+        )
+
+
+def _print_historical_artifact_status(model_path: Path) -> None:
+    from app.historical_ml import HistoricalModelCompatibilityError
+    from app.historical_ml import load_historical_model
+
+    if not model_path.exists():
+        print("Model artifact exists: no")
+        print("Artifact compatible: no")
+        print("Artifact feature schema version: unknown")
+        print("Artifact training timestamp: unavailable")
+        return
+
+    print("Model artifact exists: yes")
+    try:
+        artifact = load_historical_model(model_path)
+    except (FileNotFoundError, HistoricalModelCompatibilityError) as exc:
+        print("Artifact compatible: no")
+        print(f"Artifact reason: {exc}")
+        print("Artifact feature schema version: unknown")
+        print("Artifact training timestamp: unavailable")
+        return
+
+    print("Artifact compatible: yes")
+    print(f"Artifact feature schema version: {artifact.feature_schema_version}")
+    print(
+        "Artifact training timestamp: "
+        f"{_format_optional_datetime(artifact.training_timestamp)}"
+    )
+    _print_recorded_historical_metrics(artifact.evaluation_metrics)
+
+
+def _metric_float(metrics: Mapping[str, object], key: str) -> float:
+    value = metrics.get(key, 0.0)
+    if isinstance(value, int | float | str):
+        return float(value)
+    return 0.0
+
+
+def _metric_int(metrics: Mapping[str, object], key: str) -> int:
+    value = metrics.get(key, 0)
+    if isinstance(value, int | str):
+        return int(value)
+    return 0
 
 
 def _recent_bets_for_report(

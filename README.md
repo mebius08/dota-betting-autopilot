@@ -620,6 +620,78 @@ same-bookmaker two-way market snapshots for a candidate, the command reports the
 market as incomplete. OddsPapi fetching remains read-only and does not imply
 that fetched odds have already been persisted to SQLite.
 
+## Historical ML v2
+
+Historical ML v2 predicts professional Dota `P(Team A wins)` from
+point-in-time historical feature rows. It is separate from the legacy
+settled-paper-bet ML layer and it is not a betting recommendation, market edge
+calculation, Nix layer, bookmaker integration, or automatic betting system.
+
+Training rows are built by the existing historical feature engine. For a target
+match, the prediction timestamp is the match `started_at`. Only historical
+matches completed strictly before that timestamp (`ended_at < started_at`) may
+contribute. Roster observations also remain point-in-time safe with
+`observed_at < prediction_timestamp`; future roster snapshots are represented
+as missing rather than backfilled.
+
+The numeric schema is explicit and deterministic. Metadata such as source IDs,
+team names, player names, tournament names, winner fields, and labels are not
+model inputs. Competitive stage is represented as one-hot features:
+`stage_group`, `stage_crossover`, `stage_upper_bracket`,
+`stage_lower_bracket`, `stage_single_elimination`, `stage_grand_final`,
+`stage_placement`, and `stage_unknown`; exactly one is active for a row.
+
+Roster features are conservative. Missing rosters use explicit zero/neutral
+values. Accepted continuity reuses derived roster lineage and exposes exact,
+strong, and coach-supported flags. Ambiguous predecessor branches are not
+auto-selected. `roster_matches_together` counts only safely attributable
+lineage-window history, so old unrelated organization history does not inflate
+transferred roster form.
+
+Player aggregate features use stable provider player IDs, not names. Historical
+player participation is attributed only when current point-in-time roster
+history safely links the player to a roster snapshot window. Sparse coverage is
+expected; no safely attributable player history gives zero sample counts and
+neutral raw win-rate values.
+
+The first baseline model is an sklearn `Pipeline`:
+
+```text
+StandardScaler -> LogisticRegression
+```
+
+Rows are split chronologically instead of randomly. The default baseline policy
+is 70% train, 15% validation, and 15% test, with equal prediction timestamp
+groups kept together where possible. Preprocessing and the logistic model are
+fit only on the train partition; validation and test are never used to fit.
+Metrics reported for train, validation, and test are Brier score, log loss,
+accuracy, row count, positive label rate, and average predicted probability.
+
+The default artifact path is separate from the legacy model:
+
+```text
+data/models/historical_match_win.joblib
+```
+
+The artifact stores the fitted pipeline, model type, feature schema version,
+ordered feature names, training timestamp, recency decay policy, temporal split
+policy, minimum-row policy, row counts, and recorded metrics. Loading is strict:
+schema version and ordered feature names must match the current code.
+
+PowerShell workflow:
+
+```powershell
+python -m app.cli sync-history --provider pandascore --db data/autopilot.db --since 2025-01-01 --until 2026-07-07
+python -m app.cli sync-rosters --provider pandascore --db data/autopilot.db
+python -m app.cli historical-ml-status --db data/autopilot.db
+python -m app.cli train-historical-ml --db data/autopilot.db --decay-days 90
+python -m app.cli evaluate-historical-ml --db data/autopilot.db
+```
+
+`train-historical-ml` does not sync or download data. If the database has no
+historical matches, or fewer than the configured minimum usable rows, it fails
+cleanly without writing a model artifact.
+
 ## ML Layer
 
 The bot still starts with rule-based scoring. The optional ML layer is a v1

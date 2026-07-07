@@ -8,6 +8,7 @@ from app.collectors.pandascore_match_collector import (
 from app.history.domain import HistoricalMatch, WinnerSide
 from app.history.features import (
     HISTORICAL_NUMERIC_FEATURE_COLUMNS,
+    STAGE_FEATURE_COLUMNS,
     HistoricalFeaturePolicy,
     HistoricalFeatureRow,
     HistoricalFeatureStatus,
@@ -134,6 +135,7 @@ __all__ = [
     "RosterPredecessorResolutionState",
     "RosterSnapshot",
     "RosterSyncResult",
+    "STAGE_FEATURE_COLUMNS",
     "TeamHistorySummary",
     "TeamOrganization",
     "WinnerSide",

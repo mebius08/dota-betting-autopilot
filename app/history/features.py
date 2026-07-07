@@ -10,9 +10,11 @@ from app.history.domain import HistoricalMatch
 from app.history.roster_lineage import (
     HistoricalTournamentChronologyContext,
     RosterLineageGraph,
+    RosterContinuityStrength,
+    RosterPredecessorResolutionState,
     build_roster_lineage_graph,
 )
-from app.history.rosters import RosterSnapshot
+from app.history.rosters import PlayerIdentity, RosterSnapshot
 from app.tournaments import CompetitiveStage
 
 
@@ -23,7 +25,18 @@ HistoryBridgeMode = Literal[
 
 NumericFeatureValue = int | float
 
-HISTORICAL_NUMERIC_FEATURE_COLUMNS = [
+STAGE_FEATURE_COLUMNS: tuple[str, ...] = (
+    "stage_group",
+    "stage_crossover",
+    "stage_upper_bracket",
+    "stage_lower_bracket",
+    "stage_single_elimination",
+    "stage_grand_final",
+    "stage_placement",
+    "stage_unknown",
+)
+
+_BASE_HISTORY_FEATURE_COLUMNS: tuple[str, ...] = (
     "team_a_history_matches",
     "team_a_history_wins",
     "team_a_history_losses",
@@ -44,7 +57,55 @@ HISTORICAL_NUMERIC_FEATURE_COLUMNS = [
     "recency_weighted_win_rate_diff",
     "opponent_adjusted_strength_diff",
     "history_matches_diff",
-]
+)
+
+_ROSTER_FEATURE_SUFFIXES: tuple[str, ...] = (
+    "roster_snapshot_present",
+    "roster_player_count",
+    "roster_predecessor_chain_length",
+    "roster_continuity_overlap_count",
+    "roster_continuity_overlap_ratio",
+    "roster_exact_continuity",
+    "roster_strong_continuity",
+    "roster_coach_supported_continuity",
+    "roster_matches_together",
+)
+
+_PLAYER_FEATURE_SUFFIXES: tuple[str, ...] = (
+    "avg_player_history_matches",
+    "min_player_history_matches",
+    "max_player_history_matches",
+    "avg_player_raw_win_rate",
+    "min_player_raw_win_rate",
+    "max_player_raw_win_rate",
+)
+
+_ROSTER_DIFF_FEATURE_COLUMNS: tuple[str, ...] = (
+    "roster_player_count_diff",
+    "roster_predecessor_chain_length_diff",
+    "roster_continuity_overlap_ratio_diff",
+    "roster_matches_together_diff",
+)
+
+_PLAYER_DIFF_FEATURE_COLUMNS: tuple[str, ...] = (
+    "avg_player_history_matches_diff",
+    "min_player_history_matches_diff",
+    "max_player_history_matches_diff",
+    "avg_player_raw_win_rate_diff",
+    "min_player_raw_win_rate_diff",
+    "max_player_raw_win_rate_diff",
+)
+
+HISTORICAL_NUMERIC_FEATURE_COLUMNS: tuple[str, ...] = (
+    *_BASE_HISTORY_FEATURE_COLUMNS,
+    *STAGE_FEATURE_COLUMNS,
+    *tuple(f"team_a_{suffix}" for suffix in _ROSTER_FEATURE_SUFFIXES),
+    *tuple(f"team_b_{suffix}" for suffix in _ROSTER_FEATURE_SUFFIXES),
+    *_ROSTER_DIFF_FEATURE_COLUMNS,
+    *tuple(f"team_a_{suffix}" for suffix in _PLAYER_FEATURE_SUFFIXES),
+    *tuple(f"team_b_{suffix}" for suffix in _PLAYER_FEATURE_SUFFIXES),
+    *_PLAYER_DIFF_FEATURE_COLUMNS,
+)
 
 
 class HistoricalFeatureRepository(Protocol):
@@ -157,6 +218,30 @@ class TeamHistorySummary:
 
 
 @dataclass(frozen=True)
+class TeamRosterFeatureSummary:
+    snapshot: RosterSnapshot | None
+    roster_snapshot_present: int
+    roster_player_count: int
+    roster_predecessor_chain_length: int
+    roster_continuity_overlap_count: int
+    roster_continuity_overlap_ratio: float
+    roster_exact_continuity: int
+    roster_strong_continuity: int
+    roster_coach_supported_continuity: int
+    roster_matches_together: int
+
+
+@dataclass(frozen=True)
+class TeamPlayerHistoryFeatureSummary:
+    avg_player_history_matches: float
+    min_player_history_matches: int
+    max_player_history_matches: int
+    avg_player_raw_win_rate: float
+    min_player_raw_win_rate: float
+    max_player_raw_win_rate: float
+
+
+@dataclass(frozen=True)
 class HistoricalFeatureRow:
     source: str
     source_match_id: str
@@ -189,6 +274,54 @@ class HistoricalFeatureRow:
     recency_weighted_win_rate_diff: float
     opponent_adjusted_strength_diff: float
     history_matches_diff: int
+    stage_group: int
+    stage_crossover: int
+    stage_upper_bracket: int
+    stage_lower_bracket: int
+    stage_single_elimination: int
+    stage_grand_final: int
+    stage_placement: int
+    stage_unknown: int
+    team_a_roster_snapshot_present: int
+    team_a_roster_player_count: int
+    team_a_roster_predecessor_chain_length: int
+    team_a_roster_continuity_overlap_count: int
+    team_a_roster_continuity_overlap_ratio: float
+    team_a_roster_exact_continuity: int
+    team_a_roster_strong_continuity: int
+    team_a_roster_coach_supported_continuity: int
+    team_a_roster_matches_together: int
+    team_b_roster_snapshot_present: int
+    team_b_roster_player_count: int
+    team_b_roster_predecessor_chain_length: int
+    team_b_roster_continuity_overlap_count: int
+    team_b_roster_continuity_overlap_ratio: float
+    team_b_roster_exact_continuity: int
+    team_b_roster_strong_continuity: int
+    team_b_roster_coach_supported_continuity: int
+    team_b_roster_matches_together: int
+    roster_player_count_diff: int
+    roster_predecessor_chain_length_diff: int
+    roster_continuity_overlap_ratio_diff: float
+    roster_matches_together_diff: int
+    team_a_avg_player_history_matches: float
+    team_a_min_player_history_matches: int
+    team_a_max_player_history_matches: int
+    team_a_avg_player_raw_win_rate: float
+    team_a_min_player_raw_win_rate: float
+    team_a_max_player_raw_win_rate: float
+    team_b_avg_player_history_matches: float
+    team_b_min_player_history_matches: int
+    team_b_max_player_history_matches: int
+    team_b_avg_player_raw_win_rate: float
+    team_b_min_player_raw_win_rate: float
+    team_b_max_player_raw_win_rate: float
+    avg_player_history_matches_diff: float
+    min_player_history_matches_diff: int
+    max_player_history_matches_diff: int
+    avg_player_raw_win_rate_diff: float
+    min_player_raw_win_rate_diff: float
+    max_player_raw_win_rate_diff: float
 
     def numeric_features(self) -> dict[str, NumericFeatureValue]:
         return {
@@ -257,6 +390,7 @@ class _TeamResult:
     opponent_key: str
     won: bool
     weight: float
+    roster_snapshot_id: str | None
 
 
 def calculate_recency_weight(
@@ -354,6 +488,37 @@ def build_historical_match_features(
         strength_state,
         feature_policy,
     )
+    team_a_roster = _build_team_roster_feature_summary(
+        repository=repository,
+        source=context.source,
+        source_team_id=context.team_a_source_id,
+        prediction_timestamp=context.prediction_timestamp,
+        lineage_graph=lineage_graph,
+        competitive_history=team_a_history,
+        team_results=team_a_results,
+    )
+    team_b_roster = _build_team_roster_feature_summary(
+        repository=repository,
+        source=context.source,
+        source_team_id=context.team_b_source_id,
+        prediction_timestamp=context.prediction_timestamp,
+        lineage_graph=lineage_graph,
+        competitive_history=team_b_history,
+        team_results=team_b_results,
+    )
+    team_a_player_history = _build_team_player_history_feature_summary(
+        snapshot=team_a_roster.snapshot,
+        team_results=team_a_results,
+        lineage_graph=lineage_graph,
+        policy=feature_policy,
+    )
+    team_b_player_history = _build_team_player_history_feature_summary(
+        snapshot=team_b_roster.snapshot,
+        team_results=team_b_results,
+        lineage_graph=lineage_graph,
+        policy=feature_policy,
+    )
+    stage_features = _stage_feature_values(context.competitive_stage)
 
     return HistoricalFeatureRow(
         source=context.source,
@@ -397,6 +562,124 @@ def build_historical_match_features(
         opponent_adjusted_strength_diff=team_a_strength - team_b_strength,
         history_matches_diff=(
             team_a_summary.history_matches - team_b_summary.history_matches
+        ),
+        stage_group=stage_features["stage_group"],
+        stage_crossover=stage_features["stage_crossover"],
+        stage_upper_bracket=stage_features["stage_upper_bracket"],
+        stage_lower_bracket=stage_features["stage_lower_bracket"],
+        stage_single_elimination=stage_features["stage_single_elimination"],
+        stage_grand_final=stage_features["stage_grand_final"],
+        stage_placement=stage_features["stage_placement"],
+        stage_unknown=stage_features["stage_unknown"],
+        team_a_roster_snapshot_present=team_a_roster.roster_snapshot_present,
+        team_a_roster_player_count=team_a_roster.roster_player_count,
+        team_a_roster_predecessor_chain_length=(
+            team_a_roster.roster_predecessor_chain_length
+        ),
+        team_a_roster_continuity_overlap_count=(
+            team_a_roster.roster_continuity_overlap_count
+        ),
+        team_a_roster_continuity_overlap_ratio=(
+            team_a_roster.roster_continuity_overlap_ratio
+        ),
+        team_a_roster_exact_continuity=team_a_roster.roster_exact_continuity,
+        team_a_roster_strong_continuity=team_a_roster.roster_strong_continuity,
+        team_a_roster_coach_supported_continuity=(
+            team_a_roster.roster_coach_supported_continuity
+        ),
+        team_a_roster_matches_together=team_a_roster.roster_matches_together,
+        team_b_roster_snapshot_present=team_b_roster.roster_snapshot_present,
+        team_b_roster_player_count=team_b_roster.roster_player_count,
+        team_b_roster_predecessor_chain_length=(
+            team_b_roster.roster_predecessor_chain_length
+        ),
+        team_b_roster_continuity_overlap_count=(
+            team_b_roster.roster_continuity_overlap_count
+        ),
+        team_b_roster_continuity_overlap_ratio=(
+            team_b_roster.roster_continuity_overlap_ratio
+        ),
+        team_b_roster_exact_continuity=team_b_roster.roster_exact_continuity,
+        team_b_roster_strong_continuity=team_b_roster.roster_strong_continuity,
+        team_b_roster_coach_supported_continuity=(
+            team_b_roster.roster_coach_supported_continuity
+        ),
+        team_b_roster_matches_together=team_b_roster.roster_matches_together,
+        roster_player_count_diff=(
+            team_a_roster.roster_player_count
+            - team_b_roster.roster_player_count
+        ),
+        roster_predecessor_chain_length_diff=(
+            team_a_roster.roster_predecessor_chain_length
+            - team_b_roster.roster_predecessor_chain_length
+        ),
+        roster_continuity_overlap_ratio_diff=(
+            team_a_roster.roster_continuity_overlap_ratio
+            - team_b_roster.roster_continuity_overlap_ratio
+        ),
+        roster_matches_together_diff=(
+            team_a_roster.roster_matches_together
+            - team_b_roster.roster_matches_together
+        ),
+        team_a_avg_player_history_matches=(
+            team_a_player_history.avg_player_history_matches
+        ),
+        team_a_min_player_history_matches=(
+            team_a_player_history.min_player_history_matches
+        ),
+        team_a_max_player_history_matches=(
+            team_a_player_history.max_player_history_matches
+        ),
+        team_a_avg_player_raw_win_rate=(
+            team_a_player_history.avg_player_raw_win_rate
+        ),
+        team_a_min_player_raw_win_rate=(
+            team_a_player_history.min_player_raw_win_rate
+        ),
+        team_a_max_player_raw_win_rate=(
+            team_a_player_history.max_player_raw_win_rate
+        ),
+        team_b_avg_player_history_matches=(
+            team_b_player_history.avg_player_history_matches
+        ),
+        team_b_min_player_history_matches=(
+            team_b_player_history.min_player_history_matches
+        ),
+        team_b_max_player_history_matches=(
+            team_b_player_history.max_player_history_matches
+        ),
+        team_b_avg_player_raw_win_rate=(
+            team_b_player_history.avg_player_raw_win_rate
+        ),
+        team_b_min_player_raw_win_rate=(
+            team_b_player_history.min_player_raw_win_rate
+        ),
+        team_b_max_player_raw_win_rate=(
+            team_b_player_history.max_player_raw_win_rate
+        ),
+        avg_player_history_matches_diff=(
+            team_a_player_history.avg_player_history_matches
+            - team_b_player_history.avg_player_history_matches
+        ),
+        min_player_history_matches_diff=(
+            team_a_player_history.min_player_history_matches
+            - team_b_player_history.min_player_history_matches
+        ),
+        max_player_history_matches_diff=(
+            team_a_player_history.max_player_history_matches
+            - team_b_player_history.max_player_history_matches
+        ),
+        avg_player_raw_win_rate_diff=(
+            team_a_player_history.avg_player_raw_win_rate
+            - team_b_player_history.avg_player_raw_win_rate
+        ),
+        min_player_raw_win_rate_diff=(
+            team_a_player_history.min_player_raw_win_rate
+            - team_b_player_history.min_player_raw_win_rate
+        ),
+        max_player_raw_win_rate_diff=(
+            team_a_player_history.max_player_raw_win_rate
+            - team_b_player_history.max_player_raw_win_rate
         ),
     )
 
@@ -600,6 +883,180 @@ def resolve_competitive_history(
     )
 
 
+def _stage_feature_values(stage: CompetitiveStage) -> dict[str, int]:
+    return {
+        "stage_group": int(stage is CompetitiveStage.GROUP),
+        "stage_crossover": int(stage is CompetitiveStage.CROSSOVER),
+        "stage_upper_bracket": int(stage is CompetitiveStage.UPPER_BRACKET),
+        "stage_lower_bracket": int(stage is CompetitiveStage.LOWER_BRACKET),
+        "stage_single_elimination": int(
+            stage is CompetitiveStage.SINGLE_ELIMINATION
+        ),
+        "stage_grand_final": int(stage is CompetitiveStage.GRAND_FINAL),
+        "stage_placement": int(stage is CompetitiveStage.PLACEMENT),
+        "stage_unknown": int(stage is CompetitiveStage.UNKNOWN),
+    }
+
+
+def _build_team_roster_feature_summary(
+    *,
+    repository: HistoricalFeatureRepository,
+    source: str,
+    source_team_id: str,
+    prediction_timestamp: datetime,
+    lineage_graph: RosterLineageGraph,
+    competitive_history: _ResolvedCompetitiveHistory,
+    team_results: tuple[_TeamResult, ...],
+) -> TeamRosterFeatureSummary:
+    snapshot = repository.get_latest_roster_snapshot_for_organization_as_of(
+        source,
+        source_team_id,
+        prediction_timestamp,
+    )
+    if snapshot is None:
+        return _empty_team_roster_feature_summary()
+
+    predecessor_chain_length = 0
+    overlap_count = 0
+    overlap_ratio = 0.0
+    exact_continuity = 0
+    strong_continuity = 0
+    coach_supported_continuity = 0
+    if snapshot.id in lineage_graph.snapshots_by_id:
+        predecessor_chain_length = len(
+            lineage_graph.get_predecessor_chain(snapshot.id)
+        )
+        resolution = lineage_graph.predecessor_resolutions.get(snapshot.id)
+        if (
+            resolution is not None
+            and resolution.state is RosterPredecessorResolutionState.RESOLVED
+            and resolution.evidence is not None
+        ):
+            evidence = resolution.evidence
+            strength = evidence.continuity_strength
+            overlap_count = evidence.overlap_count
+            overlap_ratio = float(evidence.overlap_ratio_smaller_roster)
+            exact_continuity = int(strength is RosterContinuityStrength.EXACT)
+            strong_continuity = int(strength is RosterContinuityStrength.STRONG)
+            coach_supported_continuity = int(
+                strength is RosterContinuityStrength.COACH_SUPPORTED
+            )
+
+    roster_matches_together = (
+        len(team_results)
+        if competitive_history.bridge_mode == "lineage_chronology_windows"
+        else 0
+    )
+    return TeamRosterFeatureSummary(
+        snapshot=snapshot,
+        roster_snapshot_present=1,
+        roster_player_count=len(snapshot.players),
+        roster_predecessor_chain_length=predecessor_chain_length,
+        roster_continuity_overlap_count=overlap_count,
+        roster_continuity_overlap_ratio=overlap_ratio,
+        roster_exact_continuity=exact_continuity,
+        roster_strong_continuity=strong_continuity,
+        roster_coach_supported_continuity=coach_supported_continuity,
+        roster_matches_together=roster_matches_together,
+    )
+
+
+def _empty_team_roster_feature_summary() -> TeamRosterFeatureSummary:
+    return TeamRosterFeatureSummary(
+        snapshot=None,
+        roster_snapshot_present=0,
+        roster_player_count=0,
+        roster_predecessor_chain_length=0,
+        roster_continuity_overlap_count=0,
+        roster_continuity_overlap_ratio=0.0,
+        roster_exact_continuity=0,
+        roster_strong_continuity=0,
+        roster_coach_supported_continuity=0,
+        roster_matches_together=0,
+    )
+
+
+def _build_team_player_history_feature_summary(
+    *,
+    snapshot: RosterSnapshot | None,
+    team_results: tuple[_TeamResult, ...],
+    lineage_graph: RosterLineageGraph,
+    policy: HistoricalFeaturePolicy,
+) -> TeamPlayerHistoryFeatureSummary:
+    if snapshot is None:
+        return _empty_team_player_history_feature_summary(policy)
+
+    current_player_keys = tuple(
+        _player_identity_key(player)
+        for player in snapshot.players
+    )
+    if not current_player_keys:
+        return _empty_team_player_history_feature_summary(policy)
+
+    matches_by_player = dict.fromkeys(current_player_keys, 0)
+    wins_by_player = dict.fromkeys(current_player_keys, 0)
+    for result in team_results:
+        if result.roster_snapshot_id is None:
+            continue
+        history_snapshot = lineage_graph.snapshots_by_id.get(
+            result.roster_snapshot_id
+        )
+        if history_snapshot is None:
+            continue
+
+        historical_player_keys = _player_identity_keys(history_snapshot.players)
+        for player_key in current_player_keys:
+            if player_key not in historical_player_keys:
+                continue
+            matches_by_player[player_key] += 1
+            if result.won:
+                wins_by_player[player_key] += 1
+
+    match_counts = tuple(matches_by_player[player_key] for player_key in current_player_keys)
+    win_rates = tuple(
+        (
+            wins_by_player[player_key] / matches_by_player[player_key]
+            if matches_by_player[player_key] > 0
+            else policy.neutral_win_rate
+        )
+        for player_key in current_player_keys
+    )
+    return TeamPlayerHistoryFeatureSummary(
+        avg_player_history_matches=sum(match_counts) / len(match_counts),
+        min_player_history_matches=min(match_counts),
+        max_player_history_matches=max(match_counts),
+        avg_player_raw_win_rate=sum(win_rates) / len(win_rates),
+        min_player_raw_win_rate=min(win_rates),
+        max_player_raw_win_rate=max(win_rates),
+    )
+
+
+def _empty_team_player_history_feature_summary(
+    policy: HistoricalFeaturePolicy,
+) -> TeamPlayerHistoryFeatureSummary:
+    return TeamPlayerHistoryFeatureSummary(
+        avg_player_history_matches=0.0,
+        min_player_history_matches=0,
+        max_player_history_matches=0,
+        avg_player_raw_win_rate=policy.neutral_win_rate,
+        min_player_raw_win_rate=policy.neutral_win_rate,
+        max_player_raw_win_rate=policy.neutral_win_rate,
+    )
+
+
+def _player_identity_keys(
+    players: tuple[PlayerIdentity, ...],
+) -> set[tuple[str, str]]:
+    return {
+        _player_identity_key(player)
+        for player in players
+    }
+
+
+def _player_identity_key(player: PlayerIdentity) -> tuple[str, str]:
+    return (player.source.strip().casefold(), player.source_player_id.strip())
+
+
 def _direct_organization_history(
     *,
     source: str,
@@ -712,16 +1169,26 @@ def _result_for_team_window(
     prediction_timestamp: datetime,
     policy: HistoricalFeaturePolicy,
 ) -> _TeamResult | None:
-    team_key = window.team_key
     pair = _match_to_result_pair(match, prediction_timestamp, policy)
     if pair is None:
         return None
     left, right = pair
+    team_key = window.team_key
+    result: _TeamResult | None = None
     if left.team_key == team_key:
-        return left
-    if right.team_key == team_key:
-        return right
-    return None
+        result = left
+    elif right.team_key == team_key:
+        result = right
+    if result is None:
+        return None
+    return _TeamResult(
+        match=result.match,
+        team_key=result.team_key,
+        opponent_key=result.opponent_key,
+        won=result.won,
+        weight=result.weight,
+        roster_snapshot_id=window.roster_snapshot_id,
+    )
 
 
 def _results_by_team(
@@ -772,6 +1239,7 @@ def _match_to_result_pair(
             opponent_key=team_b_key,
             won=team_a_won,
             weight=weight,
+            roster_snapshot_id=None,
         ),
         _TeamResult(
             match=match,
@@ -779,6 +1247,7 @@ def _match_to_result_pair(
             opponent_key=team_a_key,
             won=not team_a_won,
             weight=weight,
+            roster_snapshot_id=None,
         ),
     )
 
