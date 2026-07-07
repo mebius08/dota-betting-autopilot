@@ -263,6 +263,31 @@ def create_parser() -> ArgumentParser:
         ),
     )
 
+    feature_status_parser = subparsers.add_parser(
+        "feature-status",
+        help="Show offline point-in-time historical feature readiness.",
+    )
+    feature_status_parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("data") / "autopilot.db",
+        help="SQLite database path.",
+    )
+    feature_status_parser.add_argument(
+        "--as-of",
+        type=_utc_datetime,
+        help=(
+            "ISO-8601 UTC-aware cutoff timestamp, for example "
+            "2026-07-07T12:00:00Z."
+        ),
+    )
+    feature_status_parser.add_argument(
+        "--decay-days",
+        type=_positive_float,
+        default=90.0,
+        help="Recency exponential decay baseline in days.",
+    )
+
     ewc_status_parser = subparsers.add_parser(
         "ewc-status",
         help="Show persisted EWC 2026 Dota match scope status.",
@@ -637,6 +662,8 @@ def main(
             return _roster_status_command(args)
         if args.command == "lineage-status":
             return _lineage_status_command(args)
+        if args.command == "feature-status":
+            return _feature_status_command(args)
         if args.command == "ewc-status":
             return _ewc_status_command(args)
         if args.command == "fetch-odds":
@@ -1036,6 +1063,40 @@ def _lineage_status_command(args: Namespace) -> int:
     return 0
 
 
+def _feature_status_command(args: Namespace) -> int:
+    import app.history as history
+
+    db_path = Path(args.db)
+    as_of = args.as_of or datetime.now(timezone.utc)
+    policy = history.HistoricalFeaturePolicy(
+        recency=history.RecencyWeightingPolicy(decay_days=args.decay_days)
+    )
+    print("Historical feature status")
+    print(f"Database: {db_path.as_posix()}")
+    print(f"As of: {as_of.isoformat()}")
+    print(f"Decay days: {policy.recency.decay_days:g}")
+
+    if not db_path.exists():
+        _print_empty_feature_status(policy)
+        return 0
+    if not _sqlite_table_exists(db_path, "historical_matches"):
+        _print_empty_feature_status(policy)
+        return 0
+
+    repository = SQLiteRepository(db_path)
+    status = history.build_historical_feature_status(
+        repository,
+        as_of=as_of,
+        policy=policy,
+    )
+    _print_feature_status(status)
+
+    if status.historical_matches_available == 0:
+        print()
+        print("No point-in-time historical matches available.")
+    return 0
+
+
 def _print_empty_history_status() -> None:
     from app.tournaments import CompetitiveStage
 
@@ -1065,6 +1126,79 @@ def _print_empty_roster_status() -> None:
     print("Unique player-roster fingerprints: 0")
     print()
     print("No roster snapshots found.")
+
+
+def _print_empty_feature_status(policy: object) -> None:
+    import app.history as history
+
+    feature_policy = cast(history.HistoricalFeaturePolicy, policy)
+    print("Historical matches available: 0")
+    print("Usable match-result records: 0")
+    print("Stable teams in strength state: 0")
+    print("Teams with no history: 0")
+    print("Average raw history matches per team: 0.00")
+    print("Average recency weighted history mass: 0.000")
+    print("Opponent-adjusted strength range: -")
+    print(
+        "Cold-start policy: "
+        f"raw_win_rate={feature_policy.neutral_win_rate:.2f}, "
+        "recency_weighted_win_rate="
+        f"{feature_policy.neutral_win_rate:.2f}, "
+        "opponent_adjusted_strength="
+        f"{feature_policy.neutral_strength:.3f}"
+    )
+    print()
+    print("No point-in-time historical matches available.")
+
+
+def _print_feature_status(status: object) -> None:
+    import app.history as history
+
+    feature_status = cast(history.HistoricalFeatureStatus, status)
+    print(
+        "Historical matches available: "
+        f"{feature_status.historical_matches_available}"
+    )
+    print(
+        "Usable match-result records: "
+        f"{feature_status.usable_match_result_records}"
+    )
+    print(
+        "Stable teams in strength state: "
+        f"{feature_status.stable_teams_in_strength_state}"
+    )
+    print(f"Teams with no history: {feature_status.teams_with_no_history}")
+    print(
+        "Average raw history matches per team: "
+        f"{feature_status.average_raw_history_matches_per_team:.2f}"
+    )
+    print(
+        "Average recency weighted history mass: "
+        f"{feature_status.average_recency_weighted_history_mass:.3f}"
+    )
+    print(
+        "Opponent-adjusted strength range: "
+        f"{_format_strength_range(feature_status)}"
+    )
+    print(
+        "Cold-start policy: "
+        f"raw_win_rate={feature_status.neutral_raw_win_rate:.2f}, "
+        "recency_weighted_win_rate="
+        f"{feature_status.neutral_recency_weighted_win_rate:.2f}, "
+        "opponent_adjusted_strength="
+        f"{feature_status.neutral_opponent_adjusted_strength:.3f}"
+    )
+
+
+def _format_strength_range(status: object) -> str:
+    import app.history as history
+
+    feature_status = cast(history.HistoricalFeatureStatus, status)
+    min_strength = feature_status.min_opponent_adjusted_strength
+    max_strength = feature_status.max_opponent_adjusted_strength
+    if min_strength is None or max_strength is None:
+        return "-"
+    return f"{min_strength:.3f} to {max_strength:.3f}"
 
 
 def _print_empty_lineage_status() -> None:

@@ -410,6 +410,70 @@ links, ambiguity count, root snapshots, derived components, organization-crossin
 links, and largest predecessor chain size. It does not print fake confidence
 percentages and it does not sync or persist lineages.
 
+## Point-in-time historical features
+
+Historical feature generation is a deterministic offline input layer for a
+future Historical ML Model v2. It is not model training, calibration, a betting
+signal, bookmaker automation, or a live candidate engine.
+
+Feature rows require an explicit `HistoricalPredictionContext`. For historical
+training rows, the prediction timestamp is the target match `started_at`, never
+`ended_at`, ingestion time, or current wall-clock time. Only completed historical
+matches with `ended_at < prediction_timestamp` may contribute. A match completed
+exactly at the prediction timestamp is excluded, matches still in progress at
+the timestamp are excluded, and the target match is explicitly removed by
+`source + source_match_id` even if malformed fixture timing would otherwise make
+it look eligible.
+
+Raw team form uses stable provider team IDs, not display names. Unknown or
+unusable winner records are excluded from the denominator rather than counted as
+losses. Empty history uses neutral cold-start defaults:
+`raw_win_rate=0.5`, `recency_weighted_win_rate=0.5`, and
+`opponent_adjusted_strength=0.0`, while explicit sample-count features remain in
+the row so the future model can distinguish no history from known .500 history.
+
+Roster lineage is used conservatively where point-in-time roster snapshots make
+it safe. The bridge follows accepted predecessor snapshots only, uses chronology
+windows for those roster organizations, and does not auto-use ambiguous
+branches. Organization identity alone is not competitive history: old unrelated
+1W matches do not automatically attach to a transferred Tundra roster, and
+ancient unrelated LGD matches do not automatically attach to a transferred
+HEROIC roster. Because historical match rows currently store organization/team
+IDs rather than exact roster snapshot IDs, this bridge is conservative
+organization-window attribution; it does not claim perfect match-to-roster
+membership.
+
+Recency weights are computed dynamically for each prediction timestamp with:
+
+```text
+exp(-age_days / decay_days)
+```
+
+where `age_days = prediction_timestamp - historical_match.ended_at`.
+The default `decay_days=90.0` is an initial baseline configuration, not proven
+optimal truth. No static eternal match weight is persisted, and the policy can be
+changed later to evaluate alternatives such as 30, 60, 120, or 180 days.
+
+Opponent-adjusted strength is a basic deterministic v1 strength-of-schedule
+adjustment. For one prediction timestamp it builds one point-in-time historical
+universe, computes recency-weighted base form for stable team IDs, runs fixed
+batch iterations, and applies low-sample shrinkage toward neutral. Team A and
+Team B are read from the same point-in-time strength state, so future opponent
+results cannot affect an older row. Difference features consistently use
+`Team A value - Team B value`; swapping the target orientation swaps A/B groups
+and flips the difference signs.
+
+Inspect feature readiness offline:
+
+```powershell
+python -m app.cli feature-status --db data/autopilot.db --as-of 2026-07-07T12:00:00Z --decay-days 90
+```
+
+`feature-status` makes no network calls. It reports the cutoff timestamp, decay
+policy, available historical matches, usable match-result records, stable teams
+in the derived strength state, average raw and weighted history mass,
+opponent-adjusted strength range, and neutral cold-start policy.
+
 ## Tournament competitive stage model
 
 The current product target is EWC 2026 Dota 2. EWC 2026 currently uses a
