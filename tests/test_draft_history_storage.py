@@ -5,10 +5,12 @@ from urllib.request import Request
 
 from app.draft_history import (
     OPENDOTA_SOURCE,
+    OPENDOTA_USER_AGENT,
     HistoricalDotaGame,
     HistoricalDraftAction,
     draft_action_id,
     fetch_opendota_match_detail,
+    fetch_opendota_pro_match_rows,
     historical_dota_game_id,
     map_opendota_match_detail,
 )
@@ -60,29 +62,36 @@ def test_opendota_mapping_preserves_order_side_winner_and_patch() -> None:
     ]
 
 
-def test_opendota_fetch_uses_keyword_timeout_not_positional_data() -> None:
-    seen: dict[str, object] = {}
-
-    def stdlib_shaped_urlopen(
-        request: Request,
-        data: object | None = None,
-        timeout: float | None = None,
-    ) -> _RawFakeResponse:
-        seen["request"] = request
-        seen["data"] = data
-        seen["timeout"] = timeout
-        return _RawFakeResponse(b'{"match_id": 1001}')
+def test_opendota_match_detail_request_uses_project_user_agent_and_keyword_timeout() -> None:
+    urlopen = _StdlibShapedFakeOpen(b'{"match_id": 1001}')
 
     detail = fetch_opendota_match_detail(
         1001,
         timeout=2.5,
-        urlopen_func=stdlib_shaped_urlopen,
+        urlopen_func=urlopen,
     )
 
     assert detail == {"match_id": 1001}
-    assert isinstance(seen["request"], Request)
-    assert seen["data"] is None
-    assert seen["timeout"] == 2.5
+    request = _assert_single_opendota_request(urlopen, expected_timeout=2.5)
+    assert request.full_url == "https://api.opendota.com/api/matches/1001"
+
+
+def test_opendota_pro_match_list_request_uses_project_user_agent_and_keyword_timeout() -> None:
+    urlopen = _StdlibShapedFakeOpen(
+        b'[{"match_id": 1001, "start_time": 1767259200}]'
+    )
+
+    rows = fetch_opendota_pro_match_rows(
+        since=datetime(2025, 12, 31, tzinfo=timezone.utc),
+        until=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        max_pages=1,
+        timeout=4.5,
+        urlopen_func=urlopen,
+    )
+
+    assert rows == [{"match_id": 1001, "start_time": 1_767_259_200}]
+    request = _assert_single_opendota_request(urlopen, expected_timeout=4.5)
+    assert request.full_url == "https://api.opendota.com/api/proMatches"
 
 
 def test_draft_game_upsert_is_idempotent_and_replaces_actions(tmp_path: Path) -> None:
@@ -175,6 +184,42 @@ class _RawFakeResponse:
         traceback: object,
     ) -> object:
         return False
+
+
+class _StdlibShapedFakeOpen:
+    def __init__(self, body: bytes) -> None:
+        self.body = body
+        self.requests: list[Request] = []
+        self.data_values: list[object | None] = []
+        self.timeouts: list[float | None] = []
+
+    def __call__(
+        self,
+        request: Request,
+        data: object | None = None,
+        timeout: float | None = None,
+    ) -> _RawFakeResponse:
+        self.requests.append(request)
+        self.data_values.append(data)
+        self.timeouts.append(timeout)
+        if data is not None:
+            raise AssertionError("OpenDota GET requests must not pass request data.")
+        return _RawFakeResponse(self.body)
+
+
+def _assert_single_opendota_request(
+    urlopen: _StdlibShapedFakeOpen,
+    *,
+    expected_timeout: float,
+) -> Request:
+    assert len(urlopen.requests) == 1
+    request = urlopen.requests[0]
+    assert isinstance(request, Request)
+    assert request.get_header("Accept") == "application/json"
+    assert request.get_header("User-agent") == OPENDOTA_USER_AGENT
+    assert urlopen.data_values == [None]
+    assert urlopen.timeouts == [expected_timeout]
+    return request
 
 
 def _game(source_game_id: str, *, winner_side: str) -> HistoricalDotaGame:

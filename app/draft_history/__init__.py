@@ -11,6 +11,7 @@ from app.draft_history.domain import (
 from app.draft_history.opendota import (
     OPENDOTA_API_BASE_URL,
     OPENDOTA_SOURCE,
+    OPENDOTA_USER_AGENT,
     DraftCollectionResult,
     DraftMappingResult,
     OpenDotaDraftCollector,
@@ -43,6 +44,7 @@ __all__ = [
     "HistoricalDraftAction",
     "OPENDOTA_API_BASE_URL",
     "OPENDOTA_SOURCE",
+    "OPENDOTA_USER_AGENT",
     "OpenDotaDraftCollector",
     "OpenDotaRequestError",
     "OpenDotaResponseError",

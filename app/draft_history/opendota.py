@@ -22,6 +22,11 @@ from app.draft_history.domain import (
 
 OPENDOTA_SOURCE = "opendota"
 OPENDOTA_API_BASE_URL = "https://api.opendota.com/api"
+OPENDOTA_USER_AGENT = "dota-betting-autopilot/1.0"
+_OPENDOTA_REQUEST_HEADERS: Mapping[str, str] = {
+    "Accept": "application/json",
+    "User-Agent": OPENDOTA_USER_AGENT,
+}
 
 
 class _Response(Protocol):
@@ -417,7 +422,7 @@ def _fetch_json(
     timeout: float,
     urlopen_func: _UrlOpen,
 ) -> object:
-    request = Request(url, headers={"Accept": "application/json"}, method="GET")
+    request = _opendota_request(url)
     try:
         with urlopen_func(request, timeout=timeout) as response:
             raw_body = response.read()
@@ -432,6 +437,10 @@ def _fetch_json(
         return json.loads(raw_body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise OpenDotaResponseError("OpenDota returned invalid JSON.") from exc
+
+
+def _opendota_request(url: str) -> Request:
+    return Request(url, headers=dict(_OPENDOTA_REQUEST_HEADERS), method="GET")
 
 
 def _url_with_query(url: str, query: Mapping[str, str]) -> str:
