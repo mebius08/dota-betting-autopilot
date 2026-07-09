@@ -836,6 +836,56 @@ python -m app.cli draft-history-status --db data/autopilot.db
 python -m app.cli draft-ml-status --db data/autopilot.db
 ```
 
+Historical draft/source status:
+
+- OpenDota's initial HTTP 403 was fixed by sending the project User-Agent
+  `dota-betting-autopilot/1.0`.
+- Free OpenDota still remains limited by rate/rate-limit concerns for the
+  intended historical backfill scale.
+- STRATZ Default Token GraphQL was tested and closed after even the minimal
+  `matches(ids: [Long]!) { id }` path returned `PERMISSION_RESTRICTED`
+  / `User is not an admin`. GraphQL schema richness does not change that access
+  decision.
+- STRATZ public `/match/<Valve match id>` pages were separately investigated
+  using ordinary public HTML and embedded client page state only. The public
+  page probe uses no STRATZ token, no login, no browser automation, and no auth
+  bypass.
+- The public-page source-contract decision is `STRATZ_PUBLIC_SUFFICIENT` for
+  proceeding to a production historical ingestion/backfill design, with the
+  limitations documented in `docs/public_match_page_data_feasibility.md`.
+
+Probe STRATZ as a free historical game data candidate without writing to the
+database:
+
+```powershell
+$env:STRATZ_TOKEN = "<your STRATZ Default Token>"
+python -m app.cli probe-stratz-history --sample-size 12 --match-id 8886013461 --match-id 8886005043
+```
+
+The STRATZ command is a read-only feasibility probe, not a production sync. It
+uses `STRATZ_TOKEN` from the environment, never prints the token, does not
+persist responses, and reports field-by-field coverage before any future source
+promotion decision. When automatic professional-match discovery is not verified
+by the live schema, pass repeated `--match-id` values; explicit IDs are batched
+at the currently observed STRATZ limit of 10 per request. See
+`docs/stratz_historical_data_feasibility.md`.
+
+Probe public professional Dota match pages without a token, login, browser
+automation, or database writes:
+
+```powershell
+python -m app.cli probe-public-match-pages --source stratz --delay-seconds 1 --match-id 8886013461 --match-id 8886005043
+```
+
+The public-page probe uses an honest project User-Agent, checks robots policy,
+fetches pages sequentially, parses only public HTML/embedded page state, and
+prints provenance-aware coverage. It is a feasibility probe, not a production
+crawler. The 12-match EWC smoke sample supports POST_DRAFT training and
+PRE_MAP/historical features with limitations, but it does not prove a real-time
+live feed, historical bookmaker cash-out prices, complete ordered pick/ban
+sequence semantics, item timing, kill timelines, or objective timelines. See
+`docs/public_match_page_data_feasibility.md`.
+
 Draft persistence is relational. `historical_dota_games` stores source/provider
 game identity, parent series identity when available, nullable explicit
 cross-provider link, timestamps, source-local teams, winner, game number,

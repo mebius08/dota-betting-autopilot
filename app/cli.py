@@ -243,6 +243,84 @@ def create_parser() -> ArgumentParser:
         help="HTTP timeout in seconds.",
     )
 
+    stratz_probe_parser = subparsers.add_parser(
+        "probe-stratz-history",
+        help="Run a read-only STRATZ historical game data feasibility probe.",
+    )
+    stratz_probe_parser.add_argument(
+        "--sample-size",
+        type=_positive_int,
+        default=12,
+        help="Representative sample size to probe, default 12.",
+    )
+    stratz_probe_parser.add_argument(
+        "--match-id",
+        action="append",
+        default=[],
+        help=(
+            "Explicit STRATZ/Valve match ID to probe. Repeat for multiple "
+            "matches. If omitted, the command tries STRATZ match discovery."
+        ),
+    )
+    stratz_probe_parser.add_argument(
+        "--timeout",
+        type=_positive_float,
+        default=10.0,
+        help="HTTP timeout in seconds.",
+    )
+    stratz_probe_parser.add_argument(
+        "--delay-seconds",
+        type=_non_negative_float,
+        default=1.0,
+        help="Sequential delay between match requests.",
+    )
+
+    public_pages_probe_parser = subparsers.add_parser(
+        "probe-public-match-pages",
+        help="Run a read-only public match page data feasibility probe.",
+    )
+    public_pages_probe_parser.add_argument(
+        "--source",
+        choices=("stratz", "sofascore"),
+        default="stratz",
+        help="Public page source to probe.",
+    )
+    public_pages_probe_parser.add_argument(
+        "--match-id",
+        action="append",
+        default=[],
+        help=(
+            "Valve/source match ID to probe. Repeat for multiple matches. "
+            "STRATZ URLs are built as /match/<id>."
+        ),
+    )
+    public_pages_probe_parser.add_argument(
+        "--page-url",
+        action="append",
+        default=[],
+        help=(
+            "Explicit public match page URL to probe. Useful for sources whose "
+            "page slug is not derivable from a Valve match ID."
+        ),
+    )
+    public_pages_probe_parser.add_argument(
+        "--timeout",
+        type=_positive_float,
+        default=10.0,
+        help="HTTP timeout in seconds.",
+    )
+    public_pages_probe_parser.add_argument(
+        "--delay-seconds",
+        type=_non_negative_float,
+        default=1.0,
+        help="Sequential delay between public page requests.",
+    )
+    public_pages_probe_parser.add_argument(
+        "--skip-referenced-resources",
+        action="store_true",
+        help="Do not fetch JSON/page-data resources directly referenced by pages.",
+    )
+
     sync_rosters_parser = subparsers.add_parser(
         "sync-rosters",
         help="Sync bounded historical Dota roster data from a provider.",
@@ -859,6 +937,10 @@ def main(
             return _sync_history_command(args)
         if args.command == "sync-drafts":
             return _sync_drafts_command(args)
+        if args.command == "probe-stratz-history":
+            return _probe_stratz_history_command(args)
+        if args.command == "probe-public-match-pages":
+            return _probe_public_match_pages_command(args)
         if args.command == "sync-rosters":
             return _sync_rosters_command(args)
         if args.command == "history-status":
@@ -1189,6 +1271,52 @@ def _sync_drafts_command(args: Namespace) -> int:
         print(f"Warnings: {len(result.warnings)}")
         for warning in result.warnings[:10]:
             print(f"Warning: {warning}")
+    return 0
+
+
+def _probe_stratz_history_command(args: Namespace) -> int:
+    import app.stratz as stratz
+
+    client = stratz.StratzGraphQLClient(timeout=args.timeout)
+    probe = stratz.StratzFeasibilityProbe(client)
+    try:
+        result = probe.run(
+            sample_size=args.sample_size,
+            match_ids=tuple(args.match_id),
+            delay_seconds=args.delay_seconds,
+            real_source=True,
+        )
+    except (
+        stratz.StratzConfigurationError,
+        stratz.StratzRequestError,
+        stratz.StratzResponseError,
+        ValueError,
+    ) as exc:
+        print(str(exc))
+        return 1
+
+    print(stratz.render_probe_result(result))
+    return 0
+
+
+def _probe_public_match_pages_command(args: Namespace) -> int:
+    import app.public_pages as public_pages
+
+    client = public_pages.PublicPageHttpClient(timeout=args.timeout)
+    probe = public_pages.PublicMatchPageProbe(client)
+    try:
+        result = probe.run(
+            source=public_pages.PublicPageSource(args.source),
+            match_ids=tuple(args.match_id),
+            page_urls=tuple(args.page_url),
+            delay_seconds=args.delay_seconds,
+            fetch_referenced_resources=not args.skip_referenced_resources,
+        )
+    except ValueError as exc:
+        print(str(exc))
+        return 1
+
+    print(public_pages.render_public_page_probe_result(result))
     return 0
 
 
@@ -3116,6 +3244,17 @@ def _positive_float(value: str) -> float:
 
     if parsed <= 0:
         raise ArgumentTypeError("must be greater than 0")
+    return parsed
+
+
+def _non_negative_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise ArgumentTypeError("must be a number") from exc
+
+    if parsed < 0:
+        raise ArgumentTypeError("must not be negative")
     return parsed
 
 
