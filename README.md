@@ -853,6 +853,18 @@ Historical draft/source status:
 - The public-page source-contract decision is `STRATZ_PUBLIC_SUFFICIENT` for
   proceeding to a production historical ingestion/backfill design, with the
   limitations documented in `docs/public_match_page_data_feasibility.md`.
+- The production-shaped STRATZ public-page ingestion adapter now lives behind
+  `sync-drafts --provider stratz-public`. It uses the same historical Dota game
+  repository namespace as draft sync, stores source provenance as
+  `stratz_public`, and preserves the public source-contract limitations instead
+  of promoting partial fields.
+- The post-adapter live gate is now
+  `STRATZ_PUBLIC_READY_FOR_BOUNDED_BACKFILL`: the single-match shallow-root
+  regression was fixed, the repeated regression match returned `UNCHANGED`, and
+  a seven-match bounded live source-shape canary completed with patches
+  `177`/`180`/`182`, recognized `pgl`, `the_international`, and `dreamleague`
+  families, zero parse failures, zero ingestion-critical invariant failures, and
+  seven storage successes.
 
 Probe STRATZ as a free historical game data candidate without writing to the
 database:
@@ -886,6 +898,28 @@ live feed, historical bookmaker cash-out prices, complete ordered pick/ban
 sequence semantics, item timing, kill timelines, or objective timelines. See
 `docs/public_match_page_data_feasibility.md`.
 
+Ingest explicit STRATZ public match pages into the historical draft/game store
+without GraphQL, browser automation, authentication, or broad crawling:
+
+```powershell
+python -m app.cli sync-drafts --provider stratz-public --db data/autopilot.db --match-id 8886013461 --delay-seconds 1 --max-retries 1
+```
+
+The STRATZ public adapter checks robots policy, fetches ordinary public
+`/match/<Valve match id>` HTML sequentially with the project User-Agent, and
+optionally reads directly referenced public JSON/page-data resources. It is
+bounded by explicit `--match-id` values, reports per-match outcomes such as
+`INGESTED`, `UPDATED`, `UNCHANGED`, `NOT_FOUND`, `FETCH_FAILED`,
+`PARSE_FAILED`, and `SOURCE_INCOMPLETE`, and renders aggregate canary counts.
+The report distinguishes `LIVE_REQUEST_EXECUTED` from evidence-derived statuses
+such as `LIVE_SINGLE_OR_HOMOGENEOUS_SAMPLE`,
+`LIVE_CANARY_CRITICAL_FAILURE`, and
+`LIVE_MULTI_FAMILY_CANARY_COMPLETED`. A completed bounded source-shape canary
+selects `STRATZ_PUBLIC_READY_FOR_BOUNDED_BACKFILL`; this means deliberately
+scoped backfill may be designed next, not unlimited crawling, real-time feed
+support, production SLA, objective/item/kill timeline support, or historical
+bookmaker odds support.
+
 Draft persistence is relational. `historical_dota_games` stores source/provider
 game identity, parent series identity when available, nullable explicit
 cross-provider link, timestamps, source-local teams, winner, game number,
@@ -896,6 +930,35 @@ team/side, optional team source ID, and stable hero ID. Upsert is idempotent by
 `source + source_game_id`; repeated sync does not duplicate actions, and
 conflicting source identity or winner semantics are rejected instead of silently
 merged.
+
+STRATZ public-page final player state and advantage trajectories are stored in
+small side tables rather than pretending they are ordered draft actions.
+`historical_dota_player_final_stats` stores player account ID, side/team
+association, hero, final K/D/A, final economy/farm/damage summaries, and final
+inventory. `historical_dota_advantage_points` stores gold/XP advantage curves
+by Valve match ID with `source_index`, optional raw `source_time_value`,
+optional `normalized_time_seconds`, and an explicit
+`time_semantics_status`. Number-only public curves remain
+`source_index_unstable`; downstream code must not treat those indices as
+canonical elapsed match seconds.
+
+Future trading-roadmap note: the primary intended product direction is
+short-horizon in-play position trading, approximately `t -> t + 5 minutes`,
+with future decisions framed as `OPEN / HOLD / CASH OUT / FLIP`. Final match win
+probability can remain useful as long-horizon context, an auxiliary target, or a
+baseline, but it is not necessarily the primary trading target. The future
+decomposition is game-state trajectory prediction, then market probability/odds
+reaction modeling, then position execution and cash-out policy. STRATZ historical
+match trajectories provide game-state trajectory data; they do not provide
+historical bookmaker probability or odds trajectories, so market-reaction work
+will require a separate bookmaker odds-history dataset or prospectively collected
+odds time series.
+
+Next roadmap step: design and execute a deliberately bounded STRATZ historical
+trajectory backfill that preserves full gold/XP curves and produces a
+source-readiness corpus for future `t -> t+5 minute` trajectory-window dataset
+construction. Do not train trajectory models or define final window labels before
+that bounded trajectory corpus exists and is audited.
 
 Post-draft features represent hero IDs as categorical values in the provider
 namespace, for example `opendota:hero:100`; hero ID `100` is not treated as

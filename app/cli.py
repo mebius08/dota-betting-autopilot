@@ -203,7 +203,7 @@ def create_parser() -> ArgumentParser:
     )
     sync_drafts_parser.add_argument(
         "--provider",
-        choices=("opendota",),
+        choices=("opendota", "stratz-public"),
         required=True,
     )
     sync_drafts_parser.add_argument(
@@ -215,14 +215,21 @@ def create_parser() -> ArgumentParser:
     sync_drafts_parser.add_argument(
         "--since",
         type=_utc_start_date,
-        required=True,
         help="UTC start date for provider game history, YYYY-MM-DD.",
     )
     sync_drafts_parser.add_argument(
         "--until",
         type=_utc_end_date,
-        required=True,
         help="UTC end date for provider game history, YYYY-MM-DD.",
+    )
+    sync_drafts_parser.add_argument(
+        "--match-id",
+        action="append",
+        default=[],
+        help=(
+            "Explicit Valve match ID for the stratz-public provider. Repeat for "
+            "a bounded canary set."
+        ),
     )
     sync_drafts_parser.add_argument(
         "--page-size",
@@ -241,6 +248,29 @@ def create_parser() -> ArgumentParser:
         type=_positive_float,
         default=10.0,
         help="HTTP timeout in seconds.",
+    )
+    sync_drafts_parser.add_argument(
+        "--delay-seconds",
+        type=_non_negative_float,
+        default=1.0,
+        help="Sequential delay between stratz-public page requests.",
+    )
+    sync_drafts_parser.add_argument(
+        "--max-retries",
+        type=_non_negative_int,
+        default=1,
+        help="Bounded retries for retryable stratz-public transport failures.",
+    )
+    sync_drafts_parser.add_argument(
+        "--retry-backoff-seconds",
+        type=_non_negative_float,
+        default=1.0,
+        help="Backoff between retryable stratz-public attempts.",
+    )
+    sync_drafts_parser.add_argument(
+        "--skip-referenced-resources",
+        action="store_true",
+        help="Do not fetch JSON/page-data resources directly referenced by pages.",
     )
 
     stratz_probe_parser = subparsers.add_parser(
@@ -372,7 +402,7 @@ def create_parser() -> ArgumentParser:
     )
     draft_history_status_parser.add_argument(
         "--provider",
-        choices=("opendota",),
+        choices=("opendota", "stratz-public"),
         default="opendota",
         help="Draft data provider namespace to inspect.",
     )
@@ -1221,8 +1251,36 @@ def _sync_history_command(args: Namespace) -> int:
 def _sync_drafts_command(args: Namespace) -> int:
     import app.draft_history as draft_history
 
+    if args.provider == "stratz-public":
+        import app.public_pages as public_pages
+
+        if not any(str(match_id).strip() for match_id in args.match_id):
+            print("At least one --match-id is required for stratz-public.")
+            return 1
+        repository = SQLiteRepository(args.db)
+        client = public_pages.PublicPageHttpClient(timeout=args.timeout)
+        try:
+            stratz_result = public_pages.sync_stratz_public_match_pages(
+                repository=repository,
+                match_ids=tuple(args.match_id),
+                client=client,
+                delay_seconds=args.delay_seconds,
+                max_retries=args.max_retries,
+                retry_backoff_seconds=args.retry_backoff_seconds,
+                fetch_referenced_resources=not args.skip_referenced_resources,
+            )
+        except ValueError as exc:
+            print(str(exc))
+            return 1
+
+        print(public_pages.render_stratz_public_sync_result(stratz_result))
+        return 0
+
     if args.provider != "opendota":
         print(f"Unsupported provider: {args.provider}")
+        return 1
+    if args.since is None or args.until is None:
+        print("--since and --until are required for provider opendota.")
         return 1
     if args.since > args.until:
         print("--since must be before or equal to --until.")
@@ -1405,6 +1463,7 @@ def _draft_history_status_command(args: Namespace) -> int:
     import app.draft_history as draft_history
 
     db_path = Path(args.db)
+    provider = "stratz_public" if args.provider == "stratz-public" else args.provider
     print("Historical Dota draft dataset")
     print(f"Database: {db_path.as_posix()}")
     print(f"Provider: {args.provider}")
@@ -1422,7 +1481,7 @@ def _draft_history_status_command(args: Namespace) -> int:
     repository = SQLiteRepository(db_path)
     status = draft_history.build_draft_history_status(
         repository,
-        provider=args.provider,
+        provider=provider,
     )
     print(f"Historical games: {status.historical_games}")
     print(f"Games with usable winner: {status.games_with_usable_winner}")
@@ -3161,6 +3220,17 @@ def _positive_int(value: str) -> int:
 
     if parsed < 1:
         raise ArgumentTypeError("must be at least 1")
+    return parsed
+
+
+def _non_negative_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise ArgumentTypeError("must be an integer") from exc
+
+    if parsed < 0:
+        raise ArgumentTypeError("must not be negative")
     return parsed
 
 

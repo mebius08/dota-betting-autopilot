@@ -35,6 +35,8 @@ def test_draft_tables_are_created(tmp_path: Path) -> None:
 
     assert "historical_dota_games" in tables
     assert "historical_draft_actions" in tables
+    assert "historical_dota_player_final_stats" in tables
+    assert "historical_dota_advantage_points" in tables
 
 
 def test_opendota_mapping_preserves_order_side_winner_and_patch() -> None:

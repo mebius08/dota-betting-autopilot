@@ -178,6 +178,52 @@ CREATE TABLE IF NOT EXISTS historical_draft_actions (
         ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS historical_dota_player_final_stats (
+    id TEXT PRIMARY KEY,
+    game_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    source_game_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    player_slot INTEGER NULL,
+    team_side TEXT NOT NULL,
+    team_source_id TEXT NULL,
+    hero_id INTEGER NOT NULL,
+    kills INTEGER NULL,
+    deaths INTEGER NULL,
+    assists INTEGER NULL,
+    net_worth INTEGER NULL,
+    last_hits INTEGER NULL,
+    denies INTEGER NULL,
+    gpm INTEGER NULL,
+    xpm INTEGER NULL,
+    level INTEGER NULL,
+    hero_damage INTEGER NULL,
+    tower_damage INTEGER NULL,
+    hero_healing INTEGER NULL,
+    final_item_ids_json TEXT NOT NULL,
+    UNIQUE (game_id, account_id),
+    FOREIGN KEY (game_id) REFERENCES historical_dota_games (id)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS historical_dota_advantage_points (
+    id TEXT PRIMARY KEY,
+    game_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    source_game_id TEXT NOT NULL,
+    metric TEXT NOT NULL CHECK (metric IN ('gold', 'xp')),
+    source_index INTEGER NOT NULL,
+    source_time_value TEXT NULL,
+    normalized_time_seconds INTEGER NULL,
+    time_semantics_status TEXT NOT NULL CHECK (
+        time_semantics_status IN ('normalized_seconds', 'source_index_unstable')
+    ),
+    value REAL NOT NULL,
+    UNIQUE (game_id, metric, source_index),
+    FOREIGN KEY (game_id) REFERENCES historical_dota_games (id)
+        ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS players (
     id TEXT PRIMARY KEY,
     source TEXT NOT NULL,
@@ -246,6 +292,12 @@ ON historical_dota_games (ended_at, started_at, source, source_game_id);
 
 CREATE INDEX IF NOT EXISTS idx_historical_draft_actions_game
 ON historical_draft_actions (game_id, action_order);
+
+CREATE INDEX IF NOT EXISTS idx_historical_dota_player_final_stats_game
+ON historical_dota_player_final_stats (game_id, team_side, account_id);
+
+CREATE INDEX IF NOT EXISTS idx_historical_dota_advantage_points_game
+ON historical_dota_advantage_points (game_id, metric, source_index);
 
 CREATE INDEX IF NOT EXISTS idx_players_source_identity
 ON players (source, source_player_id);

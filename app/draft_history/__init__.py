@@ -1,12 +1,18 @@
 from app.draft_history.domain import (
+    AdvantageMetric,
     DotaSide,
     DraftActionKind,
     DraftProvider,
     DraftWinnerSide,
+    HistoricalDotaAdvantagePoint,
     HistoricalDotaGame,
+    HistoricalDotaPlayerFinalStats,
     HistoricalDraftAction,
+    TimeSemanticsStatus,
     draft_action_id,
+    historical_dota_advantage_point_id,
     historical_dota_game_id,
+    historical_dota_player_final_stats_id,
 )
 from app.draft_history.opendota import (
     OPENDOTA_API_BASE_URL,
@@ -32,6 +38,7 @@ from app.draft_history.service import (
 )
 
 __all__ = [
+    "AdvantageMetric",
     "DotaSide",
     "DraftActionKind",
     "DraftCollectionResult",
@@ -40,7 +47,9 @@ __all__ = [
     "DraftProvider",
     "DraftSyncResult",
     "DraftWinnerSide",
+    "HistoricalDotaAdvantagePoint",
     "HistoricalDotaGame",
+    "HistoricalDotaPlayerFinalStats",
     "HistoricalDraftAction",
     "OPENDOTA_API_BASE_URL",
     "OPENDOTA_SOURCE",
@@ -48,13 +57,16 @@ __all__ = [
     "OpenDotaDraftCollector",
     "OpenDotaRequestError",
     "OpenDotaResponseError",
+    "TimeSemanticsStatus",
     "build_draft_history_status",
     "draft_action_id",
     "draft_game_competition_family",
     "fetch_opendota_match_detail",
     "fetch_opendota_pro_match_rows",
     "has_complete_5v5_picks",
+    "historical_dota_advantage_point_id",
     "historical_dota_game_id",
+    "historical_dota_player_final_stats_id",
     "is_draft_game_scope_eligible",
     "map_opendota_match_detail",
     "sync_draft_history",

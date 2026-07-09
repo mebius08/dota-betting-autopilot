@@ -15,6 +15,20 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
 
+from app.public_pages.semantics import (
+    PublicMatchSemanticFingerprint,
+    PublicMatchSemantics,
+    SemanticEvidenceStatus,
+    extract_public_match_semantics,
+    extract_public_match_semantics_from_roots,
+    find_public_mapping_list,
+    find_public_state_value,
+    public_match_semantic_fingerprint,
+    public_has_timed_event_list,
+    public_has_tower_barracks_objectives,
+    public_players_have_timed_items,
+)
+
 
 PUBLIC_PAGE_USER_AGENT = "dota-betting-autopilot/1.0"
 STRATZ_PUBLIC_BASE_URL = "https://stratz.com"
@@ -208,6 +222,20 @@ class PublicPageProbeResult:
     coverage: tuple[PublicFieldCoverage, ...]
     recommendation: PublicSourceRecommendation
     warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PublicPageSemanticExtraction:
+    embedded_states: tuple[object, ...]
+    referenced_states: tuple[object, ...]
+    parse_findings: tuple[str, ...]
+    semantics: PublicMatchSemantics | None
+    fingerprint: PublicMatchSemanticFingerprint | None
+    provenance: PublicFieldProvenance
+
+    @property
+    def decoded_states(self) -> tuple[object, ...]:
+        return self.embedded_states + self.referenced_states
 
 
 class _Response(Protocol):
@@ -529,6 +557,24 @@ PUBLIC_FIELD_DEFINITIONS: tuple[PublicFieldDefinition, ...] = (
         "Minute-by-minute farm or economy data.",
     ),
     PublicFieldDefinition(
+        "gold_advantage_timeline",
+        "gold advantage timeline",
+        (
+            PublicDataUsage.POST_GAME_TARGET_OR_LABEL,
+            PublicDataUsage.PRIOR_GAME_HISTORICAL_CONTEXT_ONLY,
+        ),
+        "Radiant/Dire gold or net-worth advantage points.",
+    ),
+    PublicFieldDefinition(
+        "xp_advantage_timeline",
+        "XP advantage timeline",
+        (
+            PublicDataUsage.POST_GAME_TARGET_OR_LABEL,
+            PublicDataUsage.PRIOR_GAME_HISTORICAL_CONTEXT_ONLY,
+        ),
+        "Radiant/Dire XP advantage points.",
+    ),
+    PublicFieldDefinition(
         "advantage_timeline",
         "advantage timeline",
         (
@@ -768,10 +814,10 @@ PUBLIC_SOURCE_CONTRACT_FIELDS: tuple[PublicSourceContractField, ...] = (
         key="player_slot_position",
         label="player slot/position semantics",
         group="Player and roster state",
-        source_keys=("player_sides",),
-        partial_keys=("player_account_ids",),
-        parser_status="side coverage only; role/position is not normalized",
-        caveat="Lane/role semantics were not proven as stable parser fields.",
+        source_keys=(),
+        partial_keys=(),
+        parser_status="not normalized as lane/role/position coverage",
+        caveat="Radiant/Dire side support does not prove player role or lane semantics.",
     ),
     PublicSourceContractField(
         key="stable_roster_identity",
@@ -868,17 +914,17 @@ PUBLIC_SOURCE_CONTRACT_FIELDS: tuple[PublicSourceContractField, ...] = (
         key="gold_advantage_progression",
         label="Radiant/Dire gold advantage progression",
         group="Match trajectory",
-        source_keys=("advantage_timeline",),
-        parser_status="presence-only timeline coverage",
-        caveat="The current parser records timeline presence, not normalized points.",
+        source_keys=("gold_advantage_timeline",),
+        parser_status="gold/net-worth advantage array coverage",
+        caveat="Production ingestion must still preserve point-level time semantics.",
     ),
     PublicSourceContractField(
         key="xp_advantage_progression",
         label="XP advantage progression",
         group="Match trajectory",
-        source_keys=("advantage_timeline",),
-        parser_status="presence-only timeline coverage",
-        caveat="Gold and XP timeline arrays are not split into separate contract rows.",
+        source_keys=("xp_advantage_timeline",),
+        parser_status="XP advantage array coverage",
+        caveat="Production ingestion must still preserve point-level time semantics.",
     ),
     PublicSourceContractField(
         key="time_series_resolution",
@@ -1245,40 +1291,29 @@ def analyze_public_match_page_response(
     else:
         static_findings.append("no visible data-field values found")
 
-    embedded_states, embedded_findings = extract_embedded_public_states(html)
-    for state in embedded_states:
+    referenced_states, referenced_findings, resource_requests = (
+        _fetch_public_referenced_resource_states(
+            html=html,
+            page_url=url,
+            client=client,
+            fetch_referenced_resources=fetch_referenced_resources,
+        )
+    )
+    page_semantics = extract_public_match_semantics_from_page(
+        html=html,
+        referenced_states=referenced_states,
+        requested_match_id=match_id,
+    )
+    embedded_findings = list(page_semantics.parse_findings)
+    if page_semantics.semantics is not None:
         _merge_observations(
             observations,
-            observations_from_public_state(
-                state,
-                PublicFieldProvenance.EMBEDDED_PUBLIC_PAGE_STATE,
+            observations_from_public_match_semantics(
+                page_semantics.semantics,
+                list(page_semantics.decoded_states),
+                page_semantics.provenance,
             ),
         )
-
-    resource_requests = 0
-    if fetch_referenced_resources and client is not None:
-        for resource_url in extract_public_referenced_resource_urls(html, url)[:3]:
-            resource_response = client.fetch(resource_url)
-            resource_requests += 1
-            if resource_response.status_code != 200:
-                referenced_findings.append(
-                    f"{resource_url}: HTTP {resource_response.status_code}"
-                )
-                continue
-            resource_state = _json_from_response(resource_response)
-            if resource_state is None:
-                referenced_findings.append(f"{resource_url}: no JSON payload parsed")
-                continue
-            referenced_findings.append(
-                f"{resource_url}: public referenced JSON parsed"
-            )
-            _merge_observations(
-                observations,
-                observations_from_public_state(
-                    resource_state,
-                    PublicFieldProvenance.PUBLIC_PAGE_REFERENCED_RESOURCE,
-                ),
-            )
 
     if not referenced_findings:
         referenced_findings.append("no public JSON/page-data resources fetched")
@@ -1353,6 +1388,43 @@ def extract_embedded_public_states(
     return tuple(states), findings
 
 
+def extract_public_match_semantics_from_page(
+    *,
+    html: str,
+    referenced_states: Sequence[object] = (),
+    requested_match_id: str | None = None,
+) -> PublicPageSemanticExtraction:
+    embedded_states, findings = extract_embedded_public_states(html)
+    referenced = tuple(referenced_states)
+    decoded_states = embedded_states + referenced
+    if not decoded_states:
+        return PublicPageSemanticExtraction(
+            embedded_states=embedded_states,
+            referenced_states=referenced,
+            parse_findings=tuple(findings),
+            semantics=None,
+            fingerprint=None,
+            provenance=PublicFieldProvenance.NOT_FOUND,
+        )
+    semantics = extract_public_match_semantics_from_roots(
+        decoded_states,
+        requested_match_id=requested_match_id,
+    )
+    provenance = (
+        PublicFieldProvenance.EMBEDDED_PUBLIC_PAGE_STATE
+        if embedded_states
+        else PublicFieldProvenance.PUBLIC_PAGE_REFERENCED_RESOURCE
+    )
+    return PublicPageSemanticExtraction(
+        embedded_states=embedded_states,
+        referenced_states=referenced,
+        parse_findings=tuple(findings),
+        semantics=semantics,
+        fingerprint=public_match_semantic_fingerprint(semantics),
+        provenance=provenance,
+    )
+
+
 def extract_public_referenced_resource_urls(html: str, page_url: str) -> tuple[str, ...]:
     parser = _ResourceLinkParser()
     parser.feed(html)
@@ -1367,6 +1439,36 @@ def extract_public_referenced_resource_urls(html: str, page_url: str) -> tuple[s
         if lowered_path.endswith(".json") or "/_next/data/" in lowered_path:
             urls.append(absolute)
     return tuple(dict.fromkeys(urls))
+
+
+def _fetch_public_referenced_resource_states(
+    *,
+    html: str,
+    page_url: str,
+    client: PublicPageHttpClient | None,
+    fetch_referenced_resources: bool,
+) -> tuple[tuple[object, ...], list[str], int]:
+    referenced_findings: list[str] = []
+    if not fetch_referenced_resources or client is None:
+        return (), referenced_findings, 0
+
+    resource_requests = 0
+    states: list[object] = []
+    for resource_url in extract_public_referenced_resource_urls(html, page_url)[:3]:
+        resource_response = client.fetch(resource_url)
+        resource_requests += 1
+        if resource_response.status_code != 200:
+            referenced_findings.append(
+                f"{resource_url}: HTTP {resource_response.status_code}"
+            )
+            continue
+        resource_state = _json_from_response(resource_response)
+        if resource_state is None:
+            referenced_findings.append(f"{resource_url}: no JSON payload parsed")
+            continue
+        referenced_findings.append(f"{resource_url}: public referenced JSON parsed")
+        states.append(resource_state)
+    return tuple(states), referenced_findings, resource_requests
 
 
 def observations_from_flat_values(
@@ -1421,79 +1523,110 @@ def observations_from_public_state(
     state: object,
     provenance: PublicFieldProvenance,
 ) -> Mapping[str, PublicFieldObservation]:
+    semantics = extract_public_match_semantics(state)
+    return observations_from_public_match_semantics(semantics, state, provenance)
+
+
+def observations_from_public_match_semantics(
+    semantics: PublicMatchSemantics,
+    state: object,
+    provenance: PublicFieldProvenance,
+) -> Mapping[str, PublicFieldObservation]:
+    raw_players = find_public_mapping_list(
+        state,
+        ("playerMatches", "players", "lineups"),
+    )
     observations: dict[str, PublicFieldObservation] = {}
-    _set_if(observations, "stable_match_id", _find_value(state, ("matchId", "id")) is not None, provenance)
-    _set_if(observations, "start_timestamp", _find_value(state, ("startDateTime", "startTime", "startedAt")) is not None, provenance)
-    _set_if(observations, "end_timestamp", _find_value(state, ("endDateTime", "endTime", "endedAt")) is not None, provenance)
-    _set_if(observations, "duration", _find_value(state, ("durationSeconds", "duration")) is not None, provenance)
-    _set_if(observations, "winner_side", _find_value(state, ("didRadiantWin", "radiantWin", "winner", "winnerSide")) is not None, provenance)
-    _set_if(observations, "radiant_dire_orientation", _has_radiant_dire_orientation(state), provenance)
-    _set_if(observations, "league_event", _find_value(state, ("league", "leagueId", "tournament", "event")) is not None, provenance)
-    _set_if(observations, "series_context", _find_value(state, ("series", "seriesId", "gameNumber", "bestOf", "seriesType")) is not None, provenance)
-    _set_if(observations, "patch_id", _find_value(state, ("gameVersionId", "patchId", "patch")) is not None, provenance)
-    _set_if(observations, "team_ids", _has_team_ids(state), provenance)
-    _set_if(observations, "team_display_names", _has_team_names(state), provenance)
+    _set_if(observations, "stable_match_id", semantics.match_id is not None, provenance)
+    _set_if(observations, "start_timestamp", semantics.started_at_value is not None, provenance)
+    _set_if(observations, "end_timestamp", semantics.ended_at_value is not None, provenance)
+    _set_if(observations, "duration", semantics.duration_seconds is not None, provenance)
+    _set_if(observations, "winner_side", semantics.did_radiant_win is not None, provenance)
+    _set_if(observations, "radiant_dire_orientation", semantics.player_status is SemanticEvidenceStatus.USABLE or semantics.team_identity_status is SemanticEvidenceStatus.USABLE, provenance)
+    _set_if(observations, "league_event", semantics.league is not None or semantics.tournament is not None, provenance)
+    _set_if(observations, "series_context", semantics.series is not None or semantics.game_number is not None or semantics.best_of is not None, provenance)
+    _set_if(observations, "patch_id", semantics.patch is not None, provenance)
+    _set_if(observations, "team_ids", semantics.team_identity_status is SemanticEvidenceStatus.USABLE, provenance)
+    _set_if(observations, "team_display_names", semantics.radiant_team_name is not None and semantics.dire_team_name is not None, provenance)
 
-    players = _find_mapping_list(state, ("players", "playerMatches", "lineups"))
-    draft_actions = _draft_actions_from_state(state)
-    radiant_picks = _side_pick_hero_ids(players, draft_actions, "radiant")
-    dire_picks = _side_pick_hero_ids(players, draft_actions, "dire")
-
-    _set_if(observations, "player_account_ids", _all_players_have(players, ("steamAccountId", "accountId", "playerId", "id")), provenance)
-    _set_if(observations, "player_sides", len(players) >= 10 and all(_player_side(player) is not None for player in players[:10]), provenance)
-    _set_if(observations, "player_hero_ids", _all_players_have(players, ("heroId", "hero_id")), provenance)
-    _set_if(observations, "player_display_names", _all_players_have(players, ("name", "displayName", "nickName")), provenance)
-    _set_if(observations, "radiant_picks", len(radiant_picks) == 5, provenance)
-    _set_if(observations, "dire_picks", len(dire_picks) == 5, provenance)
+    _set_if(observations, "player_account_ids", len({player.account_id for player in semantics.players}) == 10, provenance)
+    _set_if(observations, "player_sides", semantics.player_status is SemanticEvidenceStatus.USABLE, provenance)
+    _set_if(observations, "player_hero_ids", len({player.hero_id for player in semantics.players}) == 10, provenance)
+    _set_if(observations, "player_display_names", _all_players_have(raw_players, ("name", "displayName", "nickName")), provenance)
+    _set_if(observations, "radiant_picks", len(semantics.radiant_hero_ids) == 5, provenance)
+    _set_if(observations, "dire_picks", len(semantics.dire_hero_ids) == 5, provenance)
     _set_if(
         observations,
         "complete_5v5_picks",
-        len(radiant_picks) == 5 and len(dire_picks) == 5,
+        semantics.has_complete_5v5_composition,
         PublicFieldProvenance.DERIVED_FROM_PUBLIC_FIELDS,
     )
 
-    bans = [action for action in draft_actions if action.kind == "ban" and action.hero_id is not None]
-    ordered = [action for action in draft_actions if action.order is not None]
+    bans = [action for action in semantics.draft_actions if action.kind == "ban" and action.hero_id is not None]
+    ordered = [action for action in semantics.draft_actions if action.order is not None]
     has_pick_and_ban = (
-        any(action.kind == "pick" for action in draft_actions)
-        and any(action.kind == "ban" for action in draft_actions)
+        any(action.kind == "pick" for action in semantics.draft_actions)
+        and any(action.kind == "ban" for action in semantics.draft_actions)
     )
     _set_if(observations, "bans", bool(bans), provenance)
     _set_if(
         observations,
         "ordered_draft_actions",
-        bool(draft_actions)
+        bool(semantics.draft_actions)
         and has_pick_and_ban
-        and len(ordered) == len(draft_actions)
-        and all(action.kind is not None for action in draft_actions)
+        and len(ordered) == len(semantics.draft_actions)
+        and all(action.kind is not None for action in semantics.draft_actions)
         and len({action.order for action in ordered}) == len(ordered),
         provenance,
     )
     _set_if(observations, "draft_action_order", bool(ordered), provenance)
-    _set_if(observations, "draft_action_kind", bool(draft_actions) and all(action.kind is not None for action in draft_actions), provenance)
-    _set_if(observations, "draft_action_side", bool(draft_actions) and all(action.side is not None for action in draft_actions), provenance)
-    _set_if(observations, "draft_action_hero_id", bool(draft_actions) and all(action.hero_id is not None for action in draft_actions), provenance)
-    _set_if(observations, "first_pick_side", _first_pick_side(draft_actions) is not None, PublicFieldProvenance.DERIVED_FROM_PUBLIC_FIELDS)
+    _set_if(observations, "draft_action_kind", bool(semantics.draft_actions) and all(action.kind is not None for action in semantics.draft_actions), provenance)
+    _set_if(observations, "draft_action_side", bool(semantics.draft_actions) and all(action.side is not None for action in semantics.draft_actions), provenance)
+    _set_if(observations, "draft_action_hero_id", bool(semantics.draft_actions) and all(action.hero_id is not None for action in semantics.draft_actions), provenance)
+    first_pick_side = next(
+        (
+            action.side
+            for action in sorted(
+                (
+                    item
+                    for item in semantics.draft_actions
+                    if item.order is not None
+                ),
+                key=lambda item: item.order or 0,
+            )
+            if action.kind == "pick" and action.side in {"radiant", "dire"}
+        ),
+        None,
+    )
+    _set_if(observations, "first_pick_side", first_pick_side is not None, PublicFieldProvenance.DERIVED_FROM_PUBLIC_FIELDS)
 
-    _set_if(observations, "team_kills_final_score", _find_value(state, ("radiantKills", "direKills", "teamKills")) is not None, provenance)
-    _set_if(observations, "individual_kills", _all_players_have(players, ("kills",)), provenance)
-    _set_if(observations, "deaths", _all_players_have(players, ("deaths",)), provenance)
-    _set_if(observations, "assists", _all_players_have(players, ("assists",)), provenance)
-    _set_if(observations, "final_net_worth", _all_players_have(players, ("netWorth", "networth")), provenance)
-    _set_if(observations, "last_hits", _all_players_have(players, ("numLastHits", "lastHits")), provenance)
-    _set_if(observations, "denies", _all_players_have(players, ("numDenies", "denies")), provenance)
-    _set_if(observations, "gpm", _all_players_have(players, ("goldPerMinute", "gpm")), provenance)
-    _set_if(observations, "xpm", _all_players_have(players, ("experiencePerMinute", "xpm")), provenance)
-    _set_if(observations, "level", _all_players_have(players, ("level",)), provenance)
-    _set_if(observations, "damage", _all_players_have(players, ("heroDamage", "towerDamage", "heroHealing")), provenance)
-    _set_if(observations, "final_items", _players_have_items(players), provenance)
-    _set_if(observations, "timed_item_data", _players_have_timed_items(players), provenance)
-    _set_if(observations, "kill_events", _has_timed_event_list(state, ("killEvents", "kills")), provenance)
-    _set_if(observations, "minute_farm_timeline", bool(_find_value(state, ("minuteStats", "goldTimeline", "xpTimeline", "lastHitTimeline"))), provenance)
-    _set_if(observations, "advantage_timeline", bool(_find_value(state, ("radiantNetworthLeads", "radiantExperienceLeads", "goldAdvantage", "xpAdvantage"))), provenance)
-    _set_if(observations, "tower_barracks_objectives", _has_tower_barracks_objectives(state), provenance)
-    _set_if(observations, "roshan_objectives", _has_timed_event_list(state, ("roshanEvents",)), provenance)
-    _set_if(observations, "tormentor_objectives", _has_timed_event_list(state, ("tormentorEvents",)), provenance)
+    _set_if(observations, "team_kills_final_score", find_public_state_value(state, ("radiantKills", "direKills", "teamKills")) is not None, provenance)
+    _set_if(observations, "individual_kills", len(semantics.players) >= 10 and all(player.kills is not None for player in semantics.players[:10]), provenance)
+    _set_if(observations, "deaths", len(semantics.players) >= 10 and all(player.deaths is not None for player in semantics.players[:10]), provenance)
+    _set_if(observations, "assists", len(semantics.players) >= 10 and all(player.assists is not None for player in semantics.players[:10]), provenance)
+    _set_if(observations, "final_net_worth", len(semantics.players) >= 10 and all(player.net_worth is not None for player in semantics.players[:10]), provenance)
+    _set_if(observations, "last_hits", len(semantics.players) >= 10 and all(player.last_hits is not None for player in semantics.players[:10]), provenance)
+    _set_if(observations, "denies", len(semantics.players) >= 10 and all(player.denies is not None for player in semantics.players[:10]), provenance)
+    _set_if(observations, "gpm", len(semantics.players) >= 10 and all(player.gpm is not None for player in semantics.players[:10]), provenance)
+    _set_if(observations, "xpm", len(semantics.players) >= 10 and all(player.xpm is not None for player in semantics.players[:10]), provenance)
+    _set_if(observations, "level", len(semantics.players) >= 10 and all(player.level is not None for player in semantics.players[:10]), provenance)
+    _set_if(observations, "damage", len(semantics.players) >= 10 and all(player.hero_damage is not None and player.tower_damage is not None and player.hero_healing is not None for player in semantics.players[:10]), provenance)
+    _set_if(
+        observations,
+        "final_items",
+        len(semantics.players) >= 10
+        and all(player.final_item_ids for player in semantics.players[:10]),
+        provenance,
+    )
+    _set_if(observations, "timed_item_data", public_players_have_timed_items(raw_players), provenance)
+    _set_if(observations, "kill_events", public_has_timed_event_list(state, ("killEvents", "kills")), provenance)
+    _set_if(observations, "minute_farm_timeline", bool(find_public_state_value(state, ("minuteStats", "goldTimeline", "xpTimeline", "lastHitTimeline"))), provenance)
+    _set_if(observations, "gold_advantage_timeline", semantics.gold_advantage_status is SemanticEvidenceStatus.USABLE, provenance)
+    _set_if(observations, "xp_advantage_timeline", semantics.xp_advantage_status is SemanticEvidenceStatus.USABLE, provenance)
+    _set_if(observations, "advantage_timeline", bool(semantics.advantage_points), provenance)
+    _set_if(observations, "tower_barracks_objectives", public_has_tower_barracks_objectives(state), provenance)
+    _set_if(observations, "roshan_objectives", public_has_timed_event_list(state, ("roshanEvents",)), provenance)
+    _set_if(observations, "tormentor_objectives", public_has_timed_event_list(state, ("tormentorEvents",)), provenance)
     return observations
 
 

@@ -364,7 +364,7 @@ Important contract rows from the 12-page EWC smoke sample:
 | player-to-side association | `SUPPORTED` | `player_sides` `12/12` | normalized as all-ten-player side coverage | Suitable for Radiant/Dire draft mapping. |
 | hero per player | `SUPPORTED` | `player_hero_ids` `12/12` | normalized as all-ten-player hero coverage | Hero IDs remain provider namespace values. |
 | final K/D/A | `SUPPORTED` | kills/deaths/assists `12/12` | normalized as final player stat coverage | Post-game values only. |
-| player slot/position semantics | `PARTIAL` | side/player-slot orientation is present; lane/role semantics not proven | side coverage only | Role/position fields need separate proof. |
+| player slot/position semantics | `MISSING` | no lane/role/position evidence | not normalized as lane/role/position coverage | Radiant/Dire side support does not prove player role or lane semantics. |
 | stable roster identity | `DERIVABLE` | player account IDs, sides, and team IDs `12/12` | derivable as lineup fingerprint | A lineup fingerprint is not a provider roster version ID. |
 | substitutes/stand-ins | `MISSING` | no explicit evidence | not implemented by current parser | Must not be inferred from names alone. |
 | final net worth | `SUPPORTED` | `final_net_worth` `12/12` | normalized as final stat coverage | Post-game context only. |
@@ -376,8 +376,8 @@ Important contract rows from the 12-page EWC smoke sample:
 | item purchase/timing history | `MISSING` | `timed_item_data` `0/12` | checked separately from final inventory | Important limitation for rich state research. |
 | item state over time | `MISSING` | no full inventory-over-time evidence | not normalized beyond timed item evidence | Important limitation for rich state research. |
 | buybacks | `MISSING` | no evidence | not implemented by current parser | Not proven. |
-| Radiant/Dire gold advantage progression | `SUPPORTED` | `advantage_timeline` `12/12` | presence-only timeline coverage | Needs normalized point extraction. |
-| XP advantage progression | `SUPPORTED` | `advantage_timeline` `12/12` | presence-only timeline coverage | Gold and XP arrays are not split in the current matrix. |
+| Radiant/Dire gold advantage progression | `SUPPORTED` | `gold_advantage_timeline` `12/12` | gold/net-worth advantage array coverage | Production ingestion preserves point-level time semantics. |
+| XP advantage progression | `SUPPORTED` | `xp_advantage_timeline` `12/12` | XP advantage array coverage | Production ingestion preserves point-level time semantics. |
 | time-series timestamps/resolution | `UNSTABLE` | advantage timeline exists, but resolution semantics are not normalized | presence-only; no timestamp/interval metadata | Validate resolution before stable ingestion. |
 | kill progression | `MISSING` | `kill_events` `0/12` | requires timed kill event rows | Final kills are supported, kill timeline is not. |
 | player death events | `MISSING` | no timed combat events | requires timed combat event rows | Final deaths are supported, death events are not. |
@@ -427,11 +427,199 @@ architecture stage. Dotabuff should remain a gap-filler candidate only if a
 later ingestion or modeling stage proves one of the named limitations is
 blocking.
 
-## 25. Next Roadmap Step
+## 25. Feasibility Closeout Roadmap Step
 
-Design the STRATZ public-page historical ingestion/backfill adapter around this
-source contract, including a small multi-family canary before any large
-backfill.
+Design the next STRATZ public-page stage as a deliberately bounded historical
+trajectory backfill around this source contract.
 
-Do not add persistence, migrations, Draft ML rows, or training in this
-feasibility closeout stage.
+Do not start a large crawl, trajectory model, Draft ML target change, or
+bookmaker odds collection before the bounded backfill design and trajectory
+corpus audit are complete.
+
+## 26. Production-Shaped Ingestion Adapter
+
+Post-feasibility adapter status: implemented behind
+`sync-drafts --provider stratz-public`.
+
+Progression recorded by the repository:
+
+```text
+OpenDota UA fix
+        ->
+OpenDota free-scale limitation
+        ->
+STRATZ GraphQL PERMISSION_RESTRICTED closeout
+        ->
+STRATZ public-page source contract
+        ->
+STRATZ_PUBLIC_SUFFICIENT
+        ->
+production-shaped public-page ingestion adapter
+        ->
+real Next Flight shallow-root regression found
+        ->
+shared page-to-semantics boundary
+        ->
+single live regression match INGESTED successfully
+        ->
+live idempotency: repeated match UNCHANGED
+        ->
+7-match real multi-family/source-shape canary
+        ->
+patches 177 / 180 / 182
+families pgl / the_international / dreamleague
+0 parse failures
+0 critical invariant failures
+7 storage successes
+        ->
+STRATZ_PUBLIC_READY_FOR_BOUNDED_BACKFILL
+```
+
+The adapter reuses the existing historical Dota game/draft storage instead of
+creating a second historical database architecture. It stores public-page games
+with provider/source provenance `stratz_public` and Valve match ID as
+`source_game_id`.
+
+Normalized ingestion boundary:
+
+- match metadata: match ID, started/ended timestamps when direct or safely
+  derivable, duration, winner, Radiant/Dire teams, patch/version, series,
+  league/tournament fields when exposed, and map/game number when available;
+- draft state: complete 5v5 composition is derived from player hero/side rows,
+  while ordered draft rows are stored only when order, pick/ban kind, side, and
+  hero are explicit;
+- player final state: account ID, side/team association, hero, final K/D/A,
+  economy/farm/damage summaries, and final inventory;
+- advantage trajectory: gold and XP advantage points are preserved as curves,
+  not reduced to final/max scalars.
+
+Storage extension:
+
+- `historical_dota_player_final_stats` stores one final-state row per
+  game/account ID;
+- `historical_dota_advantage_points` stores one point per game, metric, and
+  source index.
+
+Advantage trajectory semantics:
+
+- every point keeps `source_index`;
+- raw/source time evidence, when present, is preserved as `source_time_value`;
+- `normalized_time_seconds` is set only when the source point itself exposes a
+  confidently parseable time/second coordinate;
+- `time_semantics_status` is `normalized_seconds` only for those points and
+  `source_index_unstable` for number-only arrays.
+
+This makes it explicit that an unstable public source index is not canonical
+elapsed match seconds.
+
+Idempotency and safe resume:
+
+- game rows remain idempotent by `source + source_game_id`;
+- repeated ingestion of unchanged normalized content reports `UNCHANGED`;
+- stronger existing game metadata is not erased by later null/partial public
+  fields;
+- existing ordered draft rows are preserved when a later public page has only
+  unordered derived composition;
+- final player stats preserve stronger existing optional values during partial
+  re-ingestion;
+- final player stats are replaced per game/account set on re-ingestion rather
+  than appended;
+- gold and XP advantage points are replaced per game/metric/source-index set on
+  re-ingestion rather than appended;
+- one failed match returns a per-match failure outcome and does not roll back
+  unrelated successful match ingestions.
+
+Request behavior:
+
+- ordinary public HTML only;
+- project User-Agent;
+- robots-policy check before match pages;
+- explicit bounded match IDs;
+- sequential fetching with conservative delay;
+- bounded retry only for retryable transport/HTTP failures;
+- no STRATZ token, GraphQL, login, Selenium, Playwright, JavaScript execution,
+  proxies, CAPTCHA handling, or anti-bot evasion.
+
+Successful one-match live regression retest:
+
+| Match ID | Local evidence | Result |
+| --- | --- | --- |
+| `8886013461` | `data/autopilot.db` now has one `stratz_public` game, 10 player final-stat rows, 63 gold points, and 63 XP points. | Production extraction regression fixed for this match. |
+
+Completed bounded live source-shape canary:
+
+| Match ID | Family | Patch | Result |
+| --- | --- | --- | --- |
+| `8886013461` | `unknown` | `182` | `UNCHANGED`, 10 players, complete team identity, 63 gold and 63 XP points. |
+| `8655240937` | `unknown` | `182` | `INGESTED`, 10 players, complete team identity, 38 gold and 38 XP points. |
+| `8639790960` | `unknown` | `182` | `INGESTED`, 10 players, complete team identity, 22 gold and 22 XP points. |
+| `8358745059` | `unknown` | `180` | `INGESTED`, 10 players, complete team identity, 48 gold and 48 XP points. |
+| `8346430978` | `pgl` | `180` | `INGESTED`, 10 players, complete team identity, 38 gold and 38 XP points. |
+| `8327632578` | `the_international` | `180` | `INGESTED`, 10 players, complete team identity, 26 gold and 26 XP points. |
+| `8011794134` | `dreamleague` | `177` | `INGESTED`, 10 players, complete team identity, 33 gold and 33 XP points. |
+
+Aggregate live evidence:
+
+- requested/fetched pages: `7/7`;
+- storage successes: `7`;
+- parse failures: `0`;
+- ingestion-critical invariant failures: `0`;
+- explicit source patches: `177`, `180`, `182`;
+- recognized families: `pgl`, `the_international`, `dreamleague`;
+- repeated regression match idempotency: `8886013461` returned `UNCHANGED`;
+- time semantics: advantage arrays remain `source_index_unstable`.
+
+Current post-adapter decision:
+
+`STRATZ_PUBLIC_READY_FOR_BOUNDED_BACKFILL`
+
+This means the public STRATZ page adapter is sufficiently validated to design a
+deliberately scoped historical trajectory backfill. It does not prove long-term
+source stability, unlimited crawling, real-time feed support, production SLA,
+complete objective/item/kill timelines, or historical bookmaker odds support.
+
+Synthetic deterministic fixture canary:
+
+| Fixture ID | Fixture family | Patch | Purpose |
+| --- | --- | --- | --- |
+| `8886013461` | Esports World Cup | `176` | EWC-shaped public page with complete team identity. |
+| `7770000001` | DreamLeague | `175` | Non-EWC page shape with normalized advantage point time values. |
+| `6660000001` | FISSURE Playground | `174` | Non-EWC page shape with partial team identity limitation. |
+
+Deterministic fixture result:
+
+- requested match pages: `3`;
+- fetched fixture pages: `3`;
+- parse failures: `0`;
+- ingestion-critical invariant failures: `0`;
+- storage successes: `3`;
+- known-limitation cases: at least the partial-team-identity fixture;
+- live request reporting: `LIVE_REQUEST_EXECUTED` when a match page receives an
+  HTTP response;
+- live canary evidence status: `LIVE_SINGLE_OR_HOMOGENEOUS_SAMPLE`.
+
+Roadmap note:
+
+The future trading objective is short-horizon in-play position trading over
+approximately the next five minutes. Future decision semantics should distinguish
+`OPEN`, `HOLD`, `CASH OUT`, and `FLIP`, rather than assuming every position is a
+hold-to-final-result match-winner bet. Final match win probability may remain a
+long-horizon context feature, auxiliary target, or baseline, but it is not
+necessarily the primary trading target.
+
+The future conceptual decomposition is:
+
+1. game-state trajectory prediction;
+2. market probability / odds reaction modeling;
+3. position execution and cash-out policy.
+
+STRATZ historical match trajectories provide game-state trajectory data. They do
+not provide historical bookmaker probability or odds trajectories, so future
+market-reaction or cash-out modeling requires a separate bookmaker odds-history
+dataset or prospectively collected odds time series.
+
+Next roadmap step:
+
+Design and execute a deliberately bounded STRATZ historical trajectory backfill
+that preserves full gold/XP curves and produces a source-readiness corpus for
+future `t -> t+5 minute` trajectory-window dataset construction.

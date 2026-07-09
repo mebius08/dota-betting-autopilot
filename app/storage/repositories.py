@@ -1,5 +1,6 @@
 from contextlib import closing
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 from sqlite3 import Connection
 from typing import cast
@@ -19,11 +20,15 @@ from app.domain import (
     StreamerUtterance,
 )
 from app.draft_history.domain import (
+    AdvantageMetric,
     DraftActionKind,
     DotaSide,
     DraftWinnerSide,
+    HistoricalDotaAdvantagePoint,
     HistoricalDotaGame,
+    HistoricalDotaPlayerFinalStats,
     HistoricalDraftAction,
+    TimeSemanticsStatus,
 )
 from app.history.domain import HistoricalMatch, WinnerSide
 from app.history.roster_lineage import HistoricalTournamentChronologyContext
@@ -964,6 +969,127 @@ class SQLiteRepository:
             ).fetchall()
 
         return [_row_to_historical_draft_action(row) for row in rows]
+
+    def replace_historical_dota_player_final_stats(
+        self,
+        game_id: str,
+        rows: tuple[HistoricalDotaPlayerFinalStats, ...]
+        | list[HistoricalDotaPlayerFinalStats],
+    ) -> None:
+        with closing(get_connection(self.db_path)) as connection:
+            connection.execute(
+                """
+                DELETE FROM historical_dota_player_final_stats
+                WHERE game_id = ?
+                """,
+                (game_id,),
+            )
+            for row in sorted(rows, key=lambda item: (item.team_side, item.account_id)):
+                if row.game_id != game_id:
+                    raise ValueError("player final stats game_id must match game id")
+                connection.execute(
+                    """
+                    INSERT INTO historical_dota_player_final_stats (
+                        id,
+                        game_id,
+                        source,
+                        source_game_id,
+                        account_id,
+                        player_slot,
+                        team_side,
+                        team_source_id,
+                        hero_id,
+                        kills,
+                        deaths,
+                        assists,
+                        net_worth,
+                        last_hits,
+                        denies,
+                        gpm,
+                        xpm,
+                        level,
+                        hero_damage,
+                        tower_damage,
+                        hero_healing,
+                        final_item_ids_json
+                    ) VALUES (
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?
+                    )
+                    """,
+                    _historical_dota_player_final_stats_values(row),
+                )
+            connection.commit()
+
+    def list_historical_dota_player_final_stats(
+        self,
+        game_id: str,
+    ) -> list[HistoricalDotaPlayerFinalStats]:
+        with closing(get_connection(self.db_path)) as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM historical_dota_player_final_stats
+                WHERE game_id = ?
+                ORDER BY team_side, player_slot, account_id
+                """,
+                (game_id,),
+            ).fetchall()
+
+        return [_row_to_historical_dota_player_final_stats(row) for row in rows]
+
+    def replace_historical_dota_advantage_points(
+        self,
+        game_id: str,
+        rows: tuple[HistoricalDotaAdvantagePoint, ...]
+        | list[HistoricalDotaAdvantagePoint],
+    ) -> None:
+        with closing(get_connection(self.db_path)) as connection:
+            connection.execute(
+                """
+                DELETE FROM historical_dota_advantage_points
+                WHERE game_id = ?
+                """,
+                (game_id,),
+            )
+            for row in sorted(rows, key=lambda item: (item.metric, item.source_index)):
+                if row.game_id != game_id:
+                    raise ValueError("advantage point game_id must match game id")
+                connection.execute(
+                    """
+                    INSERT INTO historical_dota_advantage_points (
+                        id,
+                        game_id,
+                        source,
+                        source_game_id,
+                        metric,
+                        source_index,
+                        source_time_value,
+                        normalized_time_seconds,
+                        time_semantics_status,
+                        value
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    _historical_dota_advantage_point_values(row),
+                )
+            connection.commit()
+
+    def list_historical_dota_advantage_points(
+        self,
+        game_id: str,
+    ) -> list[HistoricalDotaAdvantagePoint]:
+        with closing(get_connection(self.db_path)) as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM historical_dota_advantage_points
+                WHERE game_id = ?
+                ORDER BY metric, source_index
+                """,
+                (game_id,),
+            ).fetchall()
+
+        return [_row_to_historical_dota_advantage_point(row) for row in rows]
 
     def count_historical_matches(self, *, usable_only: bool = False) -> int:
         if not usable_only:
@@ -1947,6 +2073,57 @@ def _row_to_historical_draft_action(row: object) -> HistoricalDraftAction:
     )
 
 
+def _row_to_historical_dota_player_final_stats(
+    row: object,
+) -> HistoricalDotaPlayerFinalStats:
+    data = cast("dict[str, object]", row)
+    return HistoricalDotaPlayerFinalStats(
+        id=str(data["id"]),
+        game_id=str(data["game_id"]),
+        source=str(data["source"]),
+        source_game_id=str(data["source_game_id"]),
+        account_id=str(data["account_id"]),
+        player_slot=_optional_int(data["player_slot"]),
+        team_side=cast(DotaSide, str(data["team_side"])),
+        team_source_id=_optional_text(data["team_source_id"]),
+        hero_id=_required_int(data["hero_id"]),
+        kills=_optional_int(data["kills"]),
+        deaths=_optional_int(data["deaths"]),
+        assists=_optional_int(data["assists"]),
+        net_worth=_optional_int(data["net_worth"]),
+        last_hits=_optional_int(data["last_hits"]),
+        denies=_optional_int(data["denies"]),
+        gpm=_optional_int(data["gpm"]),
+        xpm=_optional_int(data["xpm"]),
+        level=_optional_int(data["level"]),
+        hero_damage=_optional_int(data["hero_damage"]),
+        tower_damage=_optional_int(data["tower_damage"]),
+        hero_healing=_optional_int(data["hero_healing"]),
+        final_item_ids=_item_ids_from_json(str(data["final_item_ids_json"])),
+    )
+
+
+def _row_to_historical_dota_advantage_point(
+    row: object,
+) -> HistoricalDotaAdvantagePoint:
+    data = cast("dict[str, object]", row)
+    return HistoricalDotaAdvantagePoint(
+        id=str(data["id"]),
+        game_id=str(data["game_id"]),
+        source=str(data["source"]),
+        source_game_id=str(data["source_game_id"]),
+        metric=cast(AdvantageMetric, str(data["metric"])),
+        source_index=_required_int(data["source_index"]),
+        source_time_value=_optional_text(data["source_time_value"]),
+        normalized_time_seconds=_optional_int(data["normalized_time_seconds"]),
+        time_semantics_status=cast(
+            TimeSemanticsStatus,
+            str(data["time_semantics_status"]),
+        ),
+        value=_required_float(data["value"]),
+    )
+
+
 def _historical_match_values(match: HistoricalMatch) -> tuple[object, ...]:
     return (
         match.id,
@@ -2019,6 +2196,52 @@ def _historical_draft_action_values(
         action.team_side,
         action.team_source_id,
         action.hero_id,
+    )
+
+
+def _historical_dota_player_final_stats_values(
+    row: HistoricalDotaPlayerFinalStats,
+) -> tuple[object, ...]:
+    return (
+        row.id,
+        row.game_id,
+        row.source,
+        row.source_game_id,
+        row.account_id,
+        row.player_slot,
+        row.team_side,
+        row.team_source_id,
+        row.hero_id,
+        row.kills,
+        row.deaths,
+        row.assists,
+        row.net_worth,
+        row.last_hits,
+        row.denies,
+        row.gpm,
+        row.xpm,
+        row.level,
+        row.hero_damage,
+        row.tower_damage,
+        row.hero_healing,
+        json.dumps(list(row.final_item_ids), separators=(",", ":")),
+    )
+
+
+def _historical_dota_advantage_point_values(
+    row: HistoricalDotaAdvantagePoint,
+) -> tuple[object, ...]:
+    return (
+        row.id,
+        row.game_id,
+        row.source,
+        row.source_game_id,
+        row.metric,
+        row.source_index,
+        row.source_time_value,
+        row.normalized_time_seconds,
+        row.time_semantics_status,
+        row.value,
     )
 
 
@@ -2113,6 +2336,21 @@ def _raise_if_conflicting_draft_game(
             "Conflicting historical Dota game winner for "
             f"{incoming.source}:{incoming.source_game_id}."
         )
+
+
+def _item_ids_from_json(value: str) -> tuple[int, ...]:
+    try:
+        decoded = json.loads(value)
+    except json.JSONDecodeError:
+        return ()
+    if not isinstance(decoded, list):
+        return ()
+    item_ids: list[int] = []
+    for item in decoded:
+        item_id = _optional_int(item)
+        if item_id is not None and item_id > 0:
+            item_ids.append(item_id)
+    return tuple(item_ids)
 
 
 def _optional_float(value: object) -> float | None:
