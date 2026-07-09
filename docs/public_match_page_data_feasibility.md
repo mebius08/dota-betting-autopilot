@@ -618,8 +618,111 @@ not provide historical bookmaker probability or odds trajectories, so future
 market-reaction or cash-out modeling requires a separate bookmaker odds-history
 dataset or prospectively collected odds time series.
 
+## 15. Bounded Trajectory Backfill Manifest and Corpus Audit
+
+The source-validation stage is closed with:
+
+`STRATZ_PUBLIC_READY_FOR_BOUNDED_BACKFILL`
+
+The bounded source-readiness manifest is:
+
+`stratz-public-trajectory-v1`
+
+Manifest selection source:
+
+- the 12-match EWC public-page smoke sample documented in this report;
+- the 7-match multi-family/source-shape canary documented above;
+- overlap removed;
+- fixture-only IDs excluded.
+
+Ordered manifest IDs:
+
+```text
+8011794134
+8327632578
+8346430978
+8358745059
+8639790960
+8655240937
+8885614030
+8885633666
+8885665054
+8885723512
+8885775271
+8885784652
+8885859920
+8885871759
+8885928262
+8885974297
+8886005043
+8886013461
+```
+
+The manifest is deliberately bounded to `18` real repository-documented Valve
+match IDs. At manifest selection time, `14` were already persisted as
+`stratz_public` games and `4` were documented EWC smoke IDs not yet persisted.
+The bounded live manifest run inserted those 4 rows; the current local corpus
+has all `18` manifest IDs persisted. The broader `historical_matches` table
+contains PandaScore provider match IDs, not Valve match IDs for STRATZ
+`/match/<id>` ingestion.
+
+Execution path:
+
+```powershell
+python -m app.cli sync-drafts --provider stratz-public --db data/autopilot.db --manifest stratz-public-trajectory-v1 --delay-seconds 1 --max-retries 1
+```
+
+The manifest path reuses `sync-drafts --provider stratz-public`; it does not add
+a generic crawler. It remains explicit, deterministic, sequential, conservative,
+resumable, and idempotent by `source + source_game_id`.
+
+Read-only persisted corpus audit:
+
+```powershell
+python -m app.cli stratz-trajectory-audit --db data/autopilot.db
+```
+
+Current local audit summary:
+
+- STRATZ public games: `18`;
+- unique Valve/source game IDs: `18`;
+- duplicate source game IDs: `0`;
+- patch distribution: `177=1`, `180=3`, `182=14`;
+- family distribution: `dreamleague=1`, `pgl=1`,
+  `the_international=1`, `unknown=15`;
+- games with 10 players: `18`;
+- complete 5v5 compositions: `18`;
+- complete team identity: `18`;
+- games with both gold and XP curves: `18`;
+- gold point-count distribution: min `22`, median `43`, p90 `71`, max `78`;
+- XP point-count distribution: min `22`, median `43`, p90 `71`, max `78`;
+- equal gold/XP point counts: `18`;
+- malformed, duplicate, non-monotonic, or conflicting stored source indices:
+  `0`;
+- `source_time_value` points: `0`;
+- `normalized_time_seconds` points: `0`;
+- all `1,626` persisted trajectory points remain
+  `source_index_unstable`.
+
+Temporal coordinate conclusion:
+
+`TRAJECTORY_TIME_SEMANTICS_UNRESOLVED`
+
+Trajectory corpus architecture decision:
+
+`STRATZ_TRAJECTORY_CORPUS_NEEDS_SOURCE_SEMANTICS_WORK`
+
+Exact blocker:
+
+`trajectory point coordinates are not confirmed as elapsed match time`
+
+This means the corpus is useful as a preserved source-readiness corpus, but a
+real `t -> t+5 minute` window dataset is still blocked. Do not infer elapsed
+minutes or seconds from array index, curve length, or match duration unless a
+future approved public embedded-state diagnostic proves that temporal mapping.
+
 Next roadmap step:
 
-Design and execute a deliberately bounded STRATZ historical trajectory backfill
-that preserves full gold/XP curves and produces a source-readiness corpus for
-future `t -> t+5 minute` trajectory-window dataset construction.
+Resolve or further evidence STRATZ public trajectory temporal-coordinate
+semantics from the approved public embedded page state before defining real
+`t -> t+5 minute` window labels.

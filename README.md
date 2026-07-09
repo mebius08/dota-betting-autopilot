@@ -942,6 +942,55 @@ optional `normalized_time_seconds`, and an explicit
 `source_index_unstable`; downstream code must not treat those indices as
 canonical elapsed match seconds.
 
+The bounded source-readiness backfill manifest is
+`stratz-public-trajectory-v1`. It is an explicit 18-match list built from the
+repository-documented live STRATZ public-page evidence: the 12-match EWC smoke
+sample plus the 7-match multi-family source-shape canary, with overlap removed
+and fixture-only IDs excluded. It is intentionally much smaller than a crawl:
+14 IDs were already persisted in the local STRATZ public game store at manifest
+selection time and 4 were documented EWC smoke IDs not yet persisted. The
+bounded live manifest run inserted those 4 rows, so the current local corpus has
+all 18 manifest IDs persisted.
+
+```powershell
+python -m app.cli sync-drafts --provider stratz-public --db data/autopilot.db --manifest stratz-public-trajectory-v1 --delay-seconds 1 --max-retries 1
+```
+
+`sync-drafts --manifest` reuses the same STRATZ public sync path as repeated
+`--match-id` values. It remains sequential, conservative, idempotent, and
+bounded to the named manifest; already ingested matches can return `UNCHANGED`
+without creating duplicate rows.
+
+Audit the persisted STRATZ trajectory corpus without network calls:
+
+```powershell
+python -m app.cli stratz-trajectory-audit --db data/autopilot.db
+```
+
+The audit reports corpus identity, player/composition normalization, gold and
+XP point-count distributions, gold/XP pairing, temporal semantics status,
+patch-level source-shape variance, family-level source-shape variance, and the
+trajectory corpus architecture decision. The current local audit found 18
+persisted `stratz_public` games, 18 games with both gold and XP curves, 1,626
+total advantage points, equal gold/XP point counts for every persisted game,
+and no duplicate or non-monotonic stored source indices. It also found 0
+explicit source-time values and 0 normalized elapsed-second values; all current
+points remain `source_index_unstable`.
+
+Current trajectory-corpus decision:
+
+```text
+STRATZ_PUBLIC_READY_FOR_BOUNDED_BACKFILL
+        ->
+bounded trajectory backfill manifest
+        ->
+trajectory corpus audit
+        ->
+TRAJECTORY_TIME_SEMANTICS_UNRESOLVED
+        ->
+STRATZ_TRAJECTORY_CORPUS_NEEDS_SOURCE_SEMANTICS_WORK
+```
+
 Future trading-roadmap note: the primary intended product direction is
 short-horizon in-play position trading, approximately `t -> t + 5 minutes`,
 with future decisions framed as `OPEN / HOLD / CASH OUT / FLIP`. Final match win
@@ -954,11 +1003,11 @@ historical bookmaker probability or odds trajectories, so market-reaction work
 will require a separate bookmaker odds-history dataset or prospectively collected
 odds time series.
 
-Next roadmap step: design and execute a deliberately bounded STRATZ historical
-trajectory backfill that preserves full gold/XP curves and produces a
-source-readiness corpus for future `t -> t+5 minute` trajectory-window dataset
-construction. Do not train trajectory models or define final window labels before
-that bounded trajectory corpus exists and is audited.
+Next roadmap step: resolve or further evidence STRATZ public trajectory temporal
+coordinate semantics from the approved public embedded page state before
+defining real `t -> t+5 minute` window labels. Do not train trajectory models,
+choose alignment/interpolation semantics, or fall back to final-winner-only work
+while `source_index_unstable` remains unresolved.
 
 Post-draft features represent hero IDs as categorical values in the provider
 namespace, for example `opendota:hero:100`; hero ID `100` is not treated as

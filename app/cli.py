@@ -232,6 +232,13 @@ def create_parser() -> ArgumentParser:
         ),
     )
     sync_drafts_parser.add_argument(
+        "--manifest",
+        help=(
+            "Named bounded STRATZ public trajectory backfill manifest. "
+            "Use instead of repeated --match-id."
+        ),
+    )
+    sync_drafts_parser.add_argument(
         "--page-size",
         type=_pandascore_page_size,
         default=100,
@@ -349,6 +356,17 @@ def create_parser() -> ArgumentParser:
         "--skip-referenced-resources",
         action="store_true",
         help="Do not fetch JSON/page-data resources directly referenced by pages.",
+    )
+
+    stratz_trajectory_audit_parser = subparsers.add_parser(
+        "stratz-trajectory-audit",
+        help="Audit persisted STRATZ public gold/XP trajectory corpus.",
+    )
+    stratz_trajectory_audit_parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("data") / "autopilot.db",
+        help="SQLite database path.",
     )
 
     sync_rosters_parser = subparsers.add_parser(
@@ -971,6 +989,8 @@ def main(
             return _probe_stratz_history_command(args)
         if args.command == "probe-public-match-pages":
             return _probe_public_match_pages_command(args)
+        if args.command == "stratz-trajectory-audit":
+            return _stratz_trajectory_audit_command(args)
         if args.command == "sync-rosters":
             return _sync_rosters_command(args)
         if args.command == "history-status":
@@ -1254,15 +1274,37 @@ def _sync_drafts_command(args: Namespace) -> int:
     if args.provider == "stratz-public":
         import app.public_pages as public_pages
 
-        if not any(str(match_id).strip() for match_id in args.match_id):
-            print("At least one --match-id is required for stratz-public.")
+        manifest_name = getattr(args, "manifest", None)
+        explicit_match_ids = tuple(
+            str(match_id).strip()
+            for match_id in args.match_id
+            if str(match_id).strip()
+        )
+        if manifest_name and explicit_match_ids:
+            print("Use either --manifest or --match-id for stratz-public, not both.")
+            return 1
+        manifest = None
+        if manifest_name:
+            try:
+                manifest = public_pages.get_stratz_public_backfill_manifest(
+                    manifest_name
+                )
+            except ValueError as exc:
+                print(str(exc))
+                return 1
+            match_ids = manifest.match_ids
+        else:
+            match_ids = explicit_match_ids
+
+        if not match_ids:
+            print("At least one --match-id or --manifest is required for stratz-public.")
             return 1
         repository = SQLiteRepository(args.db)
         client = public_pages.PublicPageHttpClient(timeout=args.timeout)
         try:
             stratz_result = public_pages.sync_stratz_public_match_pages(
                 repository=repository,
-                match_ids=tuple(args.match_id),
+                match_ids=match_ids,
                 client=client,
                 delay_seconds=args.delay_seconds,
                 max_retries=args.max_retries,
@@ -1273,6 +1315,9 @@ def _sync_drafts_command(args: Namespace) -> int:
             print(str(exc))
             return 1
 
+        if manifest is not None:
+            print(public_pages.render_stratz_public_backfill_manifest(manifest))
+            print()
         print(public_pages.render_stratz_public_sync_result(stratz_result))
         return 0
 
@@ -1375,6 +1420,33 @@ def _probe_public_match_pages_command(args: Namespace) -> int:
         return 1
 
     print(public_pages.render_public_page_probe_result(result))
+    return 0
+
+
+def _stratz_trajectory_audit_command(args: Namespace) -> int:
+    import app.public_pages as public_pages
+
+    db_path = Path(args.db)
+    print(f"Database: {db_path.as_posix()}")
+    print()
+
+    if not db_path.exists():
+        audit = public_pages.build_stratz_public_trajectory_corpus_audit_from_records(
+            games=(),
+            players_by_game={},
+            points_by_game={},
+        )
+        print(public_pages.render_stratz_public_trajectory_corpus_audit(audit))
+        print()
+        print(
+            f"Database not found: {db_path.as_posix()}. "
+            "Run app.main or app.cli run-once first."
+        )
+        return 0
+
+    repository = SQLiteRepository(db_path)
+    audit = public_pages.build_stratz_public_trajectory_corpus_audit(repository)
+    print(public_pages.render_stratz_public_trajectory_corpus_audit(audit))
     return 0
 
 
