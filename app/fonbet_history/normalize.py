@@ -88,7 +88,9 @@ SINGLE_EVENT_SEQUENCE_COLUMNS = [
     "prior_entry_count",
     "previous_coupon_id",
     "previous_selection",
+    "previous_selection_side",
     "selection",
+    "selection_side",
     "side_switch",
     "entry_odds",
     "entry_score",
@@ -338,12 +340,14 @@ def build_single_event_sequences(
         event_id = leg.get("event_id")
         if event_id is None:
             continue
+        selection = leg.get("selection")
         candidates.append(
             {
                 "coupon_id": coupon_id,
                 "event_id": event_id,
                 "registration_time": coupon.get("registration_time"),
-                "selection": leg.get("selection"),
+                "selection": selection,
+                "selection_side": _winner_selection_side(selection),
                 "entry_odds": coupon.get("entry_odds"),
                 "entry_score": leg.get("entry_score"),
                 "result_score": leg.get("result_score"),
@@ -369,6 +373,17 @@ def build_single_event_sequences(
         previous_selection = (
             previous.get("selection") if previous is not None else None
         )
+        previous_selection_side = (
+            previous.get("selection_side") if previous is not None else None
+        )
+        selection_side = candidate["selection_side"]
+        side_switch: bool | None = None
+        if (
+            previous is not None
+            and previous_selection_side is not None
+            and selection_side is not None
+        ):
+            side_switch = previous_selection_side != selection_side
         record = {
             "coupon_id": candidate["coupon_id"],
             "event_id": candidate["event_id"],
@@ -379,11 +394,10 @@ def build_single_event_sequences(
                 previous.get("coupon_id") if previous is not None else None
             ),
             "previous_selection": previous_selection,
+            "previous_selection_side": previous_selection_side,
             "selection": candidate["selection"],
-            "side_switch": (
-                previous is not None
-                and previous_selection != candidate["selection"]
-            ),
+            "selection_side": selection_side,
+            "side_switch": side_switch,
             "entry_odds": candidate["entry_odds"],
             "entry_score": candidate["entry_score"],
             "result_score": candidate["result_score"],
@@ -424,6 +438,17 @@ def _single_event_sequence_sort_key(
         "" if registration_time is None else str(registration_time),
         str(record.get("coupon_id")),
     )
+
+
+def _winner_selection_side(selection: object) -> int | None:
+    if not isinstance(selection, str):
+        return None
+    normalized = " ".join(selection.split()).casefold()
+    if normalized == "поб 1":
+        return 1
+    if normalized == "поб 2":
+        return 2
+    return None
 
 
 def _exact_event_key(event_id: object) -> tuple[type[object], object]:

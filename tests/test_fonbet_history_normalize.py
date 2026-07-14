@@ -268,35 +268,77 @@ def test_single_event_sequences_order_chronologically_with_coupon_tiebreaker(
     ]
 
 
-def test_single_event_sequences_track_first_repeats_and_side_switches() -> None:
+def test_single_event_sequence_first_entry_has_no_previous_side_or_switch() -> None:
+    records = build_single_event_sequences(
+        [_sequence_coupon("fixture-first", "2026-01-01T10:00:00Z")],
+        [_sequence_leg("fixture-first", 101, "Поб 1")],
+    )
+
+    assert records[0]["selection_side"] == 1
+    assert records[0]["previous_selection_side"] is None
+    assert records[0]["side_switch"] is None
+
+
+def test_single_event_sequence_pob1_to_pob2_is_side_switch() -> None:
     coupons = [
         _sequence_coupon("fixture-first", "2026-01-01T10:00:00Z"),
-        _sequence_coupon("fixture-repeat", "2026-01-02T10:00:00Z"),
         _sequence_coupon("fixture-switch", "2026-01-03T10:00:00Z"),
     ]
     legs = [
-        _sequence_leg("fixture-first", 101, "Fixture A"),
-        _sequence_leg("fixture-repeat", 101, "Fixture A"),
-        _sequence_leg("fixture-switch", 101, "Fixture B"),
+        _sequence_leg("fixture-first", 101, "Поб 1"),
+        _sequence_leg("fixture-switch", 101, "Поб 2"),
     ]
 
-    first, repeated, switched = build_single_event_sequences(coupons, legs)
+    first, switched = build_single_event_sequences(coupons, legs)
 
     assert first["sequence_index"] == 1
     assert first["prior_entry_count"] == 0
     assert first["previous_coupon_id"] is None
     assert first["previous_selection"] is None
-    assert first["side_switch"] is False
-    assert repeated["sequence_index"] == 2
-    assert repeated["prior_entry_count"] == 1
-    assert repeated["previous_coupon_id"] == "fixture-first"
-    assert repeated["previous_selection"] == "Fixture A"
-    assert repeated["side_switch"] is False
-    assert switched["sequence_index"] == 3
-    assert switched["prior_entry_count"] == 2
-    assert switched["previous_coupon_id"] == "fixture-repeat"
-    assert switched["previous_selection"] == "Fixture A"
+    assert first["selection_side"] == 1
+    assert first["previous_selection_side"] is None
+    assert first["side_switch"] is None
+    assert switched["sequence_index"] == 2
+    assert switched["prior_entry_count"] == 1
+    assert switched["previous_coupon_id"] == "fixture-first"
+    assert switched["previous_selection"] == "Поб 1"
+    assert switched["selection_side"] == 2
+    assert switched["previous_selection_side"] == 1
     assert switched["side_switch"] is True
+
+
+def test_single_event_sequence_pob1_to_pob1_is_not_side_switch() -> None:
+    records = build_single_event_sequences(
+        [
+            _sequence_coupon("fixture-first", "2026-01-01T10:00:00Z"),
+            _sequence_coupon("fixture-repeat", "2026-01-02T10:00:00Z"),
+        ],
+        [
+            _sequence_leg("fixture-first", 101, "Поб 1"),
+            _sequence_leg("fixture-repeat", 101, "Поб 1"),
+        ],
+    )
+
+    assert records[1]["selection_side"] == 1
+    assert records[1]["previous_selection_side"] == 1
+    assert records[1]["side_switch"] is False
+
+
+def test_single_event_sequence_pob1_to_total_is_not_evaluable() -> None:
+    records = build_single_event_sequences(
+        [
+            _sequence_coupon("fixture-first", "2026-01-01T10:00:00Z"),
+            _sequence_coupon("fixture-total", "2026-01-02T10:00:00Z"),
+        ],
+        [
+            _sequence_leg("fixture-first", 101, "Поб 1"),
+            _sequence_leg("fixture-total", 101, "<48.5"),
+        ],
+    )
+
+    assert records[1]["selection_side"] is None
+    assert records[1]["previous_selection_side"] == 1
+    assert records[1]["side_switch"] is None
 
 
 def test_single_event_sequences_keep_exact_event_ids_separate() -> None:

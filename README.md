@@ -310,17 +310,21 @@ source omits them.
 
 The single-event sequence schema is `coupon_id`, `event_id`,
 `registration_time`, `sequence_index`, `prior_entry_count`,
-`previous_coupon_id`, `previous_selection`, `selection`, `side_switch`,
-`entry_odds`, `entry_score`, `result_score`, `is_live`, `cash_stake_rub`,
-`return_rub`, `profit_rub`, `is_cashout`, and `state`. It includes only
+`previous_coupon_id`, `previous_selection`, `previous_selection_side`,
+`selection`, `selection_side`, `side_switch`, `entry_odds`, `entry_score`,
+`result_score`, `is_live`, `cash_stake_rub`, `return_rub`, `profit_rub`,
+`is_cashout`, and `state`. It includes only
 non-express coupons with exactly one normalized leg and a non-null `event_id`.
 Rows are ordered by normalized `registration_time`, with `coupon_id` as the
 deterministic tie-breaker. Sequence counters and previous fields are tracked
 only within the same exact `event_id`; event names, teams, maps, market
 similarity, and strategy quality are never inferred. The first row for each
-event has `sequence_index=1`, `prior_entry_count=0`, and null previous fields.
-`side_switch` is true only when that exact event has a prior coupon whose
-selection differs.
+event has `sequence_index=1`, `prior_entry_count=0`, null previous fields, and
+null `side_switch`. `selection_side` and `previous_selection_side` are parsed as
+`1` or `2` only from explicit winner selections equivalent to `Поб 1` or
+`Поб 2`. When both consecutive sides are parseable, `side_switch` is false for
+the same side and true for opposite sides; otherwise it is null. Sides are not
+inferred from team names, odds, scores, or arbitrary selection text.
 
 Regenerate all normalized files without network access using:
 

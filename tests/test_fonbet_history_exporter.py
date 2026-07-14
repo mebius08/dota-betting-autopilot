@@ -166,14 +166,16 @@ def test_leg_export_has_unique_keys_and_matches_coupon_leg_counts(
             "is_live": False,
             "previous_coupon_id": None,
             "previous_selection": None,
+            "previous_selection_side": None,
             "prior_entry_count": 0,
             "profit_rub": 80,
             "registration_time": "2026-01-01T00:00:00Z",
             "result_score": "2:0",
             "return_rub": 180,
             "selection": "Fixture selection",
+            "selection_side": None,
             "sequence_index": 1,
-            "side_switch": False,
+            "side_switch": None,
             "state": "Win",
         }
     ]
@@ -183,7 +185,9 @@ def test_leg_export_has_unique_keys_and_matches_coupon_leg_counts(
         sequence_csv_rows = list(csv.DictReader(file))
     assert len(sequence_csv_rows) == 1
     assert sequence_csv_rows[0]["coupon_id"] == "fixture-single"
-    assert sequence_csv_rows[0]["side_switch"] == "false"
+    assert sequence_csv_rows[0]["selection_side"] == ""
+    assert sequence_csv_rows[0]["previous_selection_side"] == ""
+    assert sequence_csv_rows[0]["side_switch"] == ""
 
 
 class _FakeClient:
