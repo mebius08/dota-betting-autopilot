@@ -16,12 +16,15 @@ from app.fonbet_history.client import (
     FonbetHistoryError,
 )
 from app.fonbet_history.normalize import (
+    LEG_COLUMNS,
     NORMALIZED_COLUMNS,
     FonbetDataError,
     coupon_id_from_summary,
     csv_row,
+    leg_csv_row,
     load_coupon_summaries,
     normalize_coupon,
+    normalize_coupon_legs,
 )
 
 
@@ -86,6 +89,7 @@ def export_personal_history(
         )
 
     records: list[dict[str, object]] = []
+    leg_records: list[dict[str, object]] = []
     failures: list[ExportFailure] = []
     fetched_count = 0
     resumed_count = 0
@@ -138,14 +142,14 @@ def export_personal_history(
                 )
 
         try:
-            records.append(
-                normalize_coupon(
-                    summary,
-                    detail,
-                    amount_divisor=amount_divisor,
-                    detail_status=detail_status,
-                )
+            record = normalize_coupon(
+                summary,
+                detail,
+                amount_divisor=amount_divisor,
+                detail_status=detail_status,
             )
+            records.append(record)
+            leg_records.extend(normalize_coupon_legs(coupon_id, detail))
         except FonbetDataError as exc:
             failures.append(
                 ExportFailure(coupon_id, "normalize", str(exc))
@@ -187,8 +191,14 @@ def export_personal_history(
             for failure in failures
         ],
     }
+    _validate_leg_records(records, leg_records)
     _write_json_atomic(json_path, json_payload)
     _write_csv_atomic(csv_path, records)
+    _write_json_atomic(
+        normalized_dir / "legs.json",
+        {"schema_version": 1, "records": leg_records},
+    )
+    _write_leg_csv_atomic(normalized_dir / "legs.csv", leg_records)
 
     return ExportResult(
         summary_count=len(summaries),
@@ -261,6 +271,46 @@ def _write_csv_atomic(
         writer.writeheader()
         writer.writerows(csv_row(record) for record in records)
     temporary.replace(path)
+
+
+def _write_leg_csv_atomic(
+    path: Path,
+    records: Sequence[Mapping[str, object]],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.tmp")
+    with temporary.open("w", encoding="utf-8", newline="") as file:
+        writer = csv.DictWriter(
+            file,
+            fieldnames=LEG_COLUMNS,
+            lineterminator="\n",
+        )
+        writer.writeheader()
+        writer.writerows(leg_csv_row(record) for record in records)
+    temporary.replace(path)
+
+
+def _validate_leg_records(
+    coupon_records: Sequence[Mapping[str, object]],
+    leg_records: Sequence[Mapping[str, object]],
+) -> None:
+    keys = [
+        (record.get("coupon_id"), record.get("leg_index"))
+        for record in leg_records
+    ]
+    if len(keys) != len(set(keys)):
+        raise FonbetDataError("Normalized leg keys must be unique.")
+
+    actual_counts: dict[object, int] = {}
+    for record in leg_records:
+        coupon_id = record.get("coupon_id")
+        actual_counts[coupon_id] = actual_counts.get(coupon_id, 0) + 1
+    for coupon in coupon_records:
+        coupon_id = coupon.get("coupon_id")
+        if actual_counts.get(coupon_id, 0) != coupon.get("leg_count"):
+            raise FonbetDataError(
+                "Normalized leg counts must match coupon leg counts."
+            )
 
 
 def _decimal_json_value(value: Decimal) -> int | float:

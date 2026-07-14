@@ -16,16 +16,19 @@ from app.fonbet_history.exporter import (
     raw_response_path,
 )
 from app.fonbet_history.normalize import (
+    LEG_COLUMNS,
     NORMALIZED_COLUMNS,
     FonbetDataError,
     load_coupon_summaries,
     normalize_coupon,
+    normalize_coupon_legs,
 )
 
 __all__ = [
     "FONBET_CLIENT_ID_ENV",
     "FONBET_COUPON_INFO_ENDPOINT",
     "FONBET_FSID_ENV",
+    "LEG_COLUMNS",
     "NORMALIZED_COLUMNS",
     "ExportResult",
     "FonbetConfigurationError",
@@ -37,5 +40,6 @@ __all__ = [
     "export_personal_history",
     "load_coupon_summaries",
     "normalize_coupon",
+    "normalize_coupon_legs",
     "raw_response_path",
 ]

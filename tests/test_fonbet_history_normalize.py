@@ -6,7 +6,11 @@ import json
 from pathlib import Path
 from typing import cast
 
-from app.fonbet_history import load_coupon_summaries, normalize_coupon
+from app.fonbet_history import (
+    load_coupon_summaries,
+    normalize_coupon,
+    normalize_coupon_legs,
+)
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "fonbet_history"
@@ -166,6 +170,79 @@ def test_express_does_not_derive_odds_from_incomplete_leg_factors() -> None:
     assert record["is_express"] is True
     assert record["entry_odds"] is None
     assert record["entry_odds_source"] is None
+
+
+def test_normalize_single_coupon_leg_uses_exact_source_fields() -> None:
+    detail: dict[str, object] = {
+        "body": {
+            "bets": [
+                {
+                    "eventId": 101,
+                    "factorId": 202,
+                    "segmentId": 303,
+                    "sportId": 404,
+                    "eventName": "Fixture single event",
+                    "stakeName": "Fixture single selection",
+                    "factorValue": 1.75,
+                    "score": "0:0",
+                    "resultScore": "2:0",
+                    "eventStartTime": 1710001800000,
+                    "live": False,
+                }
+            ]
+        }
+    }
+
+    assert normalize_coupon_legs("fixture-single", detail) == [
+        {
+            "coupon_id": "fixture-single",
+            "leg_index": 1,
+            "event_id": 101,
+            "factor_id": 202,
+            "segment_id": 303,
+            "sport_id": 404,
+            "event_name": "Fixture single event",
+            "selection": "Fixture single selection",
+            "entry_odds": 1.75,
+            "entry_score": "0:0",
+            "result_score": "2:0",
+            "event_start_time": "2024-03-09T16:30:00Z",
+            "is_live": False,
+        }
+    ]
+
+
+def test_normalize_express_coupon_exports_every_real_leg() -> None:
+    detail: dict[str, object] = {
+        "body": {
+            "bets": [
+                {"eventName": "Fixture express A", "factorValue": 1.5},
+                {"eventName": "Fixture express B", "factorValue": 1.8},
+            ]
+        }
+    }
+
+    legs = normalize_coupon_legs("fixture-express", detail)
+
+    assert [leg["leg_index"] for leg in legs] == [1, 2]
+    assert [leg["event_name"] for leg in legs] == [
+        "Fixture express A",
+        "Fixture express B",
+    ]
+
+
+def test_normalize_coupon_leg_keeps_missing_identifiers_null() -> None:
+    detail: dict[str, object] = {
+        "eventName": "Fixture missing identifiers",
+        "stakeName": "Fixture selection",
+    }
+
+    leg = normalize_coupon_legs("fixture-missing-identifiers", detail)[0]
+
+    assert leg["event_id"] is None
+    assert leg["factor_id"] is None
+    assert leg["segment_id"] is None
+    assert leg["sport_id"] is None
 
 
 def _load_details() -> Mapping[str, Mapping[str, object]]:

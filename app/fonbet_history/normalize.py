@@ -64,6 +64,22 @@ NORMALIZED_COLUMNS = [
     "legs_json",
 ]
 
+LEG_COLUMNS = [
+    "coupon_id",
+    "leg_index",
+    "event_id",
+    "factor_id",
+    "segment_id",
+    "sport_id",
+    "event_name",
+    "selection",
+    "entry_odds",
+    "entry_score",
+    "result_score",
+    "event_start_time",
+    "is_live",
+]
+
 
 class FonbetDataError(FonbetHistoryError):
     pass
@@ -226,6 +242,45 @@ def csv_row(record: Mapping[str, object]) -> dict[str, object]:
                 sort_keys=True,
             )
             continue
+        value = record.get(column)
+        if value is None:
+            row[column] = ""
+        elif isinstance(value, bool):
+            row[column] = str(value).lower()
+        else:
+            row[column] = value
+    return row
+
+
+def normalize_coupon_legs(
+    coupon_id: str,
+    detail: Mapping[str, object] | None,
+) -> list[dict[str, object]]:
+    if detail is None:
+        return []
+    return [
+        {
+            "coupon_id": coupon_id,
+            "leg_index": leg_index,
+            "event_id": item.get("eventId"),
+            "factor_id": item.get("factorId"),
+            "segment_id": item.get("segmentId"),
+            "sport_id": item.get("sportId"),
+            "event_name": _optional_text(item.get("eventName")),
+            "selection": _optional_text(item.get("stakeName")),
+            "entry_odds": _optional_number(item.get("factorValue")),
+            "entry_score": _optional_text(item.get("score")),
+            "result_score": _optional_text(item.get("resultScore")),
+            "event_start_time": _timestamp(item.get("eventStartTime")),
+            "is_live": _optional_bool(item.get("live")),
+        }
+        for leg_index, item in enumerate(_leg_mappings(detail), start=1)
+    ]
+
+
+def leg_csv_row(record: Mapping[str, object]) -> dict[str, object]:
+    row: dict[str, object] = {}
+    for column in LEG_COLUMNS:
         value = record.get(column)
         if value is None:
             row[column] = ""

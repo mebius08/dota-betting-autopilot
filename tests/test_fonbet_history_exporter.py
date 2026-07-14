@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 import csv
 from decimal import Decimal
 import json
@@ -93,6 +94,62 @@ def test_offline_resume_requires_no_credentials(tmp_path: Path) -> None:
     assert result.fetched_count == 0
     assert result.resumed_count == 1
     assert result.failure_count == 0
+
+
+def test_leg_export_has_unique_keys_and_matches_coupon_leg_counts(
+    tmp_path: Path,
+) -> None:
+    single = _summary("fixture-single", "Win", 100, 180)
+    express = _summary("fixture-express", "Win", 100, 270)
+    express["couponType"] = "Express"
+    express["betCount"] = 2
+    summary_path = tmp_path / "summary.json"
+    summary_path.write_text(
+        json.dumps({"coupons": [single, express]}),
+        encoding="utf-8",
+    )
+    data_dir = tmp_path / "local-data" / "fonbet-history"
+    single_raw = raw_response_path(data_dir, "fixture-single")
+    single_raw.parent.mkdir(parents=True)
+    single_raw.write_text(json.dumps(_detail("Fixture single")), encoding="utf-8")
+    raw_response_path(data_dir, "fixture-express").write_text(
+        json.dumps(
+            {
+                "body": {
+                    "kind": "combo",
+                    "bets": [
+                        _detail("Fixture express A"),
+                        _detail("Fixture express B"),
+                    ],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = export_personal_history(
+        summary_path=summary_path,
+        local_data_dir=data_dir,
+        amount_divisor=Decimal("1"),
+        client=None,
+    )
+
+    coupon_payload = json.loads(
+        result.normalized_json_path.read_text(encoding="utf-8")
+    )
+    legs_path = result.normalized_json_path.with_name("legs.json")
+    leg_payload = json.loads(legs_path.read_text(encoding="utf-8"))
+    leg_rows = leg_payload["records"]
+    keys = [(row["coupon_id"], row["leg_index"]) for row in leg_rows]
+    expected_counts = {
+        row["coupon_id"]: row["leg_count"] for row in coupon_payload["records"]
+    }
+
+    assert len(keys) == len(set(keys))
+    assert Counter(row["coupon_id"] for row in leg_rows) == expected_counts
+    with legs_path.with_suffix(".csv").open(encoding="utf-8", newline="") as file:
+        csv_rows = list(csv.DictReader(file))
+    assert len(csv_rows) == len(leg_rows) == 3
 
 
 class _FakeClient:

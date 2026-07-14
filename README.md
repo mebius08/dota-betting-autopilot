@@ -235,7 +235,9 @@ such as `registrationTime`, `betState`, `betSum`, `winSum`, `couponType`,
 `couponK`, `couponOriginalK`, `betCount`, and `betMode` are retained or mapped.
 The entire `local-data/` directory is gitignored. Raw details are written under
 `local-data/fonbet-history/raw/` with SHA-256-derived filenames; normalized
-exports are `normalized/coupons.json` and `normalized/coupons.csv`.
+coupon exports are `normalized/coupons.json` and `normalized/coupons.csv`.
+Offline normalization also writes one row per real coupon leg to
+`normalized/legs.json` and `normalized/legs.csv`.
 
 Set session credentials only in the current shell when possible. Copy
 `betTypeName` and `sysId` from the same observed `coupon/info` request rather
@@ -296,6 +298,17 @@ to two decimal places with `ROUND_HALF_UP`; otherwise `entry_odds` remains null.
 nominal amount, `cash_stake_rub` is zero, and `profit_rub` uses the zero-cash-
 stake convention. The nominal, source amounts, and method are retained so an
 analyst can apply a different freebet convention later.
+
+The normalized leg schema is `coupon_id`, `leg_index`, `event_id`, `factor_id`,
+`segment_id`, `sport_id`, `event_name`, `selection`, `entry_odds`, `entry_score`,
+`result_score`, `event_start_time`, and `is_live`. Leg indexes are one-based
+within each coupon. Identifier fields map only from the corresponding raw
+`eventId`, `factorId`, `segmentId`, and `sportId` values and remain null when the
+source omits them. Regenerate all normalized files without network access using:
+
+```powershell
+..\venv\Scripts\python.exe -m app.fonbet_history export --summary .\local-data\fonbet-history\summary.json --local-data-dir .\local-data\fonbet-history --amount-divisor 1 --max-fetches 0
+```
 
 Security warning: `fsid` and `clientId` are session credentials. Do not paste
 them into source, README examples, fixtures, committed `.env` files, issue
