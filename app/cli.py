@@ -369,6 +369,52 @@ def create_parser() -> ArgumentParser:
         help="SQLite database path.",
     )
 
+    stratz_trajectory_time_parser = subparsers.add_parser(
+        "stratz-trajectory-time-diagnostic",
+        help="Run a bounded STRATZ public trajectory-time source diagnostic.",
+    )
+    stratz_trajectory_time_parser.add_argument(
+        "--db",
+        type=Path,
+        default=Path("data") / "autopilot.db",
+        help="SQLite database path for persisted corpus duration/count analysis.",
+    )
+    stratz_trajectory_time_parser.add_argument(
+        "--match-id",
+        action="append",
+        default=[],
+        help=(
+            "Explicit corpus Valve match ID to diagnose. Repeat for multiple "
+            "matches. Defaults to patch 177/180/182 representatives."
+        ),
+    )
+    stratz_trajectory_time_parser.add_argument(
+        "--timeout",
+        type=_positive_float,
+        default=10.0,
+        help="HTTP timeout in seconds.",
+    )
+    stratz_trajectory_time_parser.add_argument(
+        "--delay-seconds",
+        type=_non_negative_float,
+        default=1.0,
+        help="Sequential delay between representative match diagnostics.",
+    )
+    stratz_trajectory_time_parser.add_argument(
+        "--inspect-client-assets",
+        action="store_true",
+        help=(
+            "Also inspect a bounded number of public static JavaScript assets "
+            "directly referenced by allowed Overview HTML."
+        ),
+    )
+    stratz_trajectory_time_parser.add_argument(
+        "--max-client-assets",
+        type=_non_negative_int,
+        default=4,
+        help="Maximum page-referenced public client assets to inspect.",
+    )
+
     sync_rosters_parser = subparsers.add_parser(
         "sync-rosters",
         help="Sync bounded historical Dota roster data from a provider.",
@@ -991,6 +1037,8 @@ def main(
             return _probe_public_match_pages_command(args)
         if args.command == "stratz-trajectory-audit":
             return _stratz_trajectory_audit_command(args)
+        if args.command == "stratz-trajectory-time-diagnostic":
+            return _stratz_trajectory_time_diagnostic_command(args, sleep_func)
         if args.command == "sync-rosters":
             return _sync_rosters_command(args)
         if args.command == "history-status":
@@ -1447,6 +1495,40 @@ def _stratz_trajectory_audit_command(args: Namespace) -> int:
     repository = SQLiteRepository(db_path)
     audit = public_pages.build_stratz_public_trajectory_corpus_audit(repository)
     print(public_pages.render_stratz_public_trajectory_corpus_audit(audit))
+    return 0
+
+
+def _stratz_trajectory_time_diagnostic_command(
+    args: Namespace,
+    sleep_func: Callable[[float], None],
+) -> int:
+    import app.public_pages as public_pages
+
+    db_path = Path(args.db)
+    repository = SQLiteRepository(db_path) if db_path.exists() else None
+    match_ids = tuple(args.match_id) or public_pages.STRATZ_TRAJECTORY_TIME_DIAGNOSTIC_MATCH_IDS
+    client = public_pages.PublicPageHttpClient(timeout=args.timeout)
+    try:
+        result = public_pages.build_stratz_trajectory_time_diagnostic(
+            repository=repository,
+            client=client,
+            match_ids=match_ids,
+            delay_seconds=args.delay_seconds,
+            inspect_client_assets=args.inspect_client_assets,
+            max_client_assets=args.max_client_assets,
+            sleep_func=sleep_func,
+        )
+    except ValueError as exc:
+        print(str(exc))
+        return 1
+
+    print(public_pages.render_stratz_trajectory_time_diagnostic(result))
+    if repository is None:
+        print()
+        print(
+            f"Database not found: {db_path.as_posix()}. "
+            "Persisted duration/count analysis skipped."
+        )
     return 0
 
 

@@ -977,6 +977,37 @@ and no duplicate or non-monotonic stored source indices. It also found 0
 explicit source-time values and 0 normalized elapsed-second values; all current
 points remain `source_index_unstable`.
 
+Investigate the unresolved time-axis contract with a bounded public-page
+diagnostic:
+
+```powershell
+python -m app.cli stratz-trajectory-time-diagnostic --db data/autopilot.db --delay-seconds 1 --inspect-client-assets --max-client-assets 4
+```
+
+The diagnostic checks representative manifest matches
+`8011794134`, `8346430978`, and `8886013461` across the ordinary public
+Overview route. It reports the graph route's robots-policy decision without
+fetching the disallowed route. Optional client inspection is limited to
+same-origin `/_next/static/*.js` script and script-preload assets directly
+referenced by the allowed Overview HTML; it does not execute JavaScript or
+crawl chunks. The diagnostic also reports decoded state counts, trajectory
+source paths and raw shapes, adjacent coordinate candidates,
+duration/point-count relationships from the persisted corpus, timed item rows,
+and ordered draft sequence evidence.
+
+The live Overview inspection found five directly referenced static JavaScript
+assets, but none contained either exact gold/XP trajectory field identifier or
+a deterministic index-to-elapsed-time mapping. The exact 18-match relationship
+`point_count = floor(duration_seconds / 60) + 2` therefore remains
+corroborative only. It does not prove the likely `(source_index - 1) * 60`
+mapping, so persisted trajectory coordinates remain unnormalized.
+
+Timed item evidence requires explicit item ID plus time pairs; final inventory
+does not count as timed item data. Ordered draft rows require explicit order,
+pick/ban kind, side, and hero. Action number alone does not prove pick/ban
+kind, but explicit source phase/kind fields can support ordered draft semantics
+when they are associated with the draft rows.
+
 Current trajectory-corpus decision:
 
 ```text

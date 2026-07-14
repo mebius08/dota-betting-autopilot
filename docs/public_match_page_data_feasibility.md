@@ -356,7 +356,7 @@ Important contract rows from the 12-page EWC smoke sample:
 | ban order | `PARTIAL` | ban evidence and action order evidence present | requires complete ordered draft action semantics | Order alone is insufficient without reliable action kind. |
 | team/side ownership of picks | `SUPPORTED` | Radiant/Dire picks and player sides `12/12` | normalized as side pick coverage | Ownership is side-based. |
 | team/side ownership of bans | `PARTIAL` | bans and action side evidence present | checked from draft action side and ban evidence | Depends on stable pick/ban action semantics. |
-| complete draft sequence | `PARTIAL` | action order/side/hero present, but `ordered_draft_actions` `0/12` | not normalized unless all action semantics are explicit | Complete ordered pick/ban sequence is not proven. |
+| complete draft sequence | `PARTIAL` | action order/side/hero present, but `ordered_draft_actions` `0/12` | not normalized unless order, side, hero, and explicit kind or explicit phase/kind are present | Complete ordered pick/ban sequence is not proven. |
 | captain/drafter identity | `MISSING` | no evidence | not implemented by current parser | Not required for the next ingestion stage. |
 | player account/Steam identity | `SUPPORTED` | `player_account_ids` `12/12` | normalized as all-ten-player ID coverage | Stable account IDs are the anchor. |
 | player display identity | `MISSING` | `player_display_names` `0/12` | checked separately from account IDs | Display names are not identity anchors. |
@@ -373,7 +373,7 @@ Important contract rows from the 12-page EWC smoke sample:
 | GPM/XPM | `SUPPORTED` | `gpm` and `xpm` `12/12` | normalized as final stat coverage | Post-game summary rates. |
 | item inventory | `SUPPORTED` | `final_items` `12/12` | normalized as final inventory coverage | Final inventory is not item timing. |
 | neutral items | `SUPPORTED` | final inventory slot coverage `12/12` | covered through final item fields | Neutral item timing is not proven. |
-| item purchase/timing history | `MISSING` | `timed_item_data` `0/12` | checked separately from final inventory | Important limitation for rich state research. |
+| item purchase/timing history | `MISSING` | `timed_item_data` `0/12` | checked separately from final inventory; parser requires explicit item ID plus time pairs | Important limitation for rich state research. |
 | item state over time | `MISSING` | no full inventory-over-time evidence | not normalized beyond timed item evidence | Important limitation for rich state research. |
 | buybacks | `MISSING` | no evidence | not implemented by current parser | Not proven. |
 | Radiant/Dire gold advantage progression | `SUPPORTED` | `gold_advantage_timeline` `12/12` | gold/net-worth advantage array coverage | Production ingestion preserves point-level time semantics. |
@@ -726,3 +726,82 @@ Next roadmap step:
 Resolve or further evidence STRATZ public trajectory temporal-coordinate
 semantics from the approved public embedded page state before defining real
 `t -> t+5 minute` window labels.
+
+## 16. Trajectory Time Semantics Diagnostic
+
+The bounded trajectory-time diagnostic is implemented as:
+
+```powershell
+python -m app.cli stratz-trajectory-time-diagnostic --db data/autopilot.db --delay-seconds 1 --inspect-client-assets --max-client-assets 4
+```
+
+Default representative match IDs:
+
+```text
+8011794134
+8346430978
+8886013461
+```
+
+The diagnostic is read-only. It fetches only ordinary public STRATZ Overview
+pages after the same robots-policy check used by the ingestion adapter, then
+decodes the public page state without GraphQL credentials, STRATZ tokens,
+login, browser automation, JavaScript execution, proxies, CAPTCHA handling, or
+hidden endpoint enumeration.
+
+The diagnostic checks:
+
+- the public `/match/<id>` overview route;
+- the robots-policy decision for `/matches/<id>/graphs/networth`, without
+  fetching that disallowed graph route or depending on it;
+- decoded public state counts;
+- advantage source keys, source paths, raw shapes, first/last source indices,
+  raw source-time values, normalized elapsed-second values, adjacent parent
+  keys, and coordinate-candidate fields;
+- optional bounded client asset snippets from same-origin
+  `/_next/static/*.js` script and script-preload resources directly referenced
+  by the allowed Overview HTML when `--inspect-client-assets` is passed;
+- timed item rows, counted only when an explicit item ID and explicit time are
+  associated with the same player/item row;
+- ordered draft sequence support, counted only when action order, pick/ban
+  kind, side, and hero are all explicit or safely derived from explicit
+  phase/kind fields;
+- persisted point-count versus duration relationships for the 18-match local
+  corpus when `--db` points at an existing database.
+
+The persisted corpus has an exact point-count relationship in the current local
+database: for all 18 STRATZ public games, gold point count equals
+`floor(duration_minutes) + 2` and `ceil(duration_minutes) + 1`. Gold and XP
+point counts are equal for every persisted game. Seconds per gold interval are
+roughly one minute across the corpus.
+
+The repaired live diagnostic found five directly referenced public static
+JavaScript assets in the allowed Overview HTML and inspected all five. None
+contained either exact trajectory field identifier (`radiantNetworthLeads` or
+`radiantExperienceLeads`), and no deterministic index-to-elapsed-time mapping
+was present. No source maps, unreferenced chunks, or disallowed graph pages were
+inspected.
+
+The point-count relationship remains useful corroborating evidence, but it is
+not sufficient proof of elapsed-time semantics. It does not prove the likely
+`(source_index - 1) * 60` mapping: specifically, it does not prove the origin
+offset, whether index `0` is pregame, horn, or minute zero, how short final
+intervals are represented, or whether gold and XP curves always share exactly
+the same coordinate contract. Therefore trajectory time semantics remain
+unresolved unless ordinary public source points expose explicit time
+coordinates or bounded public-client evidence proves the index-to-time mapping.
+
+Current temporal decision remains:
+
+`TRAJECTORY_TIME_SEMANTICS_UNRESOLVED`
+
+Persisted point normalization remains unchanged:
+
+- `source_index` is preserved;
+- `source_time_value` remains `NULL` for number-only STRATZ public curves;
+- `normalized_time_seconds` remains `NULL`;
+- `time_semantics_status` remains `source_index_unstable`.
+
+Trajectory normalization is allowed only after the source contract is proven by
+public-page or public-client evidence. Until then, do not build real
+`t -> t+5 minute` labels from STRATZ trajectory indices.

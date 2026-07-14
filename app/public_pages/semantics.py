@@ -49,6 +49,14 @@ class PublicSemanticDraftAction:
 
 
 @dataclass(frozen=True)
+class PublicSemanticTimedItem:
+    account_id: str
+    item_id: int
+    source_time_value: str
+    normalized_time_seconds: int | None
+
+
+@dataclass(frozen=True)
 class PublicSemanticAdvantagePoint:
     metric: SemanticAdvantageMetric
     source_index: int
@@ -331,6 +339,12 @@ def public_players_have_timed_items(players: Sequence[Mapping[str, object]]) -> 
     return _players_have_timed_items(players)
 
 
+def public_player_timed_items(
+    players: Sequence[Mapping[str, object]],
+) -> tuple[PublicSemanticTimedItem, ...]:
+    return _timed_items_from_players(players)
+
+
 def public_has_timed_event_list(value: object, keys: tuple[str, ...]) -> bool:
     return _has_timed_event_list(value, keys)
 
@@ -405,7 +419,13 @@ def _semantic_draft_actions(state: object) -> tuple[PublicSemanticDraftAction, .
     rows = _find_mapping_list(state, ("pickBans", "draftActions", "picksBans", "bans"))
     actions: list[PublicSemanticDraftAction] = []
     for row in rows:
-        order = _int(row.get("order") or row.get("ord") or row.get("sequence"))
+        order = _int(
+            row.get("order")
+            or row.get("ord")
+            or row.get("sequence")
+            or row.get("actionNumber")
+            or row.get("actionId")
+        )
         actions.append(
             PublicSemanticDraftAction(
                 order=order,
@@ -631,7 +651,14 @@ def _draft_kind(row: Mapping[str, object]) -> SemanticDraftActionKind | None:
         return "pick" if is_pick else "ban"
     if row.get("bannedHeroId") is not None or row.get("wasBannedSuccessfully") is not None:
         return "ban"
-    value = _text(row.get("kind") or row.get("type") or row.get("action"))
+    value = _text(
+        row.get("kind")
+        or row.get("type")
+        or row.get("action")
+        or row.get("phase")
+        or row.get("draftPhase")
+        or row.get("phaseName")
+    )
     if value is None:
         return None
     lowered = value.casefold()
@@ -683,16 +710,73 @@ def _players_have_items(players: Sequence[Mapping[str, object]]) -> bool:
 
 
 def _players_have_timed_items(players: Sequence[Mapping[str, object]]) -> bool:
+    if len(players) < 10:
+        return False
+    timed_items = _timed_items_from_players(players[:10])
+    account_ids = {
+        _text(_find_value(player, ("steamAccountId", "accountId", "playerId", "id")))
+        for player in players[:10]
+    }
+    account_ids.discard(None)
+    timed_item_account_ids = {row.account_id for row in timed_items}
+    return len(account_ids) == 10 and account_ids <= timed_item_account_ids
+
+
+def _timed_items_from_players(
+    players: Sequence[Mapping[str, object]],
+) -> tuple[PublicSemanticTimedItem, ...]:
+    rows: list[PublicSemanticTimedItem] = []
     for player in players:
-        items = player.get("items")
-        if not isinstance(items, list):
+        account_id = _text(
+            _find_value(player, ("steamAccountId", "accountId", "playerId", "id"))
+        )
+        if account_id is None:
             continue
-        for item in items:
-            if not isinstance(item, Mapping):
+        for item in _timed_item_mappings(player):
+            item_id = _int(
+                _find_value(item, ("itemId", "item_id", "item", "id", "key"))
+            )
+            source_time = _find_value(
+                item,
+                (
+                    "time",
+                    "gameTime",
+                    "timestamp",
+                    "second",
+                    "seconds",
+                    "matchTime",
+                ),
+            )
+            source_time_value = _text(source_time)
+            if item_id is None or source_time_value is None:
                 continue
-            if _int(item.get("itemId")) is not None and _find_value(item, ("time", "gameTime")) is not None:
-                return True
-    return False
+            rows.append(
+                PublicSemanticTimedItem(
+                    account_id=account_id,
+                    item_id=item_id,
+                    source_time_value=source_time_value,
+                    normalized_time_seconds=_int(source_time),
+                )
+            )
+    return tuple(rows)
+
+
+def _timed_item_mappings(
+    player: Mapping[str, object],
+) -> tuple[Mapping[str, object], ...]:
+    rows: list[Mapping[str, object]] = []
+    for key in (
+        "items",
+        "itemPurchases",
+        "itemPurchaseEvents",
+        "itemEvents",
+        "inventoryEvents",
+        "build",
+    ):
+        value = player.get(key)
+        if isinstance(value, list):
+            rows.extend(item for item in value if isinstance(item, Mapping))
+    return tuple(rows)
 
 
 def _final_item_ids(player: Mapping[str, object]) -> tuple[int, ...]:
