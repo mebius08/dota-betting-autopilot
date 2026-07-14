@@ -80,6 +80,27 @@ LEG_COLUMNS = [
     "is_live",
 ]
 
+SINGLE_EVENT_SEQUENCE_COLUMNS = [
+    "coupon_id",
+    "event_id",
+    "registration_time",
+    "sequence_index",
+    "prior_entry_count",
+    "previous_coupon_id",
+    "previous_selection",
+    "selection",
+    "side_switch",
+    "entry_odds",
+    "entry_score",
+    "result_score",
+    "is_live",
+    "cash_stake_rub",
+    "return_rub",
+    "profit_rub",
+    "is_cashout",
+    "state",
+]
+
 
 class FonbetDataError(FonbetHistoryError):
     pass
@@ -289,6 +310,128 @@ def leg_csv_row(record: Mapping[str, object]) -> dict[str, object]:
         else:
             row[column] = value
     return row
+
+
+def build_single_event_sequences(
+    coupon_records: Sequence[Mapping[str, object]],
+    leg_records: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    legs_by_coupon: dict[str, list[Mapping[str, object]]] = {}
+    for leg in leg_records:
+        coupon_id = leg.get("coupon_id")
+        if isinstance(coupon_id, str):
+            legs_by_coupon.setdefault(coupon_id, []).append(leg)
+
+    candidates: list[dict[str, object]] = []
+    for coupon in coupon_records:
+        coupon_id = coupon.get("coupon_id")
+        if (
+            not isinstance(coupon_id, str)
+            or coupon.get("is_express") is not False
+            or coupon.get("leg_count") != 1
+        ):
+            continue
+        legs = legs_by_coupon.get(coupon_id, [])
+        if len(legs) != 1:
+            continue
+        leg = legs[0]
+        event_id = leg.get("event_id")
+        if event_id is None:
+            continue
+        candidates.append(
+            {
+                "coupon_id": coupon_id,
+                "event_id": event_id,
+                "registration_time": coupon.get("registration_time"),
+                "selection": leg.get("selection"),
+                "entry_odds": coupon.get("entry_odds"),
+                "entry_score": leg.get("entry_score"),
+                "result_score": leg.get("result_score"),
+                "is_live": leg.get("is_live"),
+                "cash_stake_rub": coupon.get("cash_stake_rub"),
+                "return_rub": coupon.get("return_rub"),
+                "profit_rub": coupon.get("profit_rub"),
+                "is_cashout": coupon.get("is_cashout"),
+                "state": coupon.get("state"),
+            }
+        )
+
+    candidates.sort(key=_single_event_sequence_sort_key)
+    prior_by_event: dict[tuple[type[object], object], int] = {}
+    previous_by_event: dict[
+        tuple[type[object], object], Mapping[str, object]
+    ] = {}
+    records: list[dict[str, object]] = []
+    for candidate in candidates:
+        event_key = _exact_event_key(candidate["event_id"])
+        prior_entry_count = prior_by_event.get(event_key, 0)
+        previous = previous_by_event.get(event_key)
+        previous_selection = (
+            previous.get("selection") if previous is not None else None
+        )
+        record = {
+            "coupon_id": candidate["coupon_id"],
+            "event_id": candidate["event_id"],
+            "registration_time": candidate["registration_time"],
+            "sequence_index": prior_entry_count + 1,
+            "prior_entry_count": prior_entry_count,
+            "previous_coupon_id": (
+                previous.get("coupon_id") if previous is not None else None
+            ),
+            "previous_selection": previous_selection,
+            "selection": candidate["selection"],
+            "side_switch": (
+                previous is not None
+                and previous_selection != candidate["selection"]
+            ),
+            "entry_odds": candidate["entry_odds"],
+            "entry_score": candidate["entry_score"],
+            "result_score": candidate["result_score"],
+            "is_live": candidate["is_live"],
+            "cash_stake_rub": candidate["cash_stake_rub"],
+            "return_rub": candidate["return_rub"],
+            "profit_rub": candidate["profit_rub"],
+            "is_cashout": candidate["is_cashout"],
+            "state": candidate["state"],
+        }
+        records.append(record)
+        prior_by_event[event_key] = prior_entry_count + 1
+        previous_by_event[event_key] = record
+    return records
+
+
+def single_event_sequence_csv_row(
+    record: Mapping[str, object],
+) -> dict[str, object]:
+    row: dict[str, object] = {}
+    for column in SINGLE_EVENT_SEQUENCE_COLUMNS:
+        value = record.get(column)
+        if value is None:
+            row[column] = ""
+        elif isinstance(value, bool):
+            row[column] = str(value).lower()
+        else:
+            row[column] = value
+    return row
+
+
+def _single_event_sequence_sort_key(
+    record: Mapping[str, object],
+) -> tuple[bool, str, str]:
+    registration_time = record.get("registration_time")
+    return (
+        registration_time is None,
+        "" if registration_time is None else str(registration_time),
+        str(record.get("coupon_id")),
+    )
+
+
+def _exact_event_key(event_id: object) -> tuple[type[object], object]:
+    try:
+        hash(event_id)
+    except TypeError as exc:
+        raise FonbetDataError("Normalized event_id must be a scalar value.") from exc
+    return type(event_id), event_id
 
 
 def _extract_summary_rows(payload: object) -> list[Mapping[str, object]]:

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import cast
 
 from app.fonbet_history import (
+    build_single_event_sequences,
     load_coupon_summaries,
     normalize_coupon,
     normalize_coupon_legs,
@@ -243,6 +244,113 @@ def test_normalize_coupon_leg_keeps_missing_identifiers_null() -> None:
     assert leg["factor_id"] is None
     assert leg["segment_id"] is None
     assert leg["sport_id"] is None
+
+
+def test_single_event_sequences_order_chronologically_with_coupon_tiebreaker(
+) -> None:
+    coupons = [
+        _sequence_coupon("fixture-c", "2026-01-03T10:00:00Z"),
+        _sequence_coupon("fixture-b", "2026-01-02T10:00:00Z"),
+        _sequence_coupon("fixture-a", "2026-01-02T10:00:00Z"),
+    ]
+    legs = [
+        _sequence_leg("fixture-c", 101, "Fixture A"),
+        _sequence_leg("fixture-b", 101, "Fixture A"),
+        _sequence_leg("fixture-a", 101, "Fixture A"),
+    ]
+
+    records = build_single_event_sequences(coupons, legs)
+
+    assert [record["coupon_id"] for record in records] == [
+        "fixture-a",
+        "fixture-b",
+        "fixture-c",
+    ]
+
+
+def test_single_event_sequences_track_first_repeats_and_side_switches() -> None:
+    coupons = [
+        _sequence_coupon("fixture-first", "2026-01-01T10:00:00Z"),
+        _sequence_coupon("fixture-repeat", "2026-01-02T10:00:00Z"),
+        _sequence_coupon("fixture-switch", "2026-01-03T10:00:00Z"),
+    ]
+    legs = [
+        _sequence_leg("fixture-first", 101, "Fixture A"),
+        _sequence_leg("fixture-repeat", 101, "Fixture A"),
+        _sequence_leg("fixture-switch", 101, "Fixture B"),
+    ]
+
+    first, repeated, switched = build_single_event_sequences(coupons, legs)
+
+    assert first["sequence_index"] == 1
+    assert first["prior_entry_count"] == 0
+    assert first["previous_coupon_id"] is None
+    assert first["previous_selection"] is None
+    assert first["side_switch"] is False
+    assert repeated["sequence_index"] == 2
+    assert repeated["prior_entry_count"] == 1
+    assert repeated["previous_coupon_id"] == "fixture-first"
+    assert repeated["previous_selection"] == "Fixture A"
+    assert repeated["side_switch"] is False
+    assert switched["sequence_index"] == 3
+    assert switched["prior_entry_count"] == 2
+    assert switched["previous_coupon_id"] == "fixture-repeat"
+    assert switched["previous_selection"] == "Fixture A"
+    assert switched["side_switch"] is True
+
+
+def test_single_event_sequences_keep_exact_event_ids_separate() -> None:
+    coupons = [
+        _sequence_coupon("fixture-event-a", "2026-01-01T10:00:00Z"),
+        _sequence_coupon("fixture-event-b", "2026-01-02T10:00:00Z"),
+        {
+            **_sequence_coupon("fixture-express", "2026-01-03T10:00:00Z"),
+            "is_express": True,
+            "leg_count": 2,
+        },
+    ]
+    legs = [
+        _sequence_leg("fixture-event-a", 101, "Fixture A"),
+        _sequence_leg("fixture-event-b", 202, "Fixture B"),
+        _sequence_leg("fixture-express", 101, "Fixture A"),
+        _sequence_leg("fixture-express", 202, "Fixture B"),
+    ]
+
+    records = build_single_event_sequences(coupons, legs)
+
+    assert [record["event_id"] for record in records] == [101, 202]
+    assert [record["sequence_index"] for record in records] == [1, 1]
+    assert all(record["previous_coupon_id"] is None for record in records)
+
+
+def _sequence_coupon(coupon_id: str, registration_time: str) -> dict[str, object]:
+    return {
+        "coupon_id": coupon_id,
+        "registration_time": registration_time,
+        "is_express": False,
+        "leg_count": 1,
+        "entry_odds": 1.8,
+        "cash_stake_rub": 100,
+        "return_rub": 180,
+        "profit_rub": 80,
+        "is_cashout": False,
+        "state": "Win",
+    }
+
+
+def _sequence_leg(
+    coupon_id: str,
+    event_id: int,
+    selection: str,
+) -> dict[str, object]:
+    return {
+        "coupon_id": coupon_id,
+        "event_id": event_id,
+        "selection": selection,
+        "entry_score": "0:0",
+        "result_score": "2:0",
+        "is_live": False,
+    }
 
 
 def _load_details() -> Mapping[str, Mapping[str, object]]:

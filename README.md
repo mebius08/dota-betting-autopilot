@@ -237,7 +237,9 @@ The entire `local-data/` directory is gitignored. Raw details are written under
 `local-data/fonbet-history/raw/` with SHA-256-derived filenames; normalized
 coupon exports are `normalized/coupons.json` and `normalized/coupons.csv`.
 Offline normalization also writes one row per real coupon leg to
-`normalized/legs.json` and `normalized/legs.csv`.
+`normalized/legs.json` and `normalized/legs.csv`. It also derives chronological
+single-coupon sequences at `normalized/single_event_sequences.json` and
+`normalized/single_event_sequences.csv` without making network requests.
 
 Set session credentials only in the current shell when possible. Copy
 `betTypeName` and `sysId` from the same observed `coupon/info` request rather
@@ -304,7 +306,23 @@ The normalized leg schema is `coupon_id`, `leg_index`, `event_id`, `factor_id`,
 `result_score`, `event_start_time`, and `is_live`. Leg indexes are one-based
 within each coupon. Identifier fields map only from the corresponding raw
 `eventId`, `factorId`, `segmentId`, and `sportId` values and remain null when the
-source omits them. Regenerate all normalized files without network access using:
+source omits them.
+
+The single-event sequence schema is `coupon_id`, `event_id`,
+`registration_time`, `sequence_index`, `prior_entry_count`,
+`previous_coupon_id`, `previous_selection`, `selection`, `side_switch`,
+`entry_odds`, `entry_score`, `result_score`, `is_live`, `cash_stake_rub`,
+`return_rub`, `profit_rub`, `is_cashout`, and `state`. It includes only
+non-express coupons with exactly one normalized leg and a non-null `event_id`.
+Rows are ordered by normalized `registration_time`, with `coupon_id` as the
+deterministic tie-breaker. Sequence counters and previous fields are tracked
+only within the same exact `event_id`; event names, teams, maps, market
+similarity, and strategy quality are never inferred. The first row for each
+event has `sequence_index=1`, `prior_entry_count=0`, and null previous fields.
+`side_switch` is true only when that exact event has a prior coupon whose
+selection differs.
+
+Regenerate all normalized files without network access using:
 
 ```powershell
 ..\venv\Scripts\python.exe -m app.fonbet_history export --summary .\local-data\fonbet-history\summary.json --local-data-dir .\local-data\fonbet-history --amount-divisor 1 --max-fetches 0

@@ -151,6 +151,40 @@ def test_leg_export_has_unique_keys_and_matches_coupon_leg_counts(
         csv_rows = list(csv.DictReader(file))
     assert len(csv_rows) == len(leg_rows) == 3
 
+    sequences_path = result.normalized_json_path.with_name(
+        "single_event_sequences.json"
+    )
+    sequence_payload = json.loads(sequences_path.read_text(encoding="utf-8"))
+    assert sequence_payload["records"] == [
+        {
+            "cash_stake_rub": 100,
+            "coupon_id": "fixture-single",
+            "entry_odds": 1.8,
+            "entry_score": "0:0",
+            "event_id": 101,
+            "is_cashout": False,
+            "is_live": False,
+            "previous_coupon_id": None,
+            "previous_selection": None,
+            "prior_entry_count": 0,
+            "profit_rub": 80,
+            "registration_time": "2026-01-01T00:00:00Z",
+            "result_score": "2:0",
+            "return_rub": 180,
+            "selection": "Fixture selection",
+            "sequence_index": 1,
+            "side_switch": False,
+            "state": "Win",
+        }
+    ]
+    with sequences_path.with_suffix(".csv").open(
+        encoding="utf-8", newline=""
+    ) as file:
+        sequence_csv_rows = list(csv.DictReader(file))
+    assert len(sequence_csv_rows) == 1
+    assert sequence_csv_rows[0]["coupon_id"] == "fixture-single"
+    assert sequence_csv_rows[0]["side_switch"] == "false"
+
 
 class _FakeClient:
     def __init__(self) -> None:
@@ -188,6 +222,7 @@ def _summary(
 
 def _detail(event_name: str) -> dict[str, object]:
     return {
+        "eventId": 101,
         "eventName": event_name,
         "stakeName": "Fixture selection",
         "factorValue": 1.8,

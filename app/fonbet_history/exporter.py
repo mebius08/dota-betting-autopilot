@@ -18,13 +18,16 @@ from app.fonbet_history.client import (
 from app.fonbet_history.normalize import (
     LEG_COLUMNS,
     NORMALIZED_COLUMNS,
+    SINGLE_EVENT_SEQUENCE_COLUMNS,
     FonbetDataError,
+    build_single_event_sequences,
     coupon_id_from_summary,
     csv_row,
     leg_csv_row,
     load_coupon_summaries,
     normalize_coupon,
     normalize_coupon_legs,
+    single_event_sequence_csv_row,
 )
 
 
@@ -192,6 +195,7 @@ def export_personal_history(
         ],
     }
     _validate_leg_records(records, leg_records)
+    sequence_records = build_single_event_sequences(records, leg_records)
     _write_json_atomic(json_path, json_payload)
     _write_csv_atomic(csv_path, records)
     _write_json_atomic(
@@ -199,6 +203,14 @@ def export_personal_history(
         {"schema_version": 1, "records": leg_records},
     )
     _write_leg_csv_atomic(normalized_dir / "legs.csv", leg_records)
+    _write_json_atomic(
+        normalized_dir / "single_event_sequences.json",
+        {"schema_version": 1, "records": sequence_records},
+    )
+    _write_single_event_sequence_csv_atomic(
+        normalized_dir / "single_event_sequences.csv",
+        sequence_records,
+    )
 
     return ExportResult(
         summary_count=len(summaries),
@@ -287,6 +299,25 @@ def _write_leg_csv_atomic(
         )
         writer.writeheader()
         writer.writerows(leg_csv_row(record) for record in records)
+    temporary.replace(path)
+
+
+def _write_single_event_sequence_csv_atomic(
+    path: Path,
+    records: Sequence[Mapping[str, object]],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.tmp")
+    with temporary.open("w", encoding="utf-8", newline="") as file:
+        writer = csv.DictWriter(
+            file,
+            fieldnames=SINGLE_EVENT_SEQUENCE_COLUMNS,
+            lineterminator="\n",
+        )
+        writer.writeheader()
+        writer.writerows(
+            single_event_sequence_csv_row(record) for record in records
+        )
     temporary.replace(path)
 
 
