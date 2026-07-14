@@ -278,15 +278,20 @@ The normalized coupon-level schema includes:
 - `coupon_id`, `registration_time`, `calculation_time`, `coupon_type`,
   `bet_mode`, `bet_count`, and `state`;
 - `stake_rub`, `return_rub`, `profit_rub`, `entry_odds`, `event_name`,
-  `selection`, `entry_score`, `result_score`, `is_live`, `event_start_time`,
-  and `sport_name`;
+  `entry_odds_source`, `selection`, `entry_score`, `result_score`, `is_live`,
+  `event_start_time`, and `sport_name`;
 - `is_express`, `is_freebet`, `is_cashout`, `cash_stake_rub`,
   `freebet_nominal_rub`, `accounting_method`, source amount/odds fields,
   `amount_divisor`, `leg_count`, and `detail_status`.
 
 JSON retains each express leg in `legs`; CSV stores the same array in
 `legs_json`, while keeping one row per coupon so coupon stake and profit are not
-double-counted. For `Win`, `Lose`, and `Sold`/cash-out cash coupons,
+double-counted. Combined odds prefer the source `couponK` from summary metadata
+or the raw detail header. If it is absent, express odds are derived only when
+every leg has a positive `factorValue`: the factors are multiplied and rounded
+to two decimal places with `ROUND_HALF_UP`; otherwise `entry_odds` remains null.
+`entry_odds_source` records which path was used. For `Win`, `Lose`, and
+`Sold`/cash-out cash coupons,
 `profit_rub = return_rub - cash_stake_rub`. A freebet's `stake_rub` is its
 nominal amount, `cash_stake_rub` is zero, and `profit_rub` uses the zero-cash-
 stake convention. The nominal, source amounts, and method are retained so an

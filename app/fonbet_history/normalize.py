@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import json
 import math
 from pathlib import Path
@@ -40,6 +40,7 @@ NORMALIZED_COLUMNS = [
     "return_rub",
     "profit_rub",
     "entry_odds",
+    "entry_odds_source",
     "event_name",
     "selection",
     "entry_score",
@@ -112,13 +113,33 @@ def normalize_coupon(
 
     coupon_id = coupon_id_from_summary(summary)
     detail_root = _detail_root(detail) if detail is not None else None
+    summary_extra = _mapping_value(summary.get("extra"))
+    detail_header = _named_mapping(detail, "header")
+    detail_body = _named_mapping(detail, "body")
     legs = _normalized_legs(detail)
     state = _optional_text(summary.get("betState"))
-    coupon_type = _optional_text(summary.get("couponType"))
-    bet_mode = _optional_text(summary.get("betMode"))
-    bet_count = _optional_int(summary.get("betCount"))
-    is_freebet = _is_freebet(summary, coupon_type=coupon_type, bet_mode=bet_mode)
-    is_express = _is_express(coupon_type=coupon_type, bet_count=bet_count)
+    coupon_type = _coupon_type(summary, summary_extra, detail_body)
+    bet_mode = _bet_mode(summary, summary_extra, detail_header, detail_body)
+    source_bet_count = _optional_int(
+        _first_value((summary, summary_extra), ("betCount",))
+    )
+    bet_count = source_bet_count if source_bet_count is not None else len(legs) or None
+    is_freebet = _is_freebet(
+        summary,
+        summary_extra=summary_extra,
+        detail_header=detail_header,
+        detail_body=detail_body,
+        coupon_type=coupon_type,
+        bet_mode=bet_mode,
+    )
+    is_express = _is_express(
+        coupon_type=coupon_type,
+        bet_count=bet_count,
+        leg_count=len(legs),
+        detail_kind=_optional_text(
+            detail_body.get("kind") if detail_body is not None else None
+        ),
+    )
     is_cashout = (state or "").casefold() in {
         "sold",
         "cashout",
@@ -138,17 +159,24 @@ def normalize_coupon(
     )
 
     calculation_value = _first_value(
-        (summary, detail_root),
+        (summary, summary_extra, detail_root, detail_header),
         ("calculationTime", "calcTime", "settlementTime"),
     )
-    entry_odds = _optional_number(
-        _first_value(
-            (summary,),
-            ("couponK", "couponOriginalK"),
-        )
+    source_coupon_k = _first_value(
+        (summary, summary_extra, detail_header),
+        ("couponK",),
     )
-    if entry_odds is None and len(legs) == 1:
-        entry_odds = cast(int | float | None, legs[0]["entry_odds"])
+    source_coupon_original_k = _first_value(
+        (summary, summary_extra),
+        ("couponOriginalK",),
+    )
+    if source_coupon_original_k is None and detail_header is not None:
+        source_coupon_original_k = detail_header.get("originalK")
+    entry_odds, entry_odds_source = _entry_odds(
+        source_coupon_k=source_coupon_k,
+        legs=legs,
+        is_express=is_express,
+    )
 
     return {
         "coupon_id": coupon_id,
@@ -162,6 +190,7 @@ def normalize_coupon(
         "return_rub": return_rub,
         "profit_rub": profit_rub,
         "entry_odds": entry_odds,
+        "entry_odds_source": entry_odds_source,
         "event_name": _join_leg_values(legs, "event_name"),
         "selection": _join_leg_values(legs, "selection"),
         "entry_score": _join_leg_values(legs, "entry_score"),
@@ -177,8 +206,8 @@ def normalize_coupon(
         "accounting_method": accounting_method,
         "source_bet_sum": summary.get("betSum"),
         "source_win_sum": summary.get("winSum"),
-        "source_coupon_k": summary.get("couponK"),
-        "source_coupon_original_k": summary.get("couponOriginalK"),
+        "source_coupon_k": source_coupon_k,
+        "source_coupon_original_k": source_coupon_original_k,
         "amount_divisor": _decimal_to_number(amount_divisor),
         "leg_count": len(legs),
         "detail_status": detail_status,
@@ -252,6 +281,25 @@ def _detail_root(detail: Mapping[str, object]) -> Mapping[str, object]:
             break
         current = cast(Mapping[str, object], nested)
     return current
+
+
+def _mapping_value(value: object) -> Mapping[str, object] | None:
+    if not isinstance(value, Mapping):
+        return None
+    return cast(Mapping[str, object], value)
+
+
+def _named_mapping(
+    detail: Mapping[str, object] | None,
+    key: str,
+) -> Mapping[str, object] | None:
+    if detail is None:
+        return None
+    for mapping in _walk_mappings(detail):
+        nested = _mapping_value(mapping.get(key))
+        if nested is not None:
+            return nested
+    return None
 
 
 def _normalized_legs(
@@ -444,23 +492,150 @@ def _iso_timestamp(value: str) -> str:
 def _is_freebet(
     summary: Mapping[str, object],
     *,
+    summary_extra: Mapping[str, object] | None,
+    detail_header: Mapping[str, object] | None,
+    detail_body: Mapping[str, object] | None,
     coupon_type: str | None,
     bet_mode: str | None,
 ) -> bool:
-    for value in (coupon_type, bet_mode):
+    detail_bet_type = (
+        _optional_text(detail_header.get("betTypeName"))
+        if detail_header is not None
+        else None
+    )
+    bonus_bet_kind = (
+        _optional_text(detail_body.get("bonusBetKind"))
+        if detail_body is not None
+        else None
+    )
+    for value in (coupon_type, bet_mode, detail_bet_type, bonus_bet_kind):
         if value is not None and "free" in value.casefold():
             return True
     for key in ("freeBet", "isFreeBet"):
         if _optional_bool(summary.get(key)) is True:
             return True
-    return any(summary.get(key) is not None for key in ("freeBetId", "freeBetSum"))
+    if summary_extra is not None and _has_nonzero_marker(
+        summary_extra.get("bonusBet")
+    ):
+        return True
+    if detail_body is not None and any(
+        _has_nonzero_marker(detail_body.get(key))
+        for key in ("freebetId", "freeBetId", "bonusBetId")
+    ):
+        return True
+    return any(
+        _has_nonzero_marker(summary.get(key))
+        for key in ("freeBetId", "freebetId", "freeBetSum")
+    )
 
 
-def _is_express(*, coupon_type: str | None, bet_count: int | None) -> bool:
+def _is_express(
+    *,
+    coupon_type: str | None,
+    bet_count: int | None,
+    leg_count: int,
+    detail_kind: str | None,
+) -> bool:
     return bool(
         (coupon_type is not None and "express" in coupon_type.casefold())
         or (bet_count is not None and bet_count > 1)
+        or leg_count > 1
+        or (detail_kind is not None and detail_kind.casefold() == "combo")
     )
+
+
+def _coupon_type(
+    summary: Mapping[str, object],
+    summary_extra: Mapping[str, object] | None,
+    detail_body: Mapping[str, object] | None,
+) -> str | None:
+    value = _optional_text(
+        _first_value((summary, summary_extra), ("couponType",))
+    )
+    if value is not None:
+        return value
+    detail_kind = _optional_text(
+        detail_body.get("kind") if detail_body is not None else None
+    )
+    if detail_kind is None:
+        return None
+    if detail_kind.casefold() == "combo":
+        return "Express"
+    if detail_kind.casefold() == "single":
+        return "Single"
+    return detail_kind
+
+
+def _bet_mode(
+    summary: Mapping[str, object],
+    summary_extra: Mapping[str, object] | None,
+    detail_header: Mapping[str, object] | None,
+    detail_body: Mapping[str, object] | None,
+) -> str | None:
+    value = _optional_text(
+        _first_value((summary, summary_extra), ("betMode",))
+    )
+    if value is not None:
+        return value
+    bonus_kind = _optional_text(
+        detail_body.get("bonusBetKind") if detail_body is not None else None
+    )
+    if bonus_kind is not None:
+        return bonus_kind
+    detail_bet_type = _optional_text(
+        detail_header.get("betTypeName") if detail_header is not None else None
+    )
+    if detail_bet_type is None:
+        return None
+    if detail_bet_type.casefold() == "freebet":
+        return "Freebet"
+    if detail_bet_type.casefold() == "sport":
+        return "Coupon"
+    return detail_bet_type
+
+
+def _entry_odds(
+    *,
+    source_coupon_k: object,
+    legs: Sequence[Mapping[str, object]],
+    is_express: bool,
+) -> tuple[int | float | None, str | None]:
+    source_value = _optional_number(source_coupon_k)
+    if _valid_odds(source_value):
+        return source_value, "coupon_k"
+    if len(legs) == 1:
+        leg_value = cast(int | float | None, legs[0].get("entry_odds"))
+        if _valid_odds(leg_value):
+            return leg_value, "single_leg_factor"
+        return None, None
+    if not is_express or not legs:
+        return None, None
+
+    factors: list[Decimal] = []
+    for leg in legs:
+        factor = cast(int | float | None, leg.get("entry_odds"))
+        if not _valid_odds(factor):
+            return None, None
+        factors.append(Decimal(str(factor)))
+    product = Decimal(1)
+    for decimal_factor in factors:
+        product *= decimal_factor
+    rounded = product.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return _decimal_to_number(rounded), "leg_product_rounded_2dp"
+
+
+def _valid_odds(value: int | float | None) -> bool:
+    return value is not None and math.isfinite(float(value)) and value > 0
+
+
+def _has_nonzero_marker(value: object) -> bool:
+    if value is None or value is False:
+        return False
+    if isinstance(value, int | float):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().casefold() not in {"", "0", "false", "none", "null"}
+    return True
 
 
 def _join_leg_values(legs: Sequence[Mapping[str, object]], key: str) -> str | None:

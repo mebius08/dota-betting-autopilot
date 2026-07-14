@@ -167,6 +167,16 @@ def export_personal_history(
                 "cash_stake_rub = 0; freebet nominal is retained separately"
             ),
         },
+        "entry_odds": {
+            "source_priority": (
+                "couponK from summary/summary.extra/detail.header, then a "
+                "single leg factor"
+            ),
+            "express_fallback": (
+                "product of every positive leg factor, rounded to 2 decimal "
+                "places with ROUND_HALF_UP; unavailable if any factor is missing"
+            ),
+        },
         "records": records,
         "failures": [
             {

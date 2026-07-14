@@ -42,11 +42,17 @@
       "betState": "Win",
       "betSum": 5000,
       "winSum": 13365,
-      "couponType": "Express",
-      "couponK": 2.673,
-      "couponOriginalK": 2.7,
-      "betCount": 2,
-      "betMode": "Normal"
+      "betTypeName": "Sport",
+      "bonusAccountBetSum": 0,
+      "bonusAccountWinSum": 0,
+      "extra": {
+        "betCount": 2,
+        "betMode": "Coupon",
+        "bonusBet": "0",
+        "couponType": "Express",
+        "couponK": 2.673,
+        "couponOriginalK": 2.7
+      }
     },
     {
       "couponId": "fixture-freebet-005",
@@ -54,11 +60,17 @@
       "betState": "Win",
       "betSum": 10000,
       "winSum": 7500,
-      "couponType": "Ordinar",
-      "couponK": 1.75,
-      "couponOriginalK": 1.75,
-      "betCount": 1,
-      "betMode": "FreeBet"
+      "betTypeName": "Sport",
+      "bonusAccountBetSum": 0,
+      "bonusAccountWinSum": 0,
+      "extra": {
+        "betCount": 1,
+        "betMode": "Freebet",
+        "bonusBet": "fixture-bonus-marker",
+        "couponType": "Odinar",
+        "couponK": 1.75,
+        "couponOriginalK": 1.75
+      }
     }
   ]
 }
