@@ -6,7 +6,12 @@ from decimal import Decimal
 import json
 from pathlib import Path
 
-from app.fonbet_history import export_personal_history, raw_response_path
+from app.fonbet_history import (
+    ENTRY_DECISION_COLUMNS,
+    ENTRY_OUTCOME_COLUMNS,
+    export_personal_history,
+    raw_response_path,
+)
 from app.fonbet_history.client import FonbetRequestError
 
 
@@ -188,6 +193,31 @@ def test_leg_export_has_unique_keys_and_matches_coupon_leg_counts(
     assert sequence_csv_rows[0]["selection_side"] == ""
     assert sequence_csv_rows[0]["previous_selection_side"] == ""
     assert sequence_csv_rows[0]["side_switch"] == ""
+
+    decisions_path = result.normalized_json_path.with_name(
+        "entry_decisions.json"
+    )
+    outcomes_path = result.normalized_json_path.with_name("entry_outcomes.json")
+    decision_rows = json.loads(decisions_path.read_text(encoding="utf-8"))[
+        "records"
+    ]
+    outcome_rows = json.loads(outcomes_path.read_text(encoding="utf-8"))[
+        "records"
+    ]
+    assert len(decision_rows) == len(outcome_rows) == 1
+    assert set(decision_rows[0]) == set(ENTRY_DECISION_COLUMNS)
+    assert set(outcome_rows[0]) == set(ENTRY_OUTCOME_COLUMNS)
+    assert decision_rows[0]["coupon_id"] == outcome_rows[0]["coupon_id"]
+    assert decision_rows[0]["seconds_since_previous_entry"] is None
+    assert decision_rows[0]["prior_cash_stake_rub"] == 0
+    with decisions_path.with_suffix(".csv").open(
+        encoding="utf-8", newline=""
+    ) as file:
+        assert next(csv.reader(file)) == ENTRY_DECISION_COLUMNS
+    with outcomes_path.with_suffix(".csv").open(
+        encoding="utf-8", newline=""
+    ) as file:
+        assert next(csv.reader(file)) == ENTRY_OUTCOME_COLUMNS
 
 
 class _FakeClient:

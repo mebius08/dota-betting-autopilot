@@ -16,13 +16,18 @@ from app.fonbet_history.client import (
     FonbetHistoryError,
 )
 from app.fonbet_history.normalize import (
+    ENTRY_DECISION_COLUMNS,
+    ENTRY_OUTCOME_COLUMNS,
     LEG_COLUMNS,
     NORMALIZED_COLUMNS,
     SINGLE_EVENT_SEQUENCE_COLUMNS,
     FonbetDataError,
+    build_entry_exports,
     build_single_event_sequences,
     coupon_id_from_summary,
     csv_row,
+    entry_decision_csv_row,
+    entry_outcome_csv_row,
     leg_csv_row,
     load_coupon_summaries,
     normalize_coupon,
@@ -196,6 +201,7 @@ def export_personal_history(
     }
     _validate_leg_records(records, leg_records)
     sequence_records = build_single_event_sequences(records, leg_records)
+    entry_decisions, entry_outcomes = build_entry_exports(records, leg_records)
     _write_json_atomic(json_path, json_payload)
     _write_csv_atomic(csv_path, records)
     _write_json_atomic(
@@ -210,6 +216,22 @@ def export_personal_history(
     _write_single_event_sequence_csv_atomic(
         normalized_dir / "single_event_sequences.csv",
         sequence_records,
+    )
+    _write_json_atomic(
+        normalized_dir / "entry_decisions.json",
+        {"schema_version": 1, "records": entry_decisions},
+    )
+    _write_entry_decision_csv_atomic(
+        normalized_dir / "entry_decisions.csv",
+        entry_decisions,
+    )
+    _write_json_atomic(
+        normalized_dir / "entry_outcomes.json",
+        {"schema_version": 1, "records": entry_outcomes},
+    )
+    _write_entry_outcome_csv_atomic(
+        normalized_dir / "entry_outcomes.csv",
+        entry_outcomes,
     )
 
     return ExportResult(
@@ -318,6 +340,40 @@ def _write_single_event_sequence_csv_atomic(
         writer.writerows(
             single_event_sequence_csv_row(record) for record in records
         )
+    temporary.replace(path)
+
+
+def _write_entry_decision_csv_atomic(
+    path: Path,
+    records: Sequence[Mapping[str, object]],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.tmp")
+    with temporary.open("w", encoding="utf-8", newline="") as file:
+        writer = csv.DictWriter(
+            file,
+            fieldnames=ENTRY_DECISION_COLUMNS,
+            lineterminator="\n",
+        )
+        writer.writeheader()
+        writer.writerows(entry_decision_csv_row(record) for record in records)
+    temporary.replace(path)
+
+
+def _write_entry_outcome_csv_atomic(
+    path: Path,
+    records: Sequence[Mapping[str, object]],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.tmp")
+    with temporary.open("w", encoding="utf-8", newline="") as file:
+        writer = csv.DictWriter(
+            file,
+            fieldnames=ENTRY_OUTCOME_COLUMNS,
+            lineterminator="\n",
+        )
+        writer.writeheader()
+        writer.writerows(entry_outcome_csv_row(record) for record in records)
     temporary.replace(path)
 
 

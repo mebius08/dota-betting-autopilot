@@ -7,6 +7,9 @@ from pathlib import Path
 from typing import cast
 
 from app.fonbet_history import (
+    ENTRY_DECISION_COLUMNS,
+    ENTRY_OUTCOME_COLUMNS,
+    build_entry_exports,
     build_single_event_sequences,
     load_coupon_summaries,
     normalize_coupon,
@@ -246,6 +249,128 @@ def test_normalize_coupon_leg_keeps_missing_identifiers_null() -> None:
     assert leg["sport_id"] is None
 
 
+def test_entry_decisions_track_only_prior_event_entries() -> None:
+    coupons = [
+        _sequence_coupon(
+            "fixture-first",
+            "2026-01-01T10:00:00Z",
+            cash_stake_rub=100,
+        ),
+        _sequence_coupon(
+            "fixture-second",
+            "2026-01-01T10:00:30Z",
+            cash_stake_rub=50,
+        ),
+        _sequence_coupon(
+            "fixture-third",
+            "2026-01-01T10:02:00Z",
+            cash_stake_rub=25,
+        ),
+    ]
+    legs = [
+        _sequence_leg("fixture-first", 101, "Поб 1"),
+        _sequence_leg("fixture-second", 101, "Поб 1"),
+        _sequence_leg("fixture-third", 101, "Поб 2"),
+    ]
+
+    decisions, _ = build_entry_exports(coupons, legs)
+
+    assert [row["sequence_index"] for row in decisions] == [1, 2, 3]
+    assert [row["prior_entry_count"] for row in decisions] == [0, 1, 2]
+    assert [row["seconds_since_previous_entry"] for row in decisions] == [
+        None,
+        30,
+        90,
+    ]
+    assert [row["prior_cash_stake_rub"] for row in decisions] == [
+        0,
+        100,
+        150,
+    ]
+
+
+def test_entry_decisions_derive_pob_score_positions() -> None:
+    coupons = [
+        _sequence_coupon("fixture-ahead", "2026-01-01T10:00:00Z"),
+        _sequence_coupon("fixture-behind", "2026-01-01T10:01:00Z"),
+        _sequence_coupon("fixture-tied", "2026-01-01T10:02:00Z"),
+    ]
+    legs = [
+        _sequence_leg("fixture-ahead", 101, "Поб 1", entry_score="2:1"),
+        _sequence_leg("fixture-behind", 101, "Поб 2", entry_score="5:3"),
+        _sequence_leg("fixture-tied", 101, "Поб 2", entry_score="4:4"),
+    ]
+
+    decisions, _ = build_entry_exports(coupons, legs)
+
+    assert decisions[0]["entry_score_1"] == 2
+    assert decisions[0]["entry_score_2"] == 1
+    assert decisions[0]["selected_side_score_diff"] == 1
+    assert decisions[0]["selected_side_position"] == "ahead"
+    assert decisions[1]["selected_side_score_diff"] == -2
+    assert decisions[1]["selected_side_position"] == "behind"
+    assert decisions[2]["selected_side_score_diff"] == 0
+    assert decisions[2]["selected_side_position"] == "tied"
+
+
+def test_entry_decisions_leave_non_side_and_non_simple_scores_null() -> None:
+    coupons = [
+        _sequence_coupon("fixture-total", "2026-01-01T10:00:00Z"),
+        _sequence_coupon("fixture-complex-score", "2026-01-01T10:01:00Z"),
+    ]
+    legs = [
+        _sequence_leg("fixture-total", 101, "<48.5", entry_score="6:4"),
+        _sequence_leg(
+            "fixture-complex-score",
+            101,
+            "Поб 1",
+            entry_score="6-4",
+        ),
+    ]
+
+    decisions, _ = build_entry_exports(coupons, legs)
+
+    non_side, complex_score = decisions
+    assert non_side["selection_side"] is None
+    assert non_side["entry_score_1"] == 6
+    assert non_side["entry_score_2"] == 4
+    assert non_side["selected_side_score_diff"] is None
+    assert non_side["selected_side_position"] is None
+    assert complex_score["entry_score_1"] is None
+    assert complex_score["entry_score_2"] is None
+    assert complex_score["selected_side_score_diff"] is None
+    assert complex_score["selected_side_position"] is None
+
+
+def test_entry_decision_and_outcome_keys_match_without_label_leakage() -> None:
+    coupons = [
+        _sequence_coupon("fixture-first", "2026-01-01T10:00:00Z"),
+        _sequence_coupon("fixture-second", "2026-01-01T10:01:00Z"),
+    ]
+    legs = [
+        _sequence_leg("fixture-first", 101, "Поб 1"),
+        _sequence_leg("fixture-second", 101, "Поб 2"),
+    ]
+
+    decisions, outcomes = build_entry_exports(coupons, legs)
+
+    decision_ids = [row["coupon_id"] for row in decisions]
+    outcome_ids = [row["coupon_id"] for row in outcomes]
+    assert len(decision_ids) == len(set(decision_ids))
+    assert len(outcome_ids) == len(set(outcome_ids))
+    assert set(decision_ids) == set(outcome_ids)
+    assert set(decisions[0]) == set(ENTRY_DECISION_COLUMNS)
+    assert set(outcomes[0]) == set(ENTRY_OUTCOME_COLUMNS)
+    assert {
+        "state",
+        "return_rub",
+        "profit_rub",
+        "is_cashout",
+        "result_score",
+        "calculation_time",
+    }.isdisjoint(decisions[0])
+
+
 def test_single_event_sequences_order_chronologically_with_coupon_tiebreaker(
 ) -> None:
     coupons = [
@@ -365,14 +490,23 @@ def test_single_event_sequences_keep_exact_event_ids_separate() -> None:
     assert all(record["previous_coupon_id"] is None for record in records)
 
 
-def _sequence_coupon(coupon_id: str, registration_time: str) -> dict[str, object]:
+def _sequence_coupon(
+    coupon_id: str,
+    registration_time: str,
+    *,
+    cash_stake_rub: int = 100,
+) -> dict[str, object]:
     return {
         "coupon_id": coupon_id,
         "registration_time": registration_time,
+        "calculation_time": "2026-01-01T12:00:00Z",
         "is_express": False,
         "leg_count": 1,
         "entry_odds": 1.8,
-        "cash_stake_rub": 100,
+        "stake_rub": cash_stake_rub,
+        "cash_stake_rub": cash_stake_rub,
+        "is_freebet": False,
+        "freebet_nominal_rub": None,
         "return_rub": 180,
         "profit_rub": 80,
         "is_cashout": False,
@@ -384,12 +518,14 @@ def _sequence_leg(
     coupon_id: str,
     event_id: int,
     selection: str,
+    *,
+    entry_score: str = "0:0",
 ) -> dict[str, object]:
     return {
         "coupon_id": coupon_id,
         "event_id": event_id,
         "selection": selection,
-        "entry_score": "0:0",
+        "entry_score": entry_score,
         "result_score": "2:0",
         "is_live": False,
     }

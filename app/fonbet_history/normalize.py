@@ -6,6 +6,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import json
 import math
 from pathlib import Path
+import re
 from typing import cast
 
 from app.fonbet_history.client import FonbetHistoryError
@@ -101,6 +102,41 @@ SINGLE_EVENT_SEQUENCE_COLUMNS = [
     "profit_rub",
     "is_cashout",
     "state",
+]
+
+ENTRY_DECISION_COLUMNS = [
+    "coupon_id",
+    "event_id",
+    "registration_time",
+    "sequence_index",
+    "prior_entry_count",
+    "seconds_since_previous_entry",
+    "prior_cash_stake_rub",
+    "previous_selection_side",
+    "selection",
+    "selection_side",
+    "side_switch",
+    "entry_odds",
+    "entry_score",
+    "entry_score_1",
+    "entry_score_2",
+    "selected_side_score_diff",
+    "selected_side_position",
+    "is_live",
+    "stake_rub",
+    "cash_stake_rub",
+    "is_freebet",
+    "freebet_nominal_rub",
+]
+
+ENTRY_OUTCOME_COLUMNS = [
+    "coupon_id",
+    "state",
+    "return_rub",
+    "profit_rub",
+    "is_cashout",
+    "result_score",
+    "calculation_time",
 ]
 
 
@@ -427,6 +463,193 @@ def single_event_sequence_csv_row(
         else:
             row[column] = value
     return row
+
+
+def build_entry_exports(
+    coupon_records: Sequence[Mapping[str, object]],
+    leg_records: Sequence[Mapping[str, object]],
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    coupons_by_id: dict[str, Mapping[str, object]] = {}
+    for coupon in coupon_records:
+        coupon_id = coupon.get("coupon_id")
+        if not isinstance(coupon_id, str):
+            continue
+        if coupon_id in coupons_by_id:
+            raise FonbetDataError("Normalized coupon IDs must be unique.")
+        coupons_by_id[coupon_id] = coupon
+
+    sequence_records = build_single_event_sequences(coupon_records, leg_records)
+    previous_time_by_event: dict[
+        tuple[type[object], object], datetime | None
+    ] = {}
+    prior_cash_by_event: dict[tuple[type[object], object], Decimal] = {}
+    decisions: list[dict[str, object]] = []
+    outcomes: list[dict[str, object]] = []
+
+    for sequence in sequence_records:
+        coupon_id = cast(str, sequence["coupon_id"])
+        coupon = coupons_by_id[coupon_id]
+        event_key = _exact_event_key(sequence["event_id"])
+        registration_time = _parsed_utc_timestamp(
+            sequence.get("registration_time")
+        )
+        previous_time = previous_time_by_event.get(event_key)
+        prior_cash = prior_cash_by_event.get(event_key, Decimal(0))
+        entry_score_1, entry_score_2 = _simple_score(
+            sequence.get("entry_score")
+        )
+        selected_side_score_diff, selected_side_position = (
+            _selected_side_score_fields(
+                sequence.get("selection_side"),
+                entry_score_1,
+                entry_score_2,
+            )
+        )
+
+        decisions.append(
+            {
+                "coupon_id": coupon_id,
+                "event_id": sequence["event_id"],
+                "registration_time": sequence.get("registration_time"),
+                "sequence_index": sequence.get("sequence_index"),
+                "prior_entry_count": sequence.get("prior_entry_count"),
+                "seconds_since_previous_entry": _seconds_between(
+                    previous_time,
+                    registration_time,
+                ),
+                "prior_cash_stake_rub": _decimal_to_number(prior_cash),
+                "previous_selection_side": sequence.get(
+                    "previous_selection_side"
+                ),
+                "selection": sequence.get("selection"),
+                "selection_side": sequence.get("selection_side"),
+                "side_switch": sequence.get("side_switch"),
+                "entry_odds": sequence.get("entry_odds"),
+                "entry_score": sequence.get("entry_score"),
+                "entry_score_1": entry_score_1,
+                "entry_score_2": entry_score_2,
+                "selected_side_score_diff": selected_side_score_diff,
+                "selected_side_position": selected_side_position,
+                "is_live": sequence.get("is_live"),
+                "stake_rub": coupon.get("stake_rub"),
+                "cash_stake_rub": coupon.get("cash_stake_rub"),
+                "is_freebet": coupon.get("is_freebet"),
+                "freebet_nominal_rub": coupon.get("freebet_nominal_rub"),
+            }
+        )
+        outcomes.append(
+            {
+                "coupon_id": coupon_id,
+                "state": coupon.get("state"),
+                "return_rub": coupon.get("return_rub"),
+                "profit_rub": coupon.get("profit_rub"),
+                "is_cashout": coupon.get("is_cashout"),
+                "result_score": sequence.get("result_score"),
+                "calculation_time": coupon.get("calculation_time"),
+            }
+        )
+
+        previous_time_by_event[event_key] = registration_time
+        cash_stake = _decimal(sequence.get("cash_stake_rub"))
+        if cash_stake is not None:
+            prior_cash_by_event[event_key] = prior_cash + cash_stake
+        else:
+            prior_cash_by_event[event_key] = prior_cash
+
+    _validate_entry_export_keys(decisions, outcomes)
+    return decisions, outcomes
+
+
+def entry_decision_csv_row(
+    record: Mapping[str, object],
+) -> dict[str, object]:
+    return _entry_csv_row(record, ENTRY_DECISION_COLUMNS)
+
+
+def entry_outcome_csv_row(
+    record: Mapping[str, object],
+) -> dict[str, object]:
+    return _entry_csv_row(record, ENTRY_OUTCOME_COLUMNS)
+
+
+def _entry_csv_row(
+    record: Mapping[str, object],
+    columns: Sequence[str],
+) -> dict[str, object]:
+    row: dict[str, object] = {}
+    for column in columns:
+        value = record.get(column)
+        if value is None:
+            row[column] = ""
+        elif isinstance(value, bool):
+            row[column] = str(value).lower()
+        else:
+            row[column] = value
+    return row
+
+
+def _simple_score(score: object) -> tuple[int | None, int | None]:
+    if not isinstance(score, str):
+        return None, None
+    match = re.fullmatch(r"([0-9]+):([0-9]+)", score.strip())
+    if match is None:
+        return None, None
+    return int(match.group(1)), int(match.group(2))
+
+
+def _selected_side_score_fields(
+    selection_side: object,
+    score_1: int | None,
+    score_2: int | None,
+) -> tuple[int | None, str | None]:
+    if selection_side not in (1, 2) or score_1 is None or score_2 is None:
+        return None, None
+    score_diff = score_1 - score_2 if selection_side == 1 else score_2 - score_1
+    if score_diff > 0:
+        position = "ahead"
+    elif score_diff == 0:
+        position = "tied"
+    else:
+        position = "behind"
+    return score_diff, position
+
+
+def _parsed_utc_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    candidate = f"{value[:-1]}+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _seconds_between(
+    previous: datetime | None,
+    current: datetime | None,
+) -> int | float | None:
+    if previous is None or current is None:
+        return None
+    return _decimal_to_number(Decimal(str((current - previous).total_seconds())))
+
+
+def _validate_entry_export_keys(
+    decisions: Sequence[Mapping[str, object]],
+    outcomes: Sequence[Mapping[str, object]],
+) -> None:
+    decision_ids = [record.get("coupon_id") for record in decisions]
+    outcome_ids = [record.get("coupon_id") for record in outcomes]
+    if len(decision_ids) != len(set(decision_ids)):
+        raise FonbetDataError("Entry decision coupon IDs must be unique.")
+    if len(outcome_ids) != len(set(outcome_ids)):
+        raise FonbetDataError("Entry outcome coupon IDs must be unique.")
+    if set(decision_ids) != set(outcome_ids):
+        raise FonbetDataError(
+            "Entry decision and outcome coupon IDs must match."
+        )
 
 
 def _single_event_sequence_sort_key(

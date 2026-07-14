@@ -240,6 +240,10 @@ Offline normalization also writes one row per real coupon leg to
 `normalized/legs.json` and `normalized/legs.csv`. It also derives chronological
 single-coupon sequences at `normalized/single_event_sequences.json` and
 `normalized/single_event_sequences.csv` without making network requests.
+The same eligible non-express single coupons are also split into point-in-time
+features at `normalized/entry_decisions.json` and
+`normalized/entry_decisions.csv`, and post-settlement labels at
+`normalized/entry_outcomes.json` and `normalized/entry_outcomes.csv`.
 
 Set session credentials only in the current shell when possible. Copy
 `betTypeName` and `sysId` from the same observed `coupon/info` request rather
@@ -325,6 +329,30 @@ null `side_switch`. `selection_side` and `previous_selection_side` are parsed as
 `Поб 2`. When both consecutive sides are parseable, `side_switch` is false for
 the same side and true for opposite sides; otherwise it is null. Sides are not
 inferred from team names, odds, scores, or arbitrary selection text.
+
+The entry-decision schema is `coupon_id`, `event_id`, `registration_time`,
+`sequence_index`, `prior_entry_count`, `seconds_since_previous_entry`,
+`prior_cash_stake_rub`, `previous_selection_side`, `selection`,
+`selection_side`, `side_switch`, `entry_odds`, `entry_score`, `entry_score_1`,
+`entry_score_2`, `selected_side_score_diff`, `selected_side_position`,
+`is_live`, `stake_rub`, `cash_stake_rub`, `is_freebet`, and
+`freebet_nominal_rub`. Ordering is by `registration_time`, then `coupon_id`.
+Timing, cumulative cash stake, previous side, and switch values use only rows
+already encountered for the same exact `event_id`; the first event entry has
+null `seconds_since_previous_entry` and zero `prior_cash_stake_rub`.
+
+Only an entry score in simple `N:N` form is split into `entry_score_1` and
+`entry_score_2`. A selected-side difference and position are derived only when
+that score is parseable and `selection_side` is explicitly `1` or `2` from
+normalized `Поб 1` or `Поб 2`: positive is `ahead`, zero is `tied`, and negative
+is `behind`. Non-side selections retain parsed score components when available,
+but their selected-side difference and position remain null.
+
+The entry-outcome schema is `coupon_id`, `state`, `return_rub`, `profit_rub`,
+`is_cashout`, `result_score`, and `calculation_time`. Coupon IDs are unique in
+both exports and the two ID sets are identical. State, return, profit, cash-out,
+result score, and calculation time are outcome-only fields and never appear in
+entry decisions. Existing coupon accounting is copied without recalculation.
 
 Regenerate all normalized files without network access using:
 
