@@ -1,0 +1,64 @@
+{
+  "coupons": [
+    {
+      "couponId": "fixture-win-001",
+      "registrationTime": 1710000000000,
+      "betState": "Win",
+      "betSum": 10000,
+      "winSum": 18500,
+      "couponType": "Ordinar",
+      "couponK": 1.85,
+      "couponOriginalK": 1.85,
+      "betCount": 1,
+      "betMode": "Normal"
+    },
+    {
+      "couponId": "fixture-lose-002",
+      "registrationTime": 1710003600000,
+      "betState": "Lose",
+      "betSum": 20000,
+      "winSum": 0,
+      "couponType": "Ordinar",
+      "couponK": 1.72,
+      "couponOriginalK": 1.75,
+      "betCount": 1,
+      "betMode": "Normal"
+    },
+    {
+      "couponId": "fixture-sold-003",
+      "registrationTime": 1710007200000,
+      "betState": "Sold",
+      "betSum": 15000,
+      "winSum": 12000,
+      "couponType": "Ordinar",
+      "couponK": 2.1,
+      "couponOriginalK": 2.1,
+      "betCount": 1,
+      "betMode": "Normal"
+    },
+    {
+      "couponId": "fixture-express-004",
+      "registrationTime": 1710010800000,
+      "betState": "Win",
+      "betSum": 5000,
+      "winSum": 13365,
+      "couponType": "Express",
+      "couponK": 2.673,
+      "couponOriginalK": 2.7,
+      "betCount": 2,
+      "betMode": "Normal"
+    },
+    {
+      "couponId": "fixture-freebet-005",
+      "registrationTime": 1710014400000,
+      "betState": "Win",
+      "betSum": 10000,
+      "winSum": 7500,
+      "couponType": "Ordinar",
+      "couponK": 1.75,
+      "couponOriginalK": 1.75,
+      "betCount": 1,
+      "betMode": "FreeBet"
+    }
+  ]
+}

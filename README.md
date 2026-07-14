@@ -216,6 +216,89 @@ win/loss/push/void outcomes, streamer utterance counts, usable ML records, and a
 simple readiness status. This remains paper/research data only. It is not real
 betting, bookmaker automation, or financial advice.
 
+## Personal FONBET history research export
+
+`python -m app.fonbet_history export` is a separate, bounded utility for the
+authenticated user's own coupon history. It is not connected to the
+STRATZ/OpenDota ingestion pipeline, does not place bets, and does not run
+concurrent requests.
+
+Put the saved coupon-summary export at the default local path:
+
+```text
+local-data/fonbet-history/summary.json
+```
+
+The file may be a coupon array or an object containing `coupons`, `couponList`,
+`items`, or `records`. Each coupon needs `couponId`; the known summary fields
+such as `registrationTime`, `betState`, `betSum`, `winSum`, `couponType`,
+`couponK`, `couponOriginalK`, `betCount`, and `betMode` are retained or mapped.
+The entire `local-data/` directory is gitignored. Raw details are written under
+`local-data/fonbet-history/raw/` with SHA-256-derived filenames; normalized
+exports are `normalized/coupons.json` and `normalized/coupons.csv`.
+
+Set session credentials only in the current shell when possible. Copy
+`betTypeName` and `sysId` from the same observed `coupon/info` request rather
+than guessing them:
+
+```powershell
+$env:FONBET_FSID = "<current fsid>"
+$env:FONBET_CLIENT_ID = "<current clientId>"
+$env:FONBET_BET_TYPE_NAME = "<observed betTypeName>"
+$env:FONBET_SYS_ID = "<observed integer sysId>"
+```
+
+`FONBET_LANG` is optional and defaults to `ru`. The equivalent runtime options
+are `--fsid`, `--client-id`, `--bet-type-name`, `--sys-id`, and `--lang`.
+Environment variables are preferred because command-line values can be exposed
+by shell history or process inspection.
+
+The amount conversion is deliberately explicit. Compare one `betSum` value in
+the summary with the stake shown in the account export: if `10000` represents
+100 RUB (100 kopecks per RUB), pass `--amount-divisor 100`; if `100` already
+represents 100 RUB, pass `--amount-divisor 1`. The utility records the chosen
+divisor and the source `betSum`/`winSum` values in the normalized output; it
+never infers a currency scale from magnitude.
+
+Example using the minor-unit contract:
+
+```powershell
+..\venv\Scripts\python.exe -m app.fonbet_history export --summary .\local-data\fonbet-history\summary.json --amount-divisor 100 --delay-seconds 1 --timeout 10 --max-fetches 100
+```
+
+Requests are sequential. `--max-fetches` bounds network attempts (default 100),
+and `--max-fetches 0` performs offline normalization only. A rerun skips any
+coupon whose raw detail file already exists. Successful raw responses are saved
+immediately, so later request failures do not discard earlier work; normalized
+JSON/CSV and a sanitized failure list are still written, and the command exits
+nonzero when failures occurred. Delete only an unreadable raw file to retry it.
+
+The normalized coupon-level schema includes:
+
+- `coupon_id`, `registration_time`, `calculation_time`, `coupon_type`,
+  `bet_mode`, `bet_count`, and `state`;
+- `stake_rub`, `return_rub`, `profit_rub`, `entry_odds`, `event_name`,
+  `selection`, `entry_score`, `result_score`, `is_live`, `event_start_time`,
+  and `sport_name`;
+- `is_express`, `is_freebet`, `is_cashout`, `cash_stake_rub`,
+  `freebet_nominal_rub`, `accounting_method`, source amount/odds fields,
+  `amount_divisor`, `leg_count`, and `detail_status`.
+
+JSON retains each express leg in `legs`; CSV stores the same array in
+`legs_json`, while keeping one row per coupon so coupon stake and profit are not
+double-counted. For `Win`, `Lose`, and `Sold`/cash-out cash coupons,
+`profit_rub = return_rub - cash_stake_rub`. A freebet's `stake_rub` is its
+nominal amount, `cash_stake_rub` is zero, and `profit_rub` uses the zero-cash-
+stake convention. The nominal, source amounts, and method are retained so an
+analyst can apply a different freebet convention later.
+
+Security warning: `fsid` and `clientId` are session credentials. Do not paste
+them into source, README examples, fixtures, committed `.env` files, issue
+reports, or logs. The utility does not print them, does not include upstream
+error bodies, redacts credential values if a response echoes them, and never
+persists the request payload. Gitignore is not encryption; protect and delete
+`local-data/` according to the sensitivity of personal account history.
+
 ## Real match data adapter
 
 The optional PandaScore adapter is a read-only source for Dota 2 match metadata.

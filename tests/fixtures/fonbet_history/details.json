@@ -1,0 +1,101 @@
+{
+  "fixture-win-001": {
+    "data": {
+      "coupon": {
+        "calculationTime": 1710005400000,
+        "bets": [
+          {
+            "eventName": "Fixture Team A - Fixture Team B",
+            "stakeName": "Fixture Team A",
+            "factorValue": 1.85,
+            "score": "0:0",
+            "resultScore": "2:0",
+            "sportName": "Dota 2",
+            "live": false,
+            "eventStartTime": 1710001800000,
+            "result": "Win"
+          }
+        ]
+      }
+    }
+  },
+  "fixture-lose-002": {
+    "couponInfo": {
+      "calculationTime": 1710009000000,
+      "betList": [
+        {
+          "eventName": "Fixture Team C - Fixture Team D",
+          "stakeName": "Fixture Team D",
+          "factorValue": 1.72,
+          "score": "0:0",
+          "resultScore": "2:1",
+          "sportName": "Dota 2",
+          "live": 0,
+          "eventStartTime": 1710005400000,
+          "result": "Lose"
+        }
+      ]
+    }
+  },
+  "fixture-sold-003": {
+    "calculationTime": 1710012600000,
+    "eventName": "Fixture Team E - Fixture Team F",
+    "stakeName": "Fixture Team E",
+    "factorValue": 2.1,
+    "score": "1:0",
+    "resultScore": "1:1",
+    "sportName": "Dota 2",
+    "live": true,
+    "eventStartTime": 1710009000000,
+    "result": "Sold"
+  },
+  "fixture-express-004": {
+    "data": {
+      "calculationTime": 1710016200000,
+      "events": [
+        {
+          "eventName": "Fixture Team G - Fixture Team H",
+          "stakeName": "Fixture Team G",
+          "factorValue": 1.5,
+          "score": "0:0",
+          "resultScore": "2:0",
+          "sportName": "Dota 2",
+          "live": false,
+          "eventStartTime": 1710010800000,
+          "result": "Win"
+        },
+        {
+          "eventName": "Fixture Team I - Fixture Team J",
+          "stakeName": "Over 2.5 maps",
+          "factorValue": 1.8,
+          "score": "0:0",
+          "resultScore": "2:1",
+          "sportName": "Dota 2",
+          "live": false,
+          "eventStartTime": 1710012600000,
+          "result": "Win"
+        }
+      ]
+    }
+  },
+  "fixture-freebet-005": {
+    "response": {
+      "coupon": {
+        "calculationTime": 1710019800000,
+        "bets": [
+          {
+            "eventName": "Fixture Team K - Fixture Team L",
+            "stakeName": "Fixture Team K",
+            "factorValue": 1.75,
+            "score": "0:0",
+            "resultScore": "2:1",
+            "sportName": "Dota 2",
+            "live": false,
+            "eventStartTime": 1710016200000,
+            "result": "Win"
+          }
+        ]
+      }
+    }
+  }
+}
