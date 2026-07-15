@@ -3,11 +3,12 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 import csv
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import hashlib
 import json
 import math
 from pathlib import Path
+import re
 import time
 from typing import Protocol, cast
 
@@ -60,6 +61,25 @@ class ExportResult:
     failure_count: int
     normalized_json_path: Path
     normalized_csv_path: Path
+
+
+CASHOUT_HOLD_AUDIT_COLUMNS = [
+    "coupon_id",
+    "selection",
+    "entry_odds",
+    "result_score",
+    "cash_stake_rub",
+    "actual_return_rub",
+    "actual_profit_rub",
+    "hold_result",
+    "hold_return_rub",
+    "hold_profit_rub",
+    "cashout_vs_hold_delta_rub",
+    "derivation_status",
+]
+
+_SIMPLE_FINAL_SCORE_PATTERN = re.compile(r"([0-9]+):([0-9]+)")
+_SUPPORTED_HOLD_SELECTIONS = {"Поб 1", "Поб 2", "Ничья"}
 
 
 def export_personal_history(
@@ -202,6 +222,8 @@ def export_personal_history(
     _validate_leg_records(records, leg_records)
     sequence_records = build_single_event_sequences(records, leg_records)
     entry_decisions, entry_outcomes = build_entry_exports(records, leg_records)
+    verified_cash_win_count = verify_settled_cash_win_payout_rounding(records)
+    cashout_hold_audit = build_cashout_hold_audit(records)
     _write_json_atomic(json_path, json_payload)
     _write_csv_atomic(csv_path, records)
     _write_json_atomic(
@@ -233,6 +255,23 @@ def export_personal_history(
         normalized_dir / "entry_outcomes.csv",
         entry_outcomes,
     )
+    _write_json_atomic(
+        normalized_dir / "cashout_hold_audit.json",
+        {
+            "schema_version": 1,
+            "payout_rounding": {
+                "formula": (
+                    "ROUND_HALF_UP(cash_stake_rub * entry_odds) to whole RUB"
+                ),
+                "settled_cash_win_rows_verified": verified_cash_win_count,
+            },
+            "records": cashout_hold_audit,
+        },
+    )
+    _write_cashout_hold_audit_csv_atomic(
+        normalized_dir / "cashout_hold_audit.csv",
+        cashout_hold_audit,
+    )
 
     return ExportResult(
         summary_count=len(summaries),
@@ -257,6 +296,115 @@ def validate_local_data_dir(path: str | Path) -> Path:
 def raw_response_path(local_data_dir: str | Path, coupon_id: str) -> Path:
     digest = hashlib.sha256(coupon_id.encode("utf-8")).hexdigest()
     return Path(local_data_dir) / "raw" / f"coupon-{digest}.json"
+
+
+def verify_settled_cash_win_payout_rounding(
+    records: Sequence[Mapping[str, object]],
+) -> int:
+    verified_count = 0
+    for record in records:
+        if record.get("state") != "Win":
+            continue
+        cash_stake = _finite_decimal(record.get("cash_stake_rub"))
+        entry_odds = _finite_decimal(record.get("entry_odds"))
+        actual_return = _finite_decimal(record.get("return_rub"))
+        if (
+            cash_stake is None
+            or cash_stake <= 0
+            or entry_odds is None
+            or entry_odds <= 0
+            or actual_return is None
+        ):
+            continue
+        verified_count += 1
+        expected_return = _winning_cash_return(cash_stake, entry_odds)
+        if actual_return != expected_return:
+            coupon_id = record.get("coupon_id")
+            raise FonbetDataError(
+                "Settled cash Win payout does not match whole-RUB "
+                f"ROUND_HALF_UP for coupon {coupon_id}."
+            )
+    return verified_count
+
+
+def build_cashout_hold_audit(
+    records: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    audit_records: list[dict[str, object]] = []
+    for record in records:
+        cash_stake = _finite_decimal(record.get("cash_stake_rub"))
+        if (
+            record.get("state") != "Sold"
+            or record.get("is_express") is not False
+            or record.get("is_freebet") is not False
+            or cash_stake is None
+            or cash_stake <= 0
+        ):
+            continue
+
+        selection = record.get("selection")
+        result_score = record.get("result_score")
+        audit_record: dict[str, object] = {
+            "coupon_id": record.get("coupon_id"),
+            "selection": selection,
+            "entry_odds": record.get("entry_odds"),
+            "result_score": result_score,
+            "cash_stake_rub": record.get("cash_stake_rub"),
+            "actual_return_rub": record.get("return_rub"),
+            "actual_profit_rub": record.get("profit_rub"),
+            "hold_result": None,
+            "hold_return_rub": None,
+            "hold_profit_rub": None,
+            "cashout_vs_hold_delta_rub": None,
+            "derivation_status": "unsupported_selection",
+        }
+        if (
+            not isinstance(selection, str)
+            or selection not in _SUPPORTED_HOLD_SELECTIONS
+        ):
+            audit_records.append(audit_record)
+            continue
+        if not isinstance(result_score, str):
+            audit_record["derivation_status"] = "unsupported_result_score"
+            audit_records.append(audit_record)
+            continue
+        score_match = _SIMPLE_FINAL_SCORE_PATTERN.fullmatch(result_score)
+        if score_match is None:
+            audit_record["derivation_status"] = "unsupported_result_score"
+            audit_records.append(audit_record)
+            continue
+
+        score_1, score_2 = (int(value) for value in score_match.groups())
+        hold_won = (
+            (selection == "Поб 1" and score_1 > score_2)
+            or (selection == "Поб 2" and score_2 > score_1)
+            or (selection == "Ничья" and score_1 == score_2)
+        )
+        audit_record["hold_result"] = "Win" if hold_won else "Lose"
+        if hold_won:
+            entry_odds = _finite_decimal(record.get("entry_odds"))
+            if entry_odds is None or entry_odds <= 0:
+                audit_record["derivation_status"] = "unsupported_entry_odds"
+                audit_records.append(audit_record)
+                continue
+            hold_return = _winning_cash_return(cash_stake, entry_odds)
+        else:
+            hold_return = Decimal(0)
+
+        hold_profit = hold_return - cash_stake
+        audit_record["hold_return_rub"] = _decimal_json_value(hold_return)
+        audit_record["hold_profit_rub"] = _decimal_json_value(hold_profit)
+        actual_return = _finite_decimal(record.get("return_rub"))
+        if actual_return is None:
+            audit_record["derivation_status"] = "missing_actual_return"
+            audit_records.append(audit_record)
+            continue
+        audit_record["cashout_vs_hold_delta_rub"] = _decimal_json_value(
+            actual_return - hold_return
+        )
+        audit_record["derivation_status"] = "derived"
+        audit_records.append(audit_record)
+    return audit_records
 
 
 def _read_raw_response(path: Path) -> Mapping[str, object]:
@@ -377,6 +525,23 @@ def _write_entry_outcome_csv_atomic(
     temporary.replace(path)
 
 
+def _write_cashout_hold_audit_csv_atomic(
+    path: Path,
+    records: Sequence[Mapping[str, object]],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.tmp")
+    with temporary.open("w", encoding="utf-8", newline="") as file:
+        writer = csv.DictWriter(
+            file,
+            fieldnames=CASHOUT_HOLD_AUDIT_COLUMNS,
+            lineterminator="\n",
+        )
+        writer.writeheader()
+        writer.writerows(records)
+    temporary.replace(path)
+
+
 def _validate_leg_records(
     coupon_records: Sequence[Mapping[str, object]],
     leg_records: Sequence[Mapping[str, object]],
@@ -405,3 +570,22 @@ def _decimal_json_value(value: Decimal) -> int | float:
     if value == integral:
         return int(integral)
     return float(value)
+
+
+def _finite_decimal(value: object) -> Decimal | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        decimal_value = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    if not decimal_value.is_finite():
+        return None
+    return decimal_value
+
+
+def _winning_cash_return(cash_stake: Decimal, entry_odds: Decimal) -> Decimal:
+    return (cash_stake * entry_odds).quantize(
+        Decimal("1"),
+        rounding=ROUND_HALF_UP,
+    )

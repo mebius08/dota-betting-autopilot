@@ -354,6 +354,22 @@ both exports and the two ID sets are identical. State, return, profit, cash-out,
 result score, and calculation time are outcome-only fields and never appear in
 entry decisions. Existing coupon accounting is copied without recalculation.
 
+Offline normalization also writes the audit-only cash-out counterfactual at
+`normalized/cashout_hold_audit.json` and
+`normalized/cashout_hold_audit.csv`. It includes only cash-funded,
+non-express `Sold` coupons and has the schema `coupon_id`, `selection`,
+`entry_odds`, `result_score`, `cash_stake_rub`, `actual_return_rub`,
+`actual_profit_rub`, `hold_result`, `hold_return_rub`, `hold_profit_rub`,
+`cashout_vs_hold_delta_rub`, and `derivation_status`. A hold result is derived
+only for the explicit selections `Поб 1`, `Поб 2`, and `Ничья` with a final
+score in simple `N:N` form. A losing hold returns zero; a winning hold returns
+`cash_stake_rub * entry_odds`, rounded to whole RUB with `ROUND_HALF_UP`, the
+same contract verified against settled winning cash coupons. The delta is
+`actual_return_rub - hold_return_rub`. Unsupported selections or result scores
+leave all counterfactual fields null and record the reason in
+`derivation_status`. This post-outcome audit is not included in entry-time
+decision features, and it does not change existing coupon accounting.
+
 Regenerate all normalized files without network access using:
 
 ```powershell
