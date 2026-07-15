@@ -14,5 +14,10 @@ data/models/
 exports/
 local-data/
 
+/tools/replay_probe/.gradle/
+/tools/replay_probe/build/
+/tools/replay_probe/local-libs/
+/tools/replay_probe/output/
+
 __pycache__/
 *.pyc
