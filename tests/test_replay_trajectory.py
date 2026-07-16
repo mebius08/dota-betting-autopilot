@@ -202,6 +202,52 @@ def test_non_finite_numeric_input_is_rejected(tmp_path: Path) -> None:
         )
 
 
+def test_zero_pause_delta_with_witnessed_pause_is_accepted(tmp_path: Path) -> None:
+    payload = _trajectory()
+    payload["pause_ticks"] = 0
+    payload["pause_seconds"] = 0.0
+    payload["pause_witnessed"] = True
+
+    result = import_replay_trajectory(
+        _write_input(tmp_path, payload), tmp_path / "accepted"
+    )
+
+    assert result.status == "IMPORTED"
+    stored = json.loads(result.destination.read_text("utf-8"))
+    assert stored["pause_witnessed"] is True
+
+
+def test_positive_pause_ticks_without_witnessed_pause_is_rejected(
+    tmp_path: Path,
+) -> None:
+    payload = _trajectory()
+    payload["pause_ticks"] = 30
+    payload["pause_seconds"] = 1.0
+    payload["pause_witnessed"] = False
+
+    with pytest.raises(
+        ReplayTrajectoryError,
+        match="positive pause_ticks requires pause_witnessed=true",
+    ):
+        import_replay_trajectory(
+            _write_input(tmp_path, payload), tmp_path / "accepted"
+        )
+
+
+def test_zero_pause_ticks_with_positive_seconds_is_rejected(tmp_path: Path) -> None:
+    payload = _trajectory()
+    payload["pause_ticks"] = 0
+    payload["pause_seconds"] = 1.0
+
+    with pytest.raises(
+        ReplayTrajectoryError,
+        match="zero pause_ticks requires approximately zero pause_seconds",
+    ):
+        import_replay_trajectory(
+            _write_input(tmp_path, payload), tmp_path / "accepted"
+        )
+
+
 def test_canonical_output_is_deterministic(tmp_path: Path) -> None:
     first_payload = _trajectory()
     second_payload = deepcopy(first_payload)

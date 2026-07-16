@@ -600,10 +600,6 @@ def _validate_pause(
             raise ReplayTrajectoryError(
                 "zero pause_ticks requires approximately zero pause_seconds."
             )
-        if pause_witnessed:
-            raise ReplayTrajectoryError(
-                "zero pause_ticks requires pause_witnessed=false."
-            )
         return
 
     if pause_seconds <= 0.0:
