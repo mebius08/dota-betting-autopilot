@@ -660,6 +660,23 @@ def create_parser() -> ArgumentParser:
         help="Directory for canonical replay trajectory artifacts.",
     )
 
+    build_replay_trajectory_dataset_parser = subparsers.add_parser(
+        "build-replay-trajectory-dataset",
+        help="Build deterministic team-level replay trajectory CSV files.",
+    )
+    build_replay_trajectory_dataset_parser.add_argument(
+        "--input-dir",
+        type=Path,
+        required=True,
+        help="Directory containing canonical <match_id>.json artifacts.",
+    )
+    build_replay_trajectory_dataset_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        required=True,
+        help="Directory for team decisions, outcomes, and manifest outputs.",
+    )
+
     inspect_dataset_parser = subparsers.add_parser(
         "inspect-dataset",
         help="Show offline data readiness for ML training and evaluation.",
@@ -1084,6 +1101,8 @@ def main(
             return _import_settlements_command(args)
         if args.command == "import-replay-trajectory":
             return _import_replay_trajectory_command(args)
+        if args.command == "build-replay-trajectory-dataset":
+            return _build_replay_trajectory_dataset_command(args)
         if args.command == "inspect-dataset":
             return _inspect_dataset_command(args)
         if args.command == "open-bets":
@@ -2199,6 +2218,35 @@ def _import_replay_trajectory_command(args: Namespace) -> int:
         f"replay_sha256={result.replay_sha256} "
         f"size_bytes={result.artifact_size_bytes} "
         f"artifact={result.destination.as_posix()}"
+    )
+    return 0
+
+
+def _build_replay_trajectory_dataset_command(args: Namespace) -> int:
+    from app.replay_trajectory_dataset import (
+        ReplayTrajectoryDatasetError,
+        build_replay_trajectory_dataset,
+    )
+
+    try:
+        result = build_replay_trajectory_dataset(
+            args.input_dir,
+            args.output_dir,
+        )
+    except ReplayTrajectoryDatasetError as exc:
+        print(f"REJECTED {exc}", file=sys.stderr)
+        return 1
+
+    horizons = result.outcome_rows_by_horizon
+    print(
+        f"{result.status} matches={result.match_count} "
+        f"snapshots={result.snapshot_count} "
+        f"decisions={result.decision_row_count} "
+        f"outcomes={result.outcome_row_count} "
+        f"horizon_120={horizons[120]} "
+        f"horizon_180={horizons[180]} "
+        f"horizon_300={horizons[300]} "
+        f"output_dir={result.output_dir.as_posix()}"
     )
     return 0
 
