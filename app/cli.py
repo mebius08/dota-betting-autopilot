@@ -148,6 +148,34 @@ def create_parser() -> ArgumentParser:
         help="HTTP timeout in seconds.",
     )
 
+    fetch_pro_replays_parser = subparsers.add_parser(
+        "fetch-pro-replays",
+        help="Download recent professional Dota replay files from OpenDota.",
+    )
+    fetch_pro_replays_parser.add_argument(
+        "--league-id",
+        type=int,
+        help="Optional OpenDota league ID filter.",
+    )
+    fetch_pro_replays_parser.add_argument(
+        "--count",
+        type=_replay_download_count,
+        default=10,
+        help="Successful downloads to target (default: 10, maximum: 25).",
+    )
+    fetch_pro_replays_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("local-data") / "replays",
+        help="Replay output directory (default: local-data/replays).",
+    )
+    fetch_pro_replays_parser.add_argument(
+        "--max-details",
+        type=_positive_int,
+        default=25,
+        help="Maximum match-detail requests (default: 25).",
+    )
+
     sync_history_parser = subparsers.add_parser(
         "sync-history",
         help="Sync bounded historical Dota match data from a provider.",
@@ -1061,6 +1089,8 @@ def main(
             return _report_command(args)
         if args.command == "fetch-matches":
             return _fetch_matches_command(args)
+        if args.command == "fetch-pro-replays":
+            return _fetch_pro_replays_command(args, sleep_func)
         if args.command == "sync-history":
             return _sync_history_command(args)
         if args.command == "sync-drafts":
@@ -1301,6 +1331,36 @@ def _fetch_matches_command(args: Namespace) -> int:
         print(f"   Status: {match.status}")
         print(f"   Starts at: {_format_optional_datetime(match.start_time)}")
     return 0
+
+
+def _fetch_pro_replays_command(
+    args: Namespace,
+    sleep_func: Callable[[float], None],
+) -> int:
+    from app.replay_fetcher import (
+        ReplayFetchError,
+        format_replay_fetch_result,
+        format_replay_fetch_summary,
+        fetch_pro_replays,
+    )
+
+    try:
+        summary = fetch_pro_replays(
+            league_id=args.league_id,
+            count=args.count,
+            output_dir=args.output_dir,
+            max_details=args.max_details,
+            sleep_func=sleep_func,
+        )
+    except ReplayFetchError as exc:
+        print(f"FAILED match_id=- reason={exc}")
+        print("SUMMARY DOWNLOADED=0 UNCHANGED=0 SKIPPED=0 FAILED=1")
+        return 1
+
+    for result in summary.results:
+        print(format_replay_fetch_result(result))
+    print(format_replay_fetch_summary(summary))
+    return 1 if summary.failed else 0
 
 
 def _sync_history_command(args: Namespace) -> int:
@@ -3481,6 +3541,13 @@ def _pandascore_page_size(value: str) -> int:
     parsed = _positive_int(value)
     if parsed > 100:
         raise ArgumentTypeError("must be at most 100")
+    return parsed
+
+
+def _replay_download_count(value: str) -> int:
+    parsed = _positive_int(value)
+    if parsed > 25:
+        raise ArgumentTypeError("must be at most 25")
     return parsed
 
 
