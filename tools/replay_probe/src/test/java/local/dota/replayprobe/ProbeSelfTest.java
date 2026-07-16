@@ -14,7 +14,9 @@ public final class ProbeSelfTest {
         testGameStartPropertyAndPauseTicks();
         testJsonEscapingAndNonFiniteNumbers();
         testDuplicateDetection();
-        System.out.println("probeTest: 5 focused tests passed");
+        testCompactSnapshotOrderingAndAggregates();
+        testCompactSnapshotRequiresTenPlayers();
+        System.out.println("probeTest: 7 focused tests passed");
     }
 
     private static void testClockRequiresWitnessedCrossing() {
@@ -58,6 +60,83 @@ public final class ProbeSelfTest {
         Map<String, Object> row2 = Map.of("player_slot", 0);
         Map<String, Object> snapshot = Map.of("game_time_seconds", 60, "players", List.of(row1, row2));
         require(ReplayProbe.findDuplicateKeys(List.of(snapshot)).size() == 1, "duplicate key was not detected");
+    }
+
+    private static void testCompactSnapshotOrderingAndAggregates() {
+        List<Map<String, Object>> players = new java.util.ArrayList<>();
+        for (int slot = 9; slot >= 0; slot--) {
+            String team = slot < 5 ? "RADIANT" : "DIRE";
+            players.add(ReplayProbe.mapOf(
+                    "player_slot", slot,
+                    "team", team,
+                    "hero_id", 100 + slot,
+                    "hero_name", "hero_" + slot,
+                    "level", slot + 1,
+                    "kills", slot,
+                    "deaths", slot + 1,
+                    "assists", slot + 2,
+                    "last_hits", slot + 3,
+                    "denies", slot + 4,
+                    "net_worth", slot + 5,
+                    "current_gold", slot + 6,
+                    "total_xp", slot + 7,
+                    "items", List.of(ReplayProbe.mapOf(
+                            "inventory_slot", 1,
+                            "item_name", "item_" + slot,
+                            "entity_handle", 900 + slot,
+                            "source_property_path", "forbidden"
+                    ))
+            ));
+        }
+        Map<String, Object> snapshot = ReplayProbe.mapOf(
+                "game_time_seconds", 60,
+                "source_game_time_seconds", 60.01,
+                "replay_tick", 2000,
+                "raw_replay_time_seconds", 66.0,
+                "game_state", 5,
+                "players", players
+        );
+
+        Map<String, Object> compact = ReplayProbe.compactSnapshot(snapshot);
+        require(new java.util.ArrayList<>(compact.keySet()).equals(List.of(
+                "game_time_seconds", "source_game_time_seconds", "replay_tick", "game_state", "teams", "players"
+        )), "compact snapshot field order changed");
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> compactPlayers = (List<Map<String, Object>>) compact.get("players");
+        require(compactPlayers.size() == 10, "compact snapshot lost players");
+        require(compactPlayers.get(0).get("player_slot").equals(0), "compact players were not slot ordered");
+        require(compactPlayers.get(9).get("player_slot").equals(9), "compact players were not slot ordered");
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> items = (List<Map<String, Object>>) compactPlayers.get(0).get("items");
+        require(new java.util.ArrayList<>(items.get(0).keySet()).equals(List.of("inventory_slot", "item_name")),
+                "compact item retained diagnostic fields");
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> teams = (List<Map<String, Object>>) compact.get("teams");
+        require(teams.size() == 2, "compact snapshot must have two team rows");
+        require("RADIANT".equals(teams.get(0).get("team")), "Radiant team row must be first");
+        require("DIRE".equals(teams.get(1).get("team")), "Dire team row must be second");
+        require(teams.get(0).get("kills").equals(10), "Radiant aggregate was not summed from five rows");
+        require(teams.get(1).get("kills").equals(35), "Dire aggregate was not summed from five rows");
+    }
+
+    private static void testCompactSnapshotRequiresTenPlayers() {
+        Map<String, Object> snapshot = ReplayProbe.mapOf(
+                "game_time_seconds", 0,
+                "source_game_time_seconds", 0.0,
+                "replay_tick", 1,
+                "game_state", 4,
+                "players", List.of()
+        );
+        boolean rejected = false;
+        try {
+            ReplayProbe.compactSnapshot(snapshot);
+        } catch (IllegalStateException expected) {
+            rejected = true;
+        }
+        require(rejected, "compact snapshot accepted a non-ten-player source snapshot");
     }
 
     private static void require(boolean condition, String message) {

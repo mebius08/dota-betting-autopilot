@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('check', 'probeReplay')]
+    [ValidateSet('check', 'probeReplay', 'probeCompactReplay')]
     [string]$Task = 'probeReplay',
 
     [string]$Replay,
@@ -42,9 +42,9 @@ if ($null -eq $gradle) {
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $arguments = @('--offline', '--no-daemon', '-p', $PSScriptRoot, $Task)
-if ($Task -eq 'probeReplay') {
+if ($Task -in @('probeReplay', 'probeCompactReplay')) {
     if ([string]::IsNullOrWhiteSpace($Replay) -or [string]::IsNullOrWhiteSpace($Output)) {
-        throw 'probeReplay requires -Replay and -Output.'
+        throw "$Task requires -Replay and -Output."
     }
     $replayInput = if ([IO.Path]::IsPathRooted($Replay)) { $Replay } else { Join-Path $repoRoot $Replay }
     $outputInput = if ([IO.Path]::IsPathRooted($Output)) { $Output } else { Join-Path $repoRoot $Output }

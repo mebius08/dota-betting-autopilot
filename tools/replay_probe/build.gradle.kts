@@ -64,3 +64,20 @@ tasks.register<JavaExec>("probeReplay") {
         args(replay, output)
     }
 }
+
+tasks.register<JavaExec>("probeCompactReplay") {
+    group = "application"
+    description = "Parses one local replay and writes the compact trajectory JSON."
+    dependsOn(tasks.classes)
+    classpath = sourceSets.main.get().runtimeClasspath
+    mainClass.set("local.dota.replayprobe.ReplayProbe")
+    maxHeapSize = "4g"
+
+    doFirst {
+        val replay = providers.gradleProperty("replay").orNull
+            ?: throw GradleException("Pass -Preplay=<path-to-dem>")
+        val output = providers.gradleProperty("output").orNull
+            ?: throw GradleException("Pass -Poutput=<path-to-json>")
+        args(replay, output, "--compact")
+    }
+}

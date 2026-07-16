@@ -20,3 +20,13 @@ dependency cache:
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\replay_probe\invoke.ps1 -Task probeReplay -Replay local-data\replays\8897588873.dem -Output tools\replay_probe\output\8897588873.json
 ```
+
+The compact trajectory is a separate projection over the same parser state and
+clock normalization. It keeps match identity, team draft metadata, normalized
+minute snapshots, two team sums, and ten compact player rows while omitting
+diagnostic paths, property inventories, handles, provenance, and validation
+mismatch detail:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\replay_probe\invoke.ps1 -Task probeCompactReplay -Replay local-data\replays\8897588873.dem -Output tools\replay_probe\output\8897588873.compact.json
+```

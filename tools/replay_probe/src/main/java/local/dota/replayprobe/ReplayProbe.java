@@ -59,6 +59,9 @@ public final class ReplayProbe {
     private static final List<String> FINAL_COMPARISON_FIELDS = List.of(
             "kills", "deaths", "assists", "level", "last_hits", "denies", "net_worth"
     );
+    private static final List<String> COMPACT_AGGREGATE_FIELDS = List.of(
+            "kills", "deaths", "assists", "last_hits", "denies", "net_worth", "current_gold", "total_xp"
+    );
 
     private final Path replayPath;
     private final Path outputPath;
@@ -85,8 +88,9 @@ public final class ReplayProbe {
     }
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 2) {
-            System.err.println("Usage: ReplayProbe <replay.dem> <output.json>");
+        boolean compact = args.length == 3 && "--compact".equals(args[2]);
+        if (args.length != 2 && !compact) {
+            System.err.println("Usage: ReplayProbe <replay.dem> <output.json> [--compact]");
             System.exit(2);
         }
         Path replay = Path.of(args[0]).toAbsolutePath().normalize();
@@ -96,23 +100,29 @@ public final class ReplayProbe {
         }
 
         ReplayProbe probe = new ReplayProbe(replay, output);
-        Map<String, Object> result = probe.run();
+        Map<String, Object> diagnostic = probe.run();
+        Map<String, Object> result = compact ? probe.compactTrajectory(diagnostic) : diagnostic;
         Path parent = output.getParent();
         if (parent != null) {
             Files.createDirectories(parent);
         }
         Files.writeString(output, JsonWriter.toJson(result), StandardCharsets.UTF_8);
 
-        @SuppressWarnings("unchecked")
-        Map<String, Object> validation = (Map<String, Object>) result.get("validation");
         System.out.println("wrote " + output);
-        System.out.println("clock_normalization=" + (probe.clock.isProven() ? "PROVEN" : "UNRESOLVED"));
-        System.out.println("player_count=" + validation.get("player_count"));
-        System.out.println("snapshot_count=" + validation.get("snapshot_count"));
-        System.out.println("snapshot_time_range=" + validation.get("snapshot_time_range_seconds"));
-        System.out.println("duplicate_keys=" + ((List<?>) validation.get("duplicate_keys")).size());
-        System.out.println("final_state_mismatches="
-                + ((List<?>) ((Map<?, ?>) validation.get("final_state_comparison")).get("mismatches")).size());
+        if (compact) {
+            System.out.println("output_kind=compact_trajectory");
+            System.out.println("snapshot_count=" + probe.snapshots.size());
+        } else {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> validation = (Map<String, Object>) result.get("validation");
+            System.out.println("clock_normalization=" + (probe.clock.isProven() ? "PROVEN" : "UNRESOLVED"));
+            System.out.println("player_count=" + validation.get("player_count"));
+            System.out.println("snapshot_count=" + validation.get("snapshot_count"));
+            System.out.println("snapshot_time_range=" + validation.get("snapshot_time_range_seconds"));
+            System.out.println("duplicate_keys=" + ((List<?>) validation.get("duplicate_keys")).size());
+            System.out.println("final_state_mismatches="
+                    + ((List<?>) ((Map<?, ?>) validation.get("final_state_comparison")).get("mismatches")).size());
+        }
     }
 
     private Map<String, Object> run() throws Exception {
@@ -152,6 +162,181 @@ public final class ReplayProbe {
         root.put("version_dependent_property_inventory", collectRelevantProperties());
         root.put("validation", validate(finalPlayers));
         return root;
+    }
+
+    private Map<String, Object> compactTrajectory(Map<String, Object> diagnostic) {
+        Map<String, Object> replay = mapValue(diagnostic, "replay");
+        Map<String, Object> demoFileInfo = mapValue(replay, "demo_file_info");
+        Map<String, Object> gameInfo = mapValue(demoFileInfo, "game_info");
+        Map<String, Object> dota = mapValue(gameInfo, "dota");
+        Map<String, Object> clockNormalization = mapValue(diagnostic, "clock_normalization");
+        Map<String, Object> zeroBoundary = nullableMapValue(clockNormalization.get("zero_boundary"));
+
+        List<Map<String, Object>> compactSnapshots = new ArrayList<>();
+        int expectedGameTime = 0;
+        for (Map<String, Object> snapshot : snapshots) {
+            int gameTime = requiredInteger(snapshot, "game_time_seconds");
+            if (gameTime != expectedGameTime) {
+                throw new IllegalStateException(
+                        "Compact snapshots must stay on the exact 0, 60, 120... grid; expected "
+                                + expectedGameTime + " but found " + gameTime
+                );
+            }
+            compactSnapshots.add(compactSnapshot(snapshot));
+            expectedGameTime += SNAPSHOT_INTERVAL_SECONDS;
+        }
+
+        int pauseTicks = clock.pauseTicks();
+        Object method = clockNormalization.get("normalization_method");
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("schema_version", diagnostic.get("schema_version"));
+        result.put("match_id", dota.get("match_id"));
+        result.put("replay_sha256", replay.get("sha256"));
+        result.put("clarity_version", replay.get("clarity_version"));
+        result.put("game_mode", dota.get("game_mode"));
+        result.put("league_id", dota.get("leagueid"));
+        result.put("winner", dota.get("game_winner"));
+        result.put("radiant_team_id", dota.get("radiant_team_id"));
+        result.put("radiant_team_tag", dota.get("radiant_team_tag"));
+        result.put("dire_team_id", dota.get("dire_team_id"));
+        result.put("dire_team_tag", dota.get("dire_team_tag"));
+        result.put("picks_bans", compactPicksBans(dota.get("picks_bans")));
+        result.put("clock_normalization_status", clockNormalization.get("status"));
+        result.put("clock_normalization_method", method instanceof Enum<?> value ? value.toString() : method);
+        result.put("zero_replay_tick", zeroBoundary == null ? null : zeroBoundary.get("replay_tick"));
+        result.put("game_end_time_seconds", clock.gameEndNormalizedTime());
+        result.put("pause_ticks", pauseTicks);
+        result.put("pause_seconds", pauseTicks * clock.millisPerTick() / 1000.0);
+        result.put("pause_witnessed", clock.witnessedActivePause());
+        result.put("snapshots", compactSnapshots);
+        return result;
+    }
+
+    static Map<String, Object> compactSnapshot(Map<String, Object> snapshot) {
+        List<Map<String, Object>> compactPlayers = players(snapshot).stream()
+                .sorted(Comparator.comparingInt(player -> requiredInteger(player, "player_slot")))
+                .map(ReplayProbe::compactPlayer)
+                .toList();
+        if (compactPlayers.size() != 10) {
+            throw new IllegalStateException(
+                    "Compact snapshots require exactly ten source player rows; found " + compactPlayers.size()
+            );
+        }
+
+        List<Map<String, Object>> radiant = compactPlayers.stream()
+                .filter(player -> "RADIANT".equals(player.get("team")))
+                .toList();
+        List<Map<String, Object>> dire = compactPlayers.stream()
+                .filter(player -> "DIRE".equals(player.get("team")))
+                .toList();
+        if (radiant.size() != 5 || dire.size() != 5) {
+            throw new IllegalStateException(
+                    "Compact snapshots require five RADIANT and five DIRE source player rows; found "
+                            + radiant.size() + " and " + dire.size()
+            );
+        }
+
+        return mapOf(
+                "game_time_seconds", snapshot.get("game_time_seconds"),
+                "source_game_time_seconds", snapshot.get("source_game_time_seconds"),
+                "replay_tick", snapshot.get("replay_tick"),
+                "game_state", snapshot.get("game_state"),
+                "teams", List.of(teamAggregate("RADIANT", radiant), teamAggregate("DIRE", dire)),
+                "players", compactPlayers
+        );
+    }
+
+    private static Map<String, Object> compactPlayer(Map<String, Object> player) {
+        return mapOf(
+                "player_slot", player.get("player_slot"),
+                "team", player.get("team"),
+                "hero_id", player.get("hero_id"),
+                "hero_name", player.get("hero_name"),
+                "level", player.get("level"),
+                "kills", player.get("kills"),
+                "deaths", player.get("deaths"),
+                "assists", player.get("assists"),
+                "last_hits", player.get("last_hits"),
+                "denies", player.get("denies"),
+                "net_worth", player.get("net_worth"),
+                "current_gold", player.get("current_gold"),
+                "total_xp", player.get("total_xp"),
+                "items", compactItems(player.get("items"))
+        );
+    }
+
+    private static List<Map<String, Object>> compactItems(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (!(value instanceof List<?> items)) {
+            throw new IllegalStateException("Player items must be a list or null");
+        }
+        return items.stream()
+                .map(ReplayProbe::nullableMapValue)
+                .sorted(Comparator.comparingInt(item -> requiredInteger(item, "inventory_slot")))
+                .map(item -> ReplayProbe.<String, Object>mapOf(
+                        "inventory_slot", item.get("inventory_slot"),
+                        "item_name", item.get("item_name")
+                ))
+                .toList();
+    }
+
+    private static Map<String, Object> teamAggregate(String team, List<Map<String, Object>> players) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("team", team);
+        for (String field : COMPACT_AGGREGATE_FIELDS) {
+            int sum = 0;
+            for (Map<String, Object> player : players) {
+                sum = Math.addExact(sum, requiredInteger(player, field));
+            }
+            result.put(field, sum);
+        }
+        return result;
+    }
+
+    private static List<Map<String, Object>> compactPicksBans(Object value) {
+        if (!(value instanceof List<?> rows)) {
+            return List.of();
+        }
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (Object row : rows) {
+            Map<String, Object> pickBan = nullableMapValue(row);
+            result.add(mapOf(
+                    "is_pick", pickBan.get("is_pick"),
+                    "team", pickBan.get("team"),
+                    "hero_id", pickBan.get("hero_id")
+            ));
+        }
+        return result;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> mapValue(Map<String, Object> parent, String key) {
+        Object value = parent.get(key);
+        if (!(value instanceof Map<?, ?>)) {
+            throw new IllegalStateException("Expected object at " + key);
+        }
+        return (Map<String, Object>) value;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> nullableMapValue(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (!(value instanceof Map<?, ?>)) {
+            throw new IllegalStateException("Expected JSON object");
+        }
+        return (Map<String, Object>) value;
+    }
+
+    private static int requiredInteger(Map<String, Object> row, String field) {
+        Object value = row.get(field);
+        if (!(value instanceof Number number)) {
+            throw new IllegalStateException("Expected numeric compact field: " + field);
+        }
+        return number.intValue();
     }
 
     @OnTickEnd
@@ -966,7 +1151,9 @@ public final class ReplayProbe {
         private Integer gameEndTick;
         private Double gameEndRawReplayTime;
         private Float gameEndPropertyTime;
+        private Float gameEndNormalizedTime;
         private Float normalizedGameTime;
+        private float millisPerTick;
         private ClockMode mode;
         private boolean witnessedActivePause;
         private final List<Map<String, Object>> gameStateTransitions = new ArrayList<>();
@@ -988,6 +1175,7 @@ public final class ReplayProbe {
                 Float gameStartTime,
                 Float gameEndTime
         ) {
+            this.millisPerTick = millisPerTick;
             if (gameState != null && !Objects.equals(gameState, lastGameState)) {
                 gameStateTransitions.add(mapOf(
                         "replay_tick", tick,
@@ -1068,6 +1256,7 @@ public final class ReplayProbe {
                 gameEndTick = tick;
                 gameEndRawReplayTime = rawReplayTime;
                 gameEndPropertyTime = gameEndTime;
+                gameEndNormalizedTime = normalizedGameTime;
             }
             lastTick = tick;
             lastRawReplayTime = rawReplayTime;
@@ -1095,6 +1284,13 @@ public final class ReplayProbe {
         Integer gameEndTick() { return gameEndTick; }
         Double gameEndRawReplayTime() { return gameEndRawReplayTime; }
         Float gameEndPropertyTime() { return gameEndPropertyTime; }
+        Float gameEndNormalizedTime() { return gameEndNormalizedTime == null ? normalizedGameTime : gameEndNormalizedTime; }
+        int pauseTicks() {
+            int baseline = baselineTotalPausedTicks == null ? 0 : baselineTotalPausedTicks;
+            int current = lastTotalPausedTicks == null ? baseline : lastTotalPausedTicks;
+            return Math.max(0, current - baseline);
+        }
+        float millisPerTick() { return millisPerTick; }
         Integer baselineTotalPausedTicks() { return baselineTotalPausedTicks; }
         Integer lastTotalPausedTicks() { return lastTotalPausedTicks; }
         boolean witnessedActivePause() { return witnessedActivePause; }
