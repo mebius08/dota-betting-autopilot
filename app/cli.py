@@ -643,6 +643,23 @@ def create_parser() -> ArgumentParser:
         help="Settlement CSV path.",
     )
 
+    import_replay_trajectory_parser = subparsers.add_parser(
+        "import-replay-trajectory",
+        help="Validate and store one compact replay trajectory JSON artifact.",
+    )
+    import_replay_trajectory_parser.add_argument(
+        "--input",
+        type=Path,
+        required=True,
+        help="Compact replay trajectory JSON path.",
+    )
+    import_replay_trajectory_parser.add_argument(
+        "--local-data-dir",
+        type=Path,
+        required=True,
+        help="Directory for canonical replay trajectory artifacts.",
+    )
+
     inspect_dataset_parser = subparsers.add_parser(
         "inspect-dataset",
         help="Show offline data readiness for ML training and evaluation.",
@@ -1065,6 +1082,8 @@ def main(
             return _export_history_command(args)
         if args.command == "import-settlements":
             return _import_settlements_command(args)
+        if args.command == "import-replay-trajectory":
+            return _import_replay_trajectory_command(args)
         if args.command == "inspect-dataset":
             return _inspect_dataset_command(args)
         if args.command == "open-bets":
@@ -2159,6 +2178,28 @@ def _import_settlements_command(args: Namespace) -> int:
     print(f"Warnings: {len(result.warnings)}")
     for warning in result.warnings:
         print(f"Warning: {warning}")
+    return 0
+
+
+def _import_replay_trajectory_command(args: Namespace) -> int:
+    from app.replay_trajectory import (
+        ReplayTrajectoryError,
+        import_replay_trajectory,
+    )
+
+    try:
+        result = import_replay_trajectory(args.input, args.local_data_dir)
+    except ReplayTrajectoryError as exc:
+        print(f"REJECTED {exc}", file=sys.stderr)
+        return 1
+
+    print(
+        f"{result.status} match_id={result.match_id} "
+        f"snapshots={result.snapshot_count} "
+        f"replay_sha256={result.replay_sha256} "
+        f"size_bytes={result.artifact_size_bytes} "
+        f"artifact={result.destination.as_posix()}"
+    )
     return 0
 
 
