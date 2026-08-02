@@ -722,6 +722,23 @@ def create_parser() -> ArgumentParser:
         help="Directory for the replay state training CSV and manifest.",
     )
 
+    evaluate_replay_state_baseline_parser = subparsers.add_parser(
+        "evaluate-replay-state-baseline",
+        help="Evaluate deterministic replay state-alpha baselines.",
+    )
+    evaluate_replay_state_baseline_parser.add_argument(
+        "--training-dir",
+        type=Path,
+        required=True,
+        help="Directory containing replay state training CSV and manifest files.",
+    )
+    evaluate_replay_state_baseline_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        required=True,
+        help="Directory for replay state baseline evaluation outputs.",
+    )
+
     inspect_dataset_parser = subparsers.add_parser(
         "inspect-dataset",
         help="Show offline data readiness for ML training and evaluation.",
@@ -1152,6 +1169,8 @@ def main(
             return _build_replay_trajectory_dataset_command(args)
         if args.command == "build-replay-state-training-set":
             return _build_replay_state_training_set_command(args)
+        if args.command == "evaluate-replay-state-baseline":
+            return _evaluate_replay_state_baseline_command(args)
         if args.command == "inspect-dataset":
             return _inspect_dataset_command(args)
         if args.command == "open-bets":
@@ -2352,6 +2371,25 @@ def _build_replay_state_training_set_command(args: Namespace) -> int:
         f"outcomes={result.source_outcome_row_count} "
         f"training_rows={result.training_row_count}"
     )
+    return 0
+
+
+def _evaluate_replay_state_baseline_command(args: Namespace) -> int:
+    from app.replay_state_baseline import (
+        ReplayStateBaselineError,
+        evaluate_replay_state_baseline,
+    )
+
+    try:
+        result = evaluate_replay_state_baseline(
+            args.training_dir,
+            args.output_dir,
+        )
+    except ReplayStateBaselineError as exc:
+        print(f"REJECTED {exc}", file=sys.stderr)
+        return 1
+
+    print(result.status)
     return 0
 
 
