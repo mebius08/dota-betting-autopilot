@@ -705,6 +705,23 @@ def create_parser() -> ArgumentParser:
         help="Directory for team decisions, outcomes, and manifest outputs.",
     )
 
+    build_replay_state_training_set_parser = subparsers.add_parser(
+        "build-replay-state-training-set",
+        help="Build deterministic replay state-alpha training features.",
+    )
+    build_replay_state_training_set_parser.add_argument(
+        "--dataset-dir",
+        type=Path,
+        required=True,
+        help="Directory containing the replay trajectory dataset.",
+    )
+    build_replay_state_training_set_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        required=True,
+        help="Directory for the replay state training CSV and manifest.",
+    )
+
     inspect_dataset_parser = subparsers.add_parser(
         "inspect-dataset",
         help="Show offline data readiness for ML training and evaluation.",
@@ -1133,6 +1150,8 @@ def main(
             return _import_replay_trajectory_command(args)
         if args.command == "build-replay-trajectory-dataset":
             return _build_replay_trajectory_dataset_command(args)
+        if args.command == "build-replay-state-training-set":
+            return _build_replay_state_training_set_command(args)
         if args.command == "inspect-dataset":
             return _inspect_dataset_command(args)
         if args.command == "open-bets":
@@ -2307,6 +2326,31 @@ def _build_replay_trajectory_dataset_command(args: Namespace) -> int:
         f"horizon_180={horizons[180]} "
         f"horizon_300={horizons[300]} "
         f"output_dir={result.output_dir.as_posix()}"
+    )
+    return 0
+
+
+def _build_replay_state_training_set_command(args: Namespace) -> int:
+    from app.replay_state_training import (
+        ReplayStateTrainingError,
+        build_replay_state_training_set,
+    )
+
+    try:
+        result = build_replay_state_training_set(
+            args.dataset_dir,
+            args.output_dir,
+        )
+    except ReplayStateTrainingError as exc:
+        print(f"REJECTED {exc}", file=sys.stderr)
+        return 1
+
+    print(
+        f"{result.status} matches={result.source_match_count} "
+        f"snapshots={result.source_snapshot_count} "
+        f"decisions={result.source_decision_row_count} "
+        f"outcomes={result.source_outcome_row_count} "
+        f"training_rows={result.training_row_count}"
     )
     return 0
 
