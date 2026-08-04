@@ -158,6 +158,11 @@ def create_parser() -> ArgumentParser:
         help="Optional OpenDota league ID filter.",
     )
     fetch_pro_replays_parser.add_argument(
+        "--all-league-matches",
+        action="store_true",
+        help="Discover all matches for --league-id instead of recent matches.",
+    )
+    fetch_pro_replays_parser.add_argument(
         "--count",
         type=_replay_download_count,
         default=10,
@@ -1377,14 +1382,20 @@ def _fetch_pro_replays_command(
 ) -> int:
     from app.replay_fetcher import (
         ReplayFetchError,
+        format_replay_fetch_failure,
         format_replay_fetch_result,
         format_replay_fetch_summary,
         fetch_pro_replays,
     )
 
+    if args.all_league_matches and args.league_id is None:
+        print("--all-league-matches requires --league-id.", file=sys.stderr)
+        return 2
+
     try:
         summary = fetch_pro_replays(
             league_id=args.league_id,
+            all_league_matches=args.all_league_matches,
             count=args.count,
             output_dir=args.output_dir,
             max_details=args.max_details,
@@ -1395,6 +1406,8 @@ def _fetch_pro_replays_command(
         print("SUMMARY DOWNLOADED=0 UNCHANGED=0 SKIPPED=0 FAILED=1")
         return 1
 
+    if summary.discovery_failure is not None:
+        print(format_replay_fetch_failure(summary.discovery_failure))
     for result in summary.results:
         print(format_replay_fetch_result(result))
     print(format_replay_fetch_summary(summary))
