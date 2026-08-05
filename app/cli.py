@@ -781,6 +781,59 @@ def create_parser() -> ArgumentParser:
         help="Directory for tournament-holdout evaluation outputs.",
     )
 
+    build_replay_state_model_parser = subparsers.add_parser(
+        "build-replay-state-model",
+        help="Build a deterministic replay state-alpha CatBoost model bundle.",
+    )
+    build_replay_state_model_parser.add_argument(
+        "--training-dir",
+        type=Path,
+        required=True,
+        help="Directory containing replay state training CSV and manifest files.",
+    )
+    build_replay_state_model_parser.add_argument(
+        "--trajectory-dir",
+        type=Path,
+        required=True,
+        help="Directory containing canonical replay trajectory JSON artifacts.",
+    )
+    build_replay_state_model_parser.add_argument(
+        "--league-id",
+        type=_positive_int,
+        action="append",
+        required=True,
+        help="Training league ID; repeat for each selected tournament.",
+    )
+    build_replay_state_model_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        required=True,
+        help="Directory for the replay state model bundle.",
+    )
+
+    score_replay_state_model_parser = subparsers.add_parser(
+        "score-replay-state-model",
+        help="Score one replay state with a validated model bundle.",
+    )
+    score_replay_state_model_parser.add_argument(
+        "--model-dir",
+        type=Path,
+        required=True,
+        help="Directory containing the replay state model bundle.",
+    )
+    score_replay_state_model_parser.add_argument(
+        "--input",
+        type=Path,
+        required=True,
+        help="Replay state scoring request JSON path.",
+    )
+    score_replay_state_model_parser.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="Replay state scoring response JSON path.",
+    )
+
     inspect_dataset_parser = subparsers.add_parser(
         "inspect-dataset",
         help="Show offline data readiness for ML training and evaluation.",
@@ -1215,6 +1268,10 @@ def main(
             return _evaluate_replay_state_baseline_command(args)
         if args.command == "evaluate-replay-state-tournament-holdout":
             return _evaluate_replay_state_tournament_holdout_command(args)
+        if args.command == "build-replay-state-model":
+            return _build_replay_state_model_command(args)
+        if args.command == "score-replay-state-model":
+            return _score_replay_state_model_command(args)
         if args.command == "inspect-dataset":
             return _inspect_dataset_command(args)
         if args.command == "open-bets":
@@ -2460,6 +2517,47 @@ def _evaluate_replay_state_tournament_holdout_command(args: Namespace) -> int:
             args.output_dir,
         )
     except ReplayStateTournamentHoldoutError as exc:
+        print(f"REJECTED {exc}", file=sys.stderr)
+        return 1
+
+    print(result.status)
+    return 0
+
+
+def _build_replay_state_model_command(args: Namespace) -> int:
+    from app.replay_state_model import (
+        ReplayStateModelError,
+        build_replay_state_model,
+    )
+
+    try:
+        result = build_replay_state_model(
+            args.training_dir,
+            args.trajectory_dir,
+            args.league_id,
+            args.output_dir,
+        )
+    except ReplayStateModelError as exc:
+        print(f"REJECTED {exc}", file=sys.stderr)
+        return 1
+
+    print(result.status)
+    return 0
+
+
+def _score_replay_state_model_command(args: Namespace) -> int:
+    from app.replay_state_model import (
+        ReplayStateModelError,
+        score_replay_state_model,
+    )
+
+    try:
+        result = score_replay_state_model(
+            args.model_dir,
+            args.input,
+            args.output,
+        )
+    except ReplayStateModelError as exc:
         print(f"REJECTED {exc}", file=sys.stderr)
         return 1
 
