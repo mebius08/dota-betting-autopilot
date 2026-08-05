@@ -834,6 +834,29 @@ def create_parser() -> ArgumentParser:
         help="Replay state scoring response JSON path.",
     )
 
+    score_replay_state_history_parser = subparsers.add_parser(
+        "score-replay-state-history",
+        help="Score normalized replay state history with a validated model bundle.",
+    )
+    score_replay_state_history_parser.add_argument(
+        "--model-dir",
+        type=Path,
+        required=True,
+        help="Directory containing the replay state model bundle.",
+    )
+    score_replay_state_history_parser.add_argument(
+        "--input",
+        type=Path,
+        required=True,
+        help="Normalized replay state history request JSON path.",
+    )
+    score_replay_state_history_parser.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="Replay state history response JSON path.",
+    )
+
     inspect_dataset_parser = subparsers.add_parser(
         "inspect-dataset",
         help="Show offline data readiness for ML training and evaluation.",
@@ -1272,6 +1295,8 @@ def main(
             return _build_replay_state_model_command(args)
         if args.command == "score-replay-state-model":
             return _score_replay_state_model_command(args)
+        if args.command == "score-replay-state-history":
+            return _score_replay_state_history_command(args)
         if args.command == "inspect-dataset":
             return _inspect_dataset_command(args)
         if args.command == "open-bets":
@@ -2558,6 +2583,27 @@ def _score_replay_state_model_command(args: Namespace) -> int:
             args.output,
         )
     except ReplayStateModelError as exc:
+        print(f"REJECTED {exc}", file=sys.stderr)
+        return 1
+
+    print(result.status)
+    return 0
+
+
+def _score_replay_state_history_command(args: Namespace) -> int:
+    from app.replay_state_history import (
+        ReplayStateHistoryError,
+        score_replay_state_history,
+    )
+    from app.replay_state_model import ReplayStateModelError
+
+    try:
+        result = score_replay_state_history(
+            args.model_dir,
+            args.input,
+            args.output,
+        )
+    except (ReplayStateHistoryError, ReplayStateModelError) as exc:
         print(f"REJECTED {exc}", file=sys.stderr)
         return 1
 
