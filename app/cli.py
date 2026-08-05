@@ -744,6 +744,43 @@ def create_parser() -> ArgumentParser:
         help="Directory for replay state baseline evaluation outputs.",
     )
 
+    evaluate_replay_state_tournament_holdout_parser = subparsers.add_parser(
+        "evaluate-replay-state-tournament-holdout",
+        help="Evaluate replay state alpha with an explicit tournament holdout.",
+    )
+    evaluate_replay_state_tournament_holdout_parser.add_argument(
+        "--training-dir",
+        type=Path,
+        required=True,
+        help="Directory containing replay state training CSV and manifest files.",
+    )
+    evaluate_replay_state_tournament_holdout_parser.add_argument(
+        "--trajectory-dir",
+        type=Path,
+        required=True,
+        help="Directory containing canonical replay trajectory JSON artifacts.",
+    )
+    evaluate_replay_state_tournament_holdout_parser.add_argument(
+        "--train-league-id",
+        type=_positive_int,
+        action="append",
+        required=True,
+        help="Training league ID; repeat for each selected tournament.",
+    )
+    evaluate_replay_state_tournament_holdout_parser.add_argument(
+        "--test-league-id",
+        type=_positive_int,
+        action="append",
+        required=True,
+        help="Test league ID; repeat for each held-out tournament.",
+    )
+    evaluate_replay_state_tournament_holdout_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        required=True,
+        help="Directory for tournament-holdout evaluation outputs.",
+    )
+
     inspect_dataset_parser = subparsers.add_parser(
         "inspect-dataset",
         help="Show offline data readiness for ML training and evaluation.",
@@ -1176,6 +1213,8 @@ def main(
             return _build_replay_state_training_set_command(args)
         if args.command == "evaluate-replay-state-baseline":
             return _evaluate_replay_state_baseline_command(args)
+        if args.command == "evaluate-replay-state-tournament-holdout":
+            return _evaluate_replay_state_tournament_holdout_command(args)
         if args.command == "inspect-dataset":
             return _inspect_dataset_command(args)
         if args.command == "open-bets":
@@ -2399,6 +2438,28 @@ def _evaluate_replay_state_baseline_command(args: Namespace) -> int:
             args.output_dir,
         )
     except ReplayStateBaselineError as exc:
+        print(f"REJECTED {exc}", file=sys.stderr)
+        return 1
+
+    print(result.status)
+    return 0
+
+
+def _evaluate_replay_state_tournament_holdout_command(args: Namespace) -> int:
+    from app.replay_state_tournament_holdout import (
+        ReplayStateTournamentHoldoutError,
+        evaluate_replay_state_tournament_holdout,
+    )
+
+    try:
+        result = evaluate_replay_state_tournament_holdout(
+            args.training_dir,
+            args.trajectory_dir,
+            args.train_league_id,
+            args.test_league_id,
+            args.output_dir,
+        )
+    except ReplayStateTournamentHoldoutError as exc:
         print(f"REJECTED {exc}", file=sys.stderr)
         return 1
 
