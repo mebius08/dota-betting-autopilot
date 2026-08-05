@@ -857,6 +857,35 @@ def create_parser() -> ArgumentParser:
         help="Replay state history response JSON path.",
     )
 
+    ingest_live_state_snapshot_parser = subparsers.add_parser(
+        "ingest-live-state-snapshot",
+        help="Persist one normalized live state and emit the current raw signal.",
+    )
+    ingest_live_state_snapshot_parser.add_argument(
+        "--model-dir",
+        type=Path,
+        required=True,
+        help="Directory containing the replay state model bundle.",
+    )
+    ingest_live_state_snapshot_parser.add_argument(
+        "--state-dir",
+        type=Path,
+        required=True,
+        help="Directory containing deterministic per-match live state history.",
+    )
+    ingest_live_state_snapshot_parser.add_argument(
+        "--input",
+        type=Path,
+        required=True,
+        help="Single normalized live state snapshot request JSON path.",
+    )
+    ingest_live_state_snapshot_parser.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="Current live state signal response JSON path.",
+    )
+
     inspect_dataset_parser = subparsers.add_parser(
         "inspect-dataset",
         help="Show offline data readiness for ML training and evaluation.",
@@ -1297,6 +1326,8 @@ def main(
             return _score_replay_state_model_command(args)
         if args.command == "score-replay-state-history":
             return _score_replay_state_history_command(args)
+        if args.command == "ingest-live-state-snapshot":
+            return _ingest_live_state_snapshot_command(args)
         if args.command == "inspect-dataset":
             return _inspect_dataset_command(args)
         if args.command == "open-bets":
@@ -2604,6 +2635,31 @@ def _score_replay_state_history_command(args: Namespace) -> int:
             args.output,
         )
     except (ReplayStateHistoryError, ReplayStateModelError) as exc:
+        print(f"REJECTED {exc}", file=sys.stderr)
+        return 1
+
+    print(result.status)
+    return 0
+
+
+def _ingest_live_state_snapshot_command(args: Namespace) -> int:
+    from app.live_state_signal import LiveStateSignalError
+    from app.live_state_signal import ingest_live_state_snapshot
+    from app.replay_state_history import ReplayStateHistoryError
+    from app.replay_state_model import ReplayStateModelError
+
+    try:
+        result = ingest_live_state_snapshot(
+            args.model_dir,
+            args.state_dir,
+            args.input,
+            args.output,
+        )
+    except (
+        LiveStateSignalError,
+        ReplayStateHistoryError,
+        ReplayStateModelError,
+    ) as exc:
         print(f"REJECTED {exc}", file=sys.stderr)
         return 1
 
