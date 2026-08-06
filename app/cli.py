@@ -886,6 +886,47 @@ def create_parser() -> ArgumentParser:
         help="Current live state signal response JSON path.",
     )
 
+    sync_live_state_jsonl_parser = subparsers.add_parser(
+        "sync-live-state-jsonl",
+        help="Process newly appended complete normalized live state JSONL records.",
+    )
+    sync_live_state_jsonl_parser.add_argument(
+        "--model-dir",
+        type=Path,
+        required=True,
+        help="Directory containing the replay state model bundle.",
+    )
+    sync_live_state_jsonl_parser.add_argument(
+        "--state-dir",
+        type=Path,
+        required=True,
+        help="Directory containing deterministic per-match live state history.",
+    )
+    sync_live_state_jsonl_parser.add_argument(
+        "--input",
+        type=Path,
+        required=True,
+        help="Append-only normalized live state JSONL path.",
+    )
+    sync_live_state_jsonl_parser.add_argument(
+        "--signal-dir",
+        type=Path,
+        required=True,
+        help="Directory containing one current signal file per match.",
+    )
+    sync_live_state_jsonl_parser.add_argument(
+        "--cursor",
+        type=Path,
+        required=True,
+        help="Persistent live state JSONL cursor path.",
+    )
+    sync_live_state_jsonl_parser.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="Deterministic synchronization summary JSON path.",
+    )
+
     inspect_dataset_parser = subparsers.add_parser(
         "inspect-dataset",
         help="Show offline data readiness for ML training and evaluation.",
@@ -1328,6 +1369,8 @@ def main(
             return _score_replay_state_history_command(args)
         if args.command == "ingest-live-state-snapshot":
             return _ingest_live_state_snapshot_command(args)
+        if args.command == "sync-live-state-jsonl":
+            return _sync_live_state_jsonl_command(args)
         if args.command == "inspect-dataset":
             return _inspect_dataset_command(args)
         if args.command == "open-bets":
@@ -2660,6 +2703,26 @@ def _ingest_live_state_snapshot_command(args: Namespace) -> int:
         ReplayStateHistoryError,
         ReplayStateModelError,
     ) as exc:
+        print(f"REJECTED {exc}", file=sys.stderr)
+        return 1
+
+    print(result.status)
+    return 0
+
+
+def _sync_live_state_jsonl_command(args: Namespace) -> int:
+    from app.live_state_jsonl import LiveStateJsonlError, sync_live_state_jsonl
+
+    try:
+        result = sync_live_state_jsonl(
+            args.model_dir,
+            args.state_dir,
+            args.input,
+            args.signal_dir,
+            args.cursor,
+            args.output,
+        )
+    except LiveStateJsonlError as exc:
         print(f"REJECTED {exc}", file=sys.stderr)
         return 1
 
