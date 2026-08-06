@@ -2,6 +2,7 @@ from argparse import ArgumentParser, ArgumentTypeError, Namespace
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime, time as datetime_time, timezone
 import math
+import os
 from pathlib import Path
 import sys
 import time
@@ -927,6 +928,46 @@ def create_parser() -> ArgumentParser:
         help="Deterministic synchronization summary JSON path.",
     )
 
+    capture_dota_gsi_probe_parser = subparsers.add_parser(
+        "capture-dota-gsi-probe",
+        help="Capture a bounded set of local Dota GSI spectator payloads.",
+    )
+    capture_dota_gsi_probe_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Loopback bind host (default: 127.0.0.1).",
+    )
+    capture_dota_gsi_probe_parser.add_argument(
+        "--port",
+        type=_port_number,
+        default=3000,
+        help="Local listener port (default: 3000).",
+    )
+    capture_dota_gsi_probe_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        required=True,
+        help="Directory for sanitized payloads and the structural audit.",
+    )
+    capture_dota_gsi_probe_parser.add_argument(
+        "--max-payloads",
+        type=_positive_int,
+        default=20,
+        help="Maximum valid payloads to accept (default: 20).",
+    )
+    capture_dota_gsi_probe_parser.add_argument(
+        "--idle-timeout-seconds",
+        type=_positive_float,
+        default=180.0,
+        help="Exit after this many seconds without a valid payload (default: 180).",
+    )
+    capture_dota_gsi_probe_parser.add_argument(
+        "--auth-token-env",
+        type=_non_empty_text,
+        required=True,
+        help="Required environment variable containing the expected GSI token.",
+    )
+
     inspect_dataset_parser = subparsers.add_parser(
         "inspect-dataset",
         help="Show offline data readiness for ML training and evaluation.",
@@ -1371,6 +1412,8 @@ def main(
             return _ingest_live_state_snapshot_command(args)
         if args.command == "sync-live-state-jsonl":
             return _sync_live_state_jsonl_command(args)
+        if args.command == "capture-dota-gsi-probe":
+            return _capture_dota_gsi_probe_command(args)
         if args.command == "inspect-dataset":
             return _inspect_dataset_command(args)
         if args.command == "open-bets":
@@ -2730,6 +2773,30 @@ def _sync_live_state_jsonl_command(args: Namespace) -> int:
     return 0
 
 
+def _capture_dota_gsi_probe_command(args: Namespace) -> int:
+    from app.dota_gsi_probe import DotaGSIProbeError, capture_dota_gsi_probe
+
+    expected_token = os.environ.get(args.auth_token_env)
+    if not expected_token:
+        print("ERROR reason=auth_token_environment_missing", file=sys.stderr)
+        return 1
+    try:
+        result = capture_dota_gsi_probe(
+            host=args.host,
+            port=args.port,
+            output_dir=args.output_dir,
+            max_payloads=args.max_payloads,
+            idle_timeout_seconds=args.idle_timeout_seconds,
+            expected_token=expected_token,
+        )
+    except DotaGSIProbeError as exc:
+        print(f"ERROR reason={exc.reason}", file=sys.stderr)
+        return 1
+
+    print(result.status)
+    return 0
+
+
 def _inspect_dataset_command(args: Namespace) -> int:
     from app.data_io import format_dataset_inspection_report, inspect_dataset
 
@@ -3953,6 +4020,13 @@ def _non_negative_int(value: str) -> int:
 
     if parsed < 0:
         raise ArgumentTypeError("must not be negative")
+    return parsed
+
+
+def _port_number(value: str) -> int:
+    parsed = _positive_int(value)
+    if parsed > 65_535:
+        raise ArgumentTypeError("must be at most 65535")
     return parsed
 
 
