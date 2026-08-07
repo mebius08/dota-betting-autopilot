@@ -887,6 +887,35 @@ def create_parser() -> ArgumentParser:
         help="Current live state signal response JSON path.",
     )
 
+    ingest_dota_gsi_payload_parser = subparsers.add_parser(
+        "ingest-dota-gsi-payload",
+        help="Normalize and ingest one sanitized Dota spectator GSI payload.",
+    )
+    ingest_dota_gsi_payload_parser.add_argument(
+        "--model-dir",
+        type=Path,
+        required=True,
+        help="Directory containing the replay state model bundle.",
+    )
+    ingest_dota_gsi_payload_parser.add_argument(
+        "--state-dir",
+        type=Path,
+        required=True,
+        help="Directory containing deterministic per-match live state history.",
+    )
+    ingest_dota_gsi_payload_parser.add_argument(
+        "--input",
+        type=Path,
+        required=True,
+        help="Single sanitized Dota spectator GSI payload JSON path.",
+    )
+    ingest_dota_gsi_payload_parser.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="Current live state signal response JSON path.",
+    )
+
     sync_live_state_jsonl_parser = subparsers.add_parser(
         "sync-live-state-jsonl",
         help="Process newly appended complete normalized live state JSONL records.",
@@ -1410,6 +1439,8 @@ def main(
             return _score_replay_state_history_command(args)
         if args.command == "ingest-live-state-snapshot":
             return _ingest_live_state_snapshot_command(args)
+        if args.command == "ingest-dota-gsi-payload":
+            return _ingest_dota_gsi_payload_command(args)
         if args.command == "sync-live-state-jsonl":
             return _sync_live_state_jsonl_command(args)
         if args.command == "capture-dota-gsi-probe":
@@ -2742,6 +2773,32 @@ def _ingest_live_state_snapshot_command(args: Namespace) -> int:
             args.output,
         )
     except (
+        LiveStateSignalError,
+        ReplayStateHistoryError,
+        ReplayStateModelError,
+    ) as exc:
+        print(f"REJECTED {exc}", file=sys.stderr)
+        return 1
+
+    print(result.status)
+    return 0
+
+
+def _ingest_dota_gsi_payload_command(args: Namespace) -> int:
+    from app.dota_gsi_live import DotaGSILiveError, ingest_dota_gsi_payload
+    from app.live_state_signal import LiveStateSignalError
+    from app.replay_state_history import ReplayStateHistoryError
+    from app.replay_state_model import ReplayStateModelError
+
+    try:
+        result = ingest_dota_gsi_payload(
+            args.model_dir,
+            args.state_dir,
+            args.input,
+            args.output,
+        )
+    except (
+        DotaGSILiveError,
         LiveStateSignalError,
         ReplayStateHistoryError,
         ReplayStateModelError,
