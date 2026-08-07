@@ -916,6 +916,58 @@ def create_parser() -> ArgumentParser:
         help="Current live state signal response JSON path.",
     )
 
+    run_dota_gsi_live_parser = subparsers.add_parser(
+        "run-dota-gsi-live",
+        help="Run a bounded local Dota GSI live state listener.",
+    )
+    run_dota_gsi_live_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Loopback bind host (default: 127.0.0.1).",
+    )
+    run_dota_gsi_live_parser.add_argument(
+        "--port",
+        type=_port_number,
+        default=3000,
+        help="Local listener port (default: 3000).",
+    )
+    run_dota_gsi_live_parser.add_argument(
+        "--model-dir",
+        type=Path,
+        required=True,
+        help="Directory containing the replay state model bundle.",
+    )
+    run_dota_gsi_live_parser.add_argument(
+        "--state-dir",
+        type=Path,
+        required=True,
+        help="Directory containing deterministic per-match live state history.",
+    )
+    run_dota_gsi_live_parser.add_argument(
+        "--signal-dir",
+        type=Path,
+        required=True,
+        help="Directory containing one latest signal file per match.",
+    )
+    run_dota_gsi_live_parser.add_argument(
+        "--auth-token-env",
+        type=_non_empty_text,
+        required=True,
+        help="Required environment variable containing the expected GSI token.",
+    )
+    run_dota_gsi_live_parser.add_argument(
+        "--max-payloads",
+        type=_positive_int,
+        default=10_000,
+        help="Maximum valid payloads to accept (default: 10000).",
+    )
+    run_dota_gsi_live_parser.add_argument(
+        "--idle-timeout-seconds",
+        type=_positive_float,
+        default=600.0,
+        help="Exit after this many seconds without a valid payload (default: 600).",
+    )
+
     sync_live_state_jsonl_parser = subparsers.add_parser(
         "sync-live-state-jsonl",
         help="Process newly appended complete normalized live state JSONL records.",
@@ -1441,6 +1493,8 @@ def main(
             return _ingest_live_state_snapshot_command(args)
         if args.command == "ingest-dota-gsi-payload":
             return _ingest_dota_gsi_payload_command(args)
+        if args.command == "run-dota-gsi-live":
+            return _run_dota_gsi_live_command(args)
         if args.command == "sync-live-state-jsonl":
             return _sync_live_state_jsonl_command(args)
         if args.command == "capture-dota-gsi-probe":
@@ -2807,6 +2861,36 @@ def _ingest_dota_gsi_payload_command(args: Namespace) -> int:
         return 1
 
     print(result.status)
+    return 0
+
+
+def _run_dota_gsi_live_command(args: Namespace) -> int:
+    from app.dota_gsi_listener import DotaGSIListenerError, run_dota_gsi_live
+
+    expected_token = os.environ.get(args.auth_token_env)
+    if not expected_token:
+        print("ERROR reason=auth_token_environment_missing", file=sys.stderr)
+        return 1
+    try:
+        result = run_dota_gsi_live(
+            host=args.host,
+            port=args.port,
+            model_dir=args.model_dir,
+            state_dir=args.state_dir,
+            signal_dir=args.signal_dir,
+            max_payloads=args.max_payloads,
+            idle_timeout_seconds=args.idle_timeout_seconds,
+            expected_token=expected_token,
+        )
+    except DotaGSIListenerError as exc:
+        print(f"ERROR reason={exc.reason}", file=sys.stderr)
+        return 1
+
+    print(result.summary)
+    if result.accepted == 0 and result.termination_reason == "idle_timeout":
+        print("NO_PAYLOADS")
+    else:
+        print("DONE")
     return 0
 
 

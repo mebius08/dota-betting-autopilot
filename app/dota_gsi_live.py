@@ -68,6 +68,14 @@ class IgnoredDotaGSILiveResult:
 DotaGSILiveResult: TypeAlias = signal.LiveStateSignalResult | IgnoredDotaGSILiveResult
 
 
+@dataclass(frozen=True)
+class InMemoryDotaGSILiveResult:
+    status: BuildStatus
+    response_status: Literal["ignored", "not_ready", "scored"]
+    output_path: Path | None
+    response: dict[str, object]
+
+
 def load_dota_gsi_payload(input_path: str | Path) -> dict[str, object]:
     path = Path(input_path)
     try:
@@ -159,13 +167,7 @@ def ingest_dota_gsi_payload(
     normalized = normalize_dota_gsi_payload(load_dota_gsi_payload(input_path))
     destination = Path(output_path)
     if isinstance(normalized, IgnoredDotaGSIPayload):
-        response = {
-            "schema_version": signal.LIVE_STATE_SCHEMA_VERSION,
-            "status": "ignored",
-            "reason": normalized.reason,
-            "match_id": normalized.match_id,
-            "game_time_seconds": normalized.game_time_seconds,
-        }
+        response = _ignored_response(normalized)
         status = signal.persist_live_state_signal_response(destination, response)
         return IgnoredDotaGSILiveResult(
             status=status,
@@ -204,6 +206,84 @@ def ingest_dota_gsi_payload(
                 request_path.unlink(missing_ok=True)
             except OSError:
                 pass
+
+
+def ingest_dota_gsi_payload_in_memory(
+    model_dir: str | Path,
+    state_dir: str | Path,
+    signal_dir: str | Path,
+    payload: object,
+) -> InMemoryDotaGSILiveResult:
+    """Normalize and ingest one sanitized payload without staging raw JSON."""
+
+    normalized = normalize_dota_gsi_payload(payload)
+    if isinstance(normalized, IgnoredDotaGSIPayload):
+        response = _ignored_response(normalized)
+        if normalized.match_id is None:
+            return InMemoryDotaGSILiveResult(
+                status="UNCHANGED",
+                response_status="ignored",
+                output_path=None,
+                response=response,
+            )
+        destination = Path(signal_dir) / f"{normalized.match_id}.json"
+        status = signal.persist_live_state_signal_response(destination, response)
+        return InMemoryDotaGSILiveResult(
+            status=status,
+            response_status="ignored",
+            output_path=destination,
+            response=response,
+        )
+
+    destination = Path(signal_dir) / f"{normalized.match_id}.json"
+    request = signal.validate_live_state_snapshot_request(
+        {
+            "schema_version": signal.LIVE_STATE_SCHEMA_VERSION,
+            "match_id": normalized.match_id,
+            "snapshot": normalized.snapshot,
+        }
+    )
+    result = signal.ingest_live_state_snapshot_request(
+        model_dir,
+        state_dir,
+        request,
+        destination,
+    )
+    response = _load_signal_response(destination)
+    return InMemoryDotaGSILiveResult(
+        status=result.status,
+        response_status=result.response_status,
+        output_path=destination,
+        response=response,
+    )
+
+
+def _ignored_response(
+    normalized: IgnoredDotaGSIPayload,
+) -> dict[str, object]:
+    return {
+        "schema_version": signal.LIVE_STATE_SCHEMA_VERSION,
+        "status": "ignored",
+        "reason": normalized.reason,
+        "match_id": normalized.match_id,
+        "game_time_seconds": normalized.game_time_seconds,
+    }
+
+
+def _load_signal_response(path: Path) -> dict[str, object]:
+    try:
+        payload = json.loads(path.read_bytes().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise signal.LiveStateSignalError(
+            "Persisted live state signal response cannot be read."
+        ) from exc
+    if not isinstance(payload, dict) or any(
+        not isinstance(key, str) for key in payload
+    ):
+        raise signal.LiveStateSignalError(
+            "Persisted live state signal response is invalid."
+        )
+    return cast(dict[str, object], payload)
 
 
 def _validate_and_total_teams(

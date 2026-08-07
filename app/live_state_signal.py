@@ -288,6 +288,22 @@ def ingest_live_state_snapshot(
     output_path: str | Path,
 ) -> LiveStateSignalResult:
     request = load_live_state_snapshot_request(input_path)
+    return ingest_live_state_snapshot_request(
+        model_dir,
+        state_dir,
+        request,
+        output_path,
+    )
+
+
+def ingest_live_state_snapshot_request(
+    model_dir: str | Path,
+    state_dir: str | Path,
+    request: LiveStateSnapshotRequest,
+    output_path: str | Path,
+) -> LiveStateSignalResult:
+    """Ingest one already validated request without staging it on disk."""
+
     existing = load_persisted_match_history(state_dir, request.match_id)
     updated, _ = insert_live_state_snapshot(existing, request.snapshot)
 
