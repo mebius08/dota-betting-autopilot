@@ -149,6 +149,24 @@ def create_parser() -> ArgumentParser:
         help="HTTP timeout in seconds.",
     )
 
+    fetch_opendota_live_parser = subparsers.add_parser(
+        "fetch-opendota-live",
+        help="Fetch the current bounded OpenDota live-game snapshot.",
+    )
+    fetch_opendota_live_parser.add_argument(
+        "--league-id",
+        action="append",
+        type=_non_negative_int,
+        default=[],
+        help="Optional repeatable OpenDota league ID filter.",
+    )
+    fetch_opendota_live_parser.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="Deterministic live-match JSON output path.",
+    )
+
     fetch_pro_replays_parser = subparsers.add_parser(
         "fetch-pro-replays",
         help="Download recent professional Dota replay files from OpenDota.",
@@ -1433,6 +1451,8 @@ def main(
             return _report_command(args)
         if args.command == "fetch-matches":
             return _fetch_matches_command(args)
+        if args.command == "fetch-opendota-live":
+            return _fetch_opendota_live_command(args, sleep_func)
         if args.command == "fetch-pro-replays":
             return _fetch_pro_replays_command(args, sleep_func)
         if args.command == "sync-history":
@@ -1735,6 +1755,29 @@ def _fetch_pro_replays_command(
         print(format_replay_fetch_result(result))
     print(format_replay_fetch_summary(summary))
     return 1 if summary.failed else 0
+
+
+def _fetch_opendota_live_command(
+    args: Namespace,
+    sleep_func: Callable[[float], None],
+) -> int:
+    from app.opendota_live import (
+        deduplicate_and_sort_live_matches,
+        fetch_live_games,
+        filter_live_games,
+        persist_live_matches,
+    )
+
+    records = fetch_live_games(sleep_func=sleep_func)
+    selection = filter_live_games(records, args.league_id)
+    matches = deduplicate_and_sort_live_matches(selection.matches)
+    status = persist_live_matches(
+        args.output,
+        matches,
+        skipped_source_record_count=selection.skipped_source_record_count,
+    )
+    print(status)
+    return 0
 
 
 def _sync_history_command(args: Namespace) -> int:
