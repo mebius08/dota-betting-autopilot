@@ -23,6 +23,7 @@ OPENDOTA_API_KEY_ENV = "OPENDOTA_API_KEY"
 OPENDOTA_USER_AGENT = "dota-betting-autopilot replay-fetcher/1.0"
 DEFAULT_REQUEST_DELAY_SECONDS = 1.0
 DEFAULT_TIMEOUT_SECONDS = 30.0
+DEFAULT_REPLAY_RESPONSE_TIMEOUT_SECONDS = 7.5
 MAX_OPENDOTA_ATTEMPTS = 5
 MAX_RETRY_DELAY_SECONDS = 30.0
 _COPY_CHUNK_SIZE = 1024 * 1024
@@ -200,6 +201,7 @@ class ReplayFetcher:
         *,
         api_key: str | None = None,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
+        replay_response_timeout: float = DEFAULT_REPLAY_RESPONSE_TIMEOUT_SECONDS,
         request_delay_seconds: float = DEFAULT_REQUEST_DELAY_SECONDS,
         api_base_url: str = OPENDOTA_API_BASE_URL,
         urlopen_func: _UrlOpen = DEFAULT_URL_OPEN,
@@ -207,12 +209,15 @@ class ReplayFetcher:
     ) -> None:
         if timeout <= 0:
             raise ValueError("timeout must be greater than 0")
+        if replay_response_timeout <= 0:
+            raise ValueError("replay_response_timeout must be greater than 0")
         if request_delay_seconds < 0:
             raise ValueError("request_delay_seconds must not be negative")
 
         environment_key = os.environ.get(OPENDOTA_API_KEY_ENV)
         self._api_key = _non_empty(api_key if api_key is not None else environment_key)
         self._timeout = timeout
+        self._replay_response_timeout = replay_response_timeout
         self._request_delay_seconds = request_delay_seconds
         self._api_base_url = api_base_url.rstrip("/")
         self._urlopen = urlopen_func
@@ -609,7 +614,8 @@ class ReplayFetcher:
         )
         try:
             with destination.open("wb") as file:
-                with self._urlopen(request, timeout=self._timeout) as response:
+                with self._open_replay_response(request) as response:
+                    _set_response_socket_timeout(response, self._timeout)
                     while True:
                         chunk = response.read(_COPY_CHUNK_SIZE)
                         if not chunk:
@@ -617,6 +623,20 @@ class ReplayFetcher:
                         file.write(chunk)
                 file.flush()
                 os.fsync(file.fileno())
+        except (TimeoutError, socket.timeout) as exc:
+            raise ReplayDownloadError(
+                "replay_download_timed_out",
+                reason="request_timeout",
+            ) from exc
+        except (URLError, OSError) as exc:
+            raise ReplayDownloadError("replay_download_failed") from exc
+
+    def _open_replay_response(self, request: Request) -> _Response:
+        try:
+            return self._urlopen(
+                request,
+                timeout=self._replay_response_timeout,
+            )
         except HTTPError as exc:
             raise ReplayDownloadError(
                 f"replay_http_{exc.code}",
@@ -625,10 +645,17 @@ class ReplayFetcher:
             ) from exc
         except (TimeoutError, socket.timeout) as exc:
             raise ReplayDownloadError(
-                "replay_download_timed_out",
-                reason="request_timeout",
+                "replay_first_byte_timed_out",
+                reason="replay_first_byte_timed_out",
             ) from exc
-        except (URLError, OSError) as exc:
+        except URLError as exc:
+            if isinstance(exc.reason, (TimeoutError, socket.timeout)):
+                raise ReplayDownloadError(
+                    "replay_first_byte_timed_out",
+                    reason="replay_first_byte_timed_out",
+                ) from exc
+            raise ReplayDownloadError("replay_download_failed") from exc
+        except OSError as exc:
             raise ReplayDownloadError("replay_download_failed") from exc
 
 
@@ -641,6 +668,7 @@ def fetch_pro_replays(
     all_league_matches: bool = False,
     api_key: str | None = None,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    replay_response_timeout: float = DEFAULT_REPLAY_RESPONSE_TIMEOUT_SECONDS,
     request_delay_seconds: float = DEFAULT_REQUEST_DELAY_SECONDS,
     api_base_url: str = OPENDOTA_API_BASE_URL,
     urlopen_func: _UrlOpen = DEFAULT_URL_OPEN,
@@ -649,6 +677,7 @@ def fetch_pro_replays(
     fetcher = ReplayFetcher(
         api_key=api_key,
         timeout=timeout,
+        replay_response_timeout=replay_response_timeout,
         request_delay_seconds=request_delay_seconds,
         api_base_url=api_base_url,
         urlopen_func=urlopen_func,
@@ -919,6 +948,15 @@ def _exponential_backoff(completed_attempt: int) -> float:
         float(2 ** (completed_attempt - 1)),
         MAX_RETRY_DELAY_SECONDS,
     )
+
+
+def _set_response_socket_timeout(response: _Response, timeout: float) -> None:
+    response_file = getattr(response, "fp", None)
+    raw_socket_file = getattr(response_file, "raw", None)
+    response_socket = getattr(raw_socket_file, "_sock", None)
+    settimeout = getattr(response_socket, "settimeout", None)
+    if callable(settimeout):
+        settimeout(timeout)
 
 
 def _connection_failure_reason(exc: URLError | OSError) -> str:

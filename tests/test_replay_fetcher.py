@@ -15,6 +15,8 @@ import pytest
 from app import cli
 import app.replay_fetcher as replay_fetcher
 from app.replay_fetcher import (
+    DEFAULT_REPLAY_RESPONSE_TIMEOUT_SECONDS,
+    DEFAULT_TIMEOUT_SECONDS,
     OPENDOTA_API_KEY_ENV,
     OPENDOTA_USER_AGENT,
     ReplayFetchFailure,
@@ -155,6 +157,119 @@ def test_interrupted_download_removes_compressed_and_decompressed_partials(
     assert summary.failed == 1
     assert summary.results[0].reason == "replay_download_failed"
     assert list(tmp_path.iterdir()) == []
+
+
+def test_replay_first_byte_timeout_continues_to_later_success_and_count(
+    tmp_path: Path,
+) -> None:
+    def first_byte_timeout(_request: Request) -> _FakeResponse:
+        raise TimeoutError("response headers never arrived")
+
+    opener = _FakeOpen(
+        {
+            "/api/proMatches": [
+                _json_bytes(
+                    [
+                        _pro_match(103, start_time=300),
+                        _pro_match(102, start_time=200),
+                        _pro_match(101, start_time=100),
+                    ]
+                )
+            ],
+            "/api/matches/103": [
+                _json_bytes({"replay_url": "https://replays.test/103.dem.bz2"})
+            ],
+            "/103.dem.bz2": [first_byte_timeout],
+            "/api/matches/102": [
+                _json_bytes({"replay_url": "https://replays.test/102.dem.bz2"})
+            ],
+            "/102.dem.bz2": [bz2.compress(b"later replay")],
+        }
+    )
+
+    summary = _fetch(opener, output_dir=tmp_path, count=1, max_details=3)
+
+    assert [result.match_id for result in summary.results] == [103, 102]
+    assert [result.status for result in summary.results] == ["FAILED", "DOWNLOADED"]
+    assert summary.results[0].reason == "replay_first_byte_timed_out"
+    assert summary.details_requested == 2
+    assert summary.downloaded == 1
+    assert (tmp_path / "102.dem").read_bytes() == b"later replay"
+    assert [path.name for path in tmp_path.iterdir()] == ["102.dem"]
+    assert _requested_paths(opener) == [
+        "/api/proMatches",
+        "/api/matches/103",
+        "/103.dem.bz2",
+        "/api/matches/102",
+        "/102.dem.bz2",
+    ]
+
+
+def test_replay_first_byte_timeouts_respect_max_details(tmp_path: Path) -> None:
+    def first_byte_timeout(_request: Request) -> _FakeResponse:
+        raise URLError(TimeoutError("response headers never arrived"))
+
+    opener = _FakeOpen(
+        {
+            "/api/proMatches": [
+                _json_bytes(
+                    [
+                        _pro_match(3, start_time=300),
+                        _pro_match(2, start_time=200),
+                        _pro_match(1, start_time=100),
+                    ]
+                )
+            ],
+            "/api/matches/3": [
+                _json_bytes({"replay_url": "https://replays.test/3.dem.bz2"})
+            ],
+            "/3.dem.bz2": [first_byte_timeout],
+            "/api/matches/2": [
+                _json_bytes({"replay_url": "https://replays.test/2.dem.bz2"})
+            ],
+            "/2.dem.bz2": [first_byte_timeout],
+        }
+    )
+
+    summary = _fetch(opener, output_dir=tmp_path, count=1, max_details=2)
+
+    assert summary.details_requested == 2
+    assert summary.downloaded == 0
+    assert [result.match_id for result in summary.results] == [3, 2]
+    assert all(
+        result.reason == "replay_first_byte_timed_out"
+        for result in summary.results
+    )
+    assert "/api/matches/1" not in _requested_paths(opener)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_replay_response_uses_short_start_timeout_and_long_stream_timeout(
+    tmp_path: Path,
+) -> None:
+    replay = bytes(range(256)) * 8192
+    response = _ProgressingResponse(bz2.compress(replay), chunk_size=17)
+    opener = _FakeOpen(
+        {
+            "/api/proMatches": [_json_bytes([_pro_match(101)])],
+            "/api/matches/101": [
+                _json_bytes({"replay_url": "https://replays.test/101.dem.bz2"})
+            ],
+            "/101.dem.bz2": [response],
+        }
+    )
+
+    summary = _fetch(opener, output_dir=tmp_path, count=1)
+
+    assert summary.downloaded == 1
+    assert (tmp_path / "101.dem").read_bytes() == replay
+    assert response.read_count > 1
+    assert response.socket_timeouts == [DEFAULT_TIMEOUT_SECONDS]
+    assert opener.timeouts == [
+        DEFAULT_TIMEOUT_SECONDS,
+        DEFAULT_TIMEOUT_SECONDS,
+        DEFAULT_REPLAY_RESPONSE_TIMEOUT_SECONDS,
+    ]
 
 
 def test_match_detail_limit_is_respected_in_newest_first_order(
@@ -881,6 +996,8 @@ class _FakeResponse:
     def __init__(self, body: bytes) -> None:
         self._body = body
         self._offset = 0
+        self.socket_timeouts: list[float] = []
+        self.fp = _FakeSocketFile(self.socket_timeouts)
 
     def read(self, size: int = -1) -> bytes:
         if size < 0:
@@ -899,6 +1016,35 @@ class _FakeResponse:
         traceback: object,
     ) -> object:
         return False
+
+
+class _ProgressingResponse(_FakeResponse):
+    def __init__(self, body: bytes, *, chunk_size: int) -> None:
+        super().__init__(body)
+        self._chunk_size = chunk_size
+        self.read_count = 0
+
+    def read(self, size: int = -1) -> bytes:
+        self.read_count += 1
+        return super().read(min(size, self._chunk_size))
+
+
+class _FakeSocket:
+    def __init__(self, timeouts: list[float]) -> None:
+        self._timeouts = timeouts
+
+    def settimeout(self, timeout: float) -> None:
+        self._timeouts.append(timeout)
+
+
+class _FakeRawSocketFile:
+    def __init__(self, timeouts: list[float]) -> None:
+        self._sock = _FakeSocket(timeouts)
+
+
+class _FakeSocketFile:
+    def __init__(self, timeouts: list[float]) -> None:
+        self.raw = _FakeRawSocketFile(timeouts)
 
 
 class _InterruptedResponse:
@@ -931,6 +1077,7 @@ class _FakeOpen:
     def __init__(self, routes: dict[str, list[_RouteValue]]) -> None:
         self._routes = routes
         self.requests: list[Request] = []
+        self.timeouts: list[float] = []
 
     def __call__(
         self,
@@ -941,6 +1088,7 @@ class _FakeOpen:
         assert data is None
         assert timeout > 0
         self.requests.append(request)
+        self.timeouts.append(timeout)
         path = urlsplit(request.full_url).path
         route = self._routes.get(path)
         if not route:
