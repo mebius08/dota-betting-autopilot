@@ -5,6 +5,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import timezone
 from email.utils import parsedate_to_datetime
+from http.client import IncompleteRead
 import json
 import math
 import os
@@ -505,6 +506,15 @@ class ReplayFetcher:
             try:
                 with self._urlopen(request, timeout=self._timeout) as response:
                     raw_body = response.read()
+            except IncompleteRead as exc:
+                if attempt < max_attempts:
+                    self._sleep(_exponential_backoff(attempt))
+                    continue
+                raise OpenDotaRequestError(
+                    "opendota_response_incomplete",
+                    reason="opendota_response_incomplete",
+                    attempts=attempt,
+                ) from exc
             except HTTPError as exc:
                 if (
                     exc.code in _RETRYABLE_HTTP_STATUSES

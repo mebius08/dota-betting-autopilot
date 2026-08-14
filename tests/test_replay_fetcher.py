@@ -3,6 +3,7 @@ from __future__ import annotations
 import bz2
 from collections.abc import Callable
 from email.message import Message
+from http.client import IncompleteRead
 import json
 from pathlib import Path
 from typing import Any
@@ -611,6 +612,101 @@ def test_transient_match_detail_timeout_retries_then_succeeds(
     assert _requested_paths(opener).count("/api/matches/101") == 2
 
 
+def test_incomplete_opendota_read_retries_without_parsing_partial_json(
+    tmp_path: Path,
+) -> None:
+    opener = _FakeOpen(
+        {
+            "/api/leagues/7/matches": [
+                _IncompleteResponse(_json_bytes([])),
+                _json_bytes([_pro_match(101)]),
+            ],
+            "/api/matches/101": [_json_bytes({})],
+        }
+    )
+    sleeps: list[float] = []
+
+    summary = _fetch(
+        opener,
+        output_dir=tmp_path,
+        league_id=7,
+        all_league_matches=True,
+        sleep_func=sleeps.append,
+    )
+
+    assert summary.discovered == 1
+    assert summary.skipped == 1
+    assert summary.discovery_failed == 0
+    assert sleeps == [1.0]
+    assert _requested_paths(opener) == [
+        "/api/leagues/7/matches",
+        "/api/leagues/7/matches",
+        "/api/matches/101",
+    ]
+
+
+def test_repeated_incomplete_opendota_reads_exhaust_existing_retry_budget(
+    tmp_path: Path,
+) -> None:
+    opener = _FakeOpen(
+        {
+            "/api/leagues/7/matches": [_json_bytes([_pro_match(101)])],
+            "/api/matches/101": [
+                _IncompleteResponse(b'{"replay_url":') for _ in range(5)
+            ],
+        }
+    )
+    sleeps: list[float] = []
+
+    summary = _fetch(
+        opener,
+        output_dir=tmp_path,
+        league_id=7,
+        all_league_matches=True,
+        sleep_func=sleeps.append,
+    )
+
+    assert summary.detail_failed == 1
+    assert summary.results[0].reason == "opendota_response_incomplete"
+    assert summary.results[0].attempts == 5
+    assert sleeps == [1.0, 2.0, 4.0, 8.0]
+    assert _requested_paths(opener).count("/api/matches/101") == 5
+
+
+def test_incomplete_match_detail_does_not_prevent_later_download(
+    tmp_path: Path,
+) -> None:
+    replay = b"later candidate replay"
+    opener = _FakeOpen(
+        {
+            "/api/proMatches": [
+                _json_bytes(
+                    [
+                        _pro_match(102, start_time=100),
+                        _pro_match(101, start_time=200),
+                    ]
+                )
+            ],
+            "/api/matches/101": [_IncompleteResponse(b"partial")],
+            "/api/matches/102": [
+                _json_bytes({"replay_url": "https://replays.test/102.dem.bz2"})
+            ],
+            "/102.dem.bz2": [bz2.compress(replay)],
+        }
+    )
+
+    summary = _fetch(opener, output_dir=tmp_path, count=1, max_details=2)
+
+    assert [result.status for result in summary.results] == [
+        "FAILED",
+        "DOWNLOADED",
+    ]
+    assert summary.results[0].reason == "opendota_response_incomplete"
+    assert summary.details_requested == 2
+    assert summary.downloaded == 1
+    assert (tmp_path / "102.dem").read_bytes() == replay
+
+
 def test_retry_exhaustion_uses_deterministic_exponential_backoff(
     tmp_path: Path,
 ) -> None:
@@ -1104,6 +1200,15 @@ class _ProgressingResponse(_FakeResponse):
     def read(self, size: int = -1) -> bytes:
         self.read_count += 1
         return super().read(min(size, self._chunk_size))
+
+
+class _IncompleteResponse(_FakeResponse):
+    def __init__(self, partial: bytes) -> None:
+        super().__init__(b"")
+        self._partial = partial
+
+    def read(self, size: int = -1) -> bytes:
+        raise IncompleteRead(self._partial, 1)
 
 
 class _FakeSocket:
