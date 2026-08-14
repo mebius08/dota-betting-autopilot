@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request
 
 import pytest
+import zstandard
 
 from app import cli
 import app.replay_fetcher as replay_fetcher
@@ -39,6 +40,29 @@ def test_successful_download_is_decompressed_and_written_atomically(
                 _json_bytes({"replay_url": "https://replays.test/101.dem.bz2"})
             ],
             "/101.dem.bz2": [bz2.compress(replay)],
+        }
+    )
+    output_dir = tmp_path / "replays"
+
+    summary = _fetch(opener, output_dir=output_dir, count=1, max_details=1)
+
+    assert summary.downloaded == 1
+    assert summary.failed == 0
+    assert (output_dir / "101.dem").read_bytes() == replay
+    assert [path.name for path in output_dir.iterdir()] == ["101.dem"]
+
+
+def test_zstandard_download_with_bzip2_url_suffix_is_decompressed(
+    tmp_path: Path,
+) -> None:
+    replay = b"valid Zstandard Dota replay bytes"
+    opener = _FakeOpen(
+        {
+            "/api/proMatches": [_json_bytes([_pro_match(101)])],
+            "/api/matches/101": [
+                _json_bytes({"replay_url": "https://replays.test/101.dem.bz2"})
+            ],
+            "/101.dem.bz2": [zstandard.ZstdCompressor().compress(replay)],
         }
     )
     output_dir = tmp_path / "replays"
@@ -128,7 +152,7 @@ def test_corrupt_bzip2_is_failed_and_all_partial_files_are_removed(
             "/api/matches/101": [
                 _json_bytes({"replay_url": "https://replays.test/101.dem.bz2"})
             ],
-            "/101.dem.bz2": [b"not a bzip2 stream"],
+            "/101.dem.bz2": [b"BZh-not a valid bzip2 stream"],
         }
     )
 
@@ -136,6 +160,59 @@ def test_corrupt_bzip2_is_failed_and_all_partial_files_are_removed(
 
     assert summary.failed == 1
     assert summary.results[0].reason == "corrupt_bzip2_replay"
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_truncated_zstandard_is_failed_and_all_partial_files_are_removed(
+    tmp_path: Path,
+) -> None:
+    compressed = zstandard.ZstdCompressor().compress(b"replay data" * 100)
+    opener = _FakeOpen(
+        {
+            "/api/leagues/7/matches": [_json_bytes([_pro_match(101)])],
+            "/api/matches/101": [
+                _json_bytes({"replay_url": "https://replays.test/101.dem.bz2"})
+            ],
+            "/101.dem.bz2": [compressed[:-1]],
+        }
+    )
+
+    summary = _fetch(
+        opener,
+        output_dir=tmp_path,
+        league_id=7,
+        all_league_matches=True,
+    )
+
+    assert summary.failed == 1
+    assert summary.results[0].reason == "corrupt_zstd_replay"
+    assert summary.results[0].stage == "replay_decompression"
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_unknown_compression_is_failed_and_all_partial_files_are_removed(
+    tmp_path: Path,
+) -> None:
+    opener = _FakeOpen(
+        {
+            "/api/leagues/7/matches": [_json_bytes([_pro_match(101)])],
+            "/api/matches/101": [
+                _json_bytes({"replay_url": "https://replays.test/101.dem.bz2"})
+            ],
+            "/101.dem.bz2": [b"not a recognized replay compression"],
+        }
+    )
+
+    summary = _fetch(
+        opener,
+        output_dir=tmp_path,
+        league_id=7,
+        all_league_matches=True,
+    )
+
+    assert summary.failed == 1
+    assert summary.results[0].reason == "unsupported_replay_compression"
+    assert summary.results[0].stage == "replay_decompression"
     assert list(tmp_path.iterdir()) == []
 
 
@@ -416,7 +493,7 @@ def test_all_league_matches_continues_after_existing_and_failed_replays(
             "/api/matches/302": [
                 _json_bytes({"replay_url": "https://replays.test/302.dem.bz2"})
             ],
-            "/302.dem.bz2": [b"corrupt replay"],
+            "/302.dem.bz2": [b"BZh-corrupt replay"],
             "/api/matches/301": [
                 _json_bytes({"replay_url": "https://replays.test/301.dem.bz2"})
             ],

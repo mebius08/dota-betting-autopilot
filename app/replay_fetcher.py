@@ -17,6 +17,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 
+import zstandard
+
 
 OPENDOTA_API_BASE_URL = "https://api.opendota.com/api"
 OPENDOTA_API_KEY_ENV = "OPENDOTA_API_KEY"
@@ -27,6 +29,8 @@ DEFAULT_REPLAY_RESPONSE_TIMEOUT_SECONDS = 7.5
 MAX_OPENDOTA_ATTEMPTS = 5
 MAX_RETRY_DELAY_SECONDS = 30.0
 _COPY_CHUNK_SIZE = 1024 * 1024
+_BZIP2_MAGIC = b"BZh"
+_ZSTANDARD_MAGIC = b"\x28\xb5\x2f\xfd"
 _RETRYABLE_HTTP_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
 
 ReplayFetchStatus = Literal["DOWNLOADED", "UNCHANGED", "SKIPPED", "FAILED"]
@@ -588,7 +592,14 @@ class ReplayFetcher:
                 prefix=f".{match_id}.",
                 suffix=".dem.part",
             )
-            decompressed_size = _decompress_bzip2(compressed, decompressed)
+            compression = _detect_replay_compression(compressed)
+            if compression == "bzip2":
+                decompressed_size = _decompress_bzip2(compressed, decompressed)
+            else:
+                decompressed_size = _decompress_zstandard(
+                    compressed,
+                    decompressed,
+                )
             if decompressed_size < 1:
                 raise ReplayDownloadError(
                     "empty_decompressed_replay",
@@ -865,6 +876,26 @@ def _temporary_path(directory: Path, *, prefix: str, suffix: str) -> Path:
     return Path(name)
 
 
+def _detect_replay_compression(source: Path) -> Literal["bzip2", "zstandard"]:
+    try:
+        with source.open("rb") as compressed_file:
+            magic = compressed_file.read(len(_ZSTANDARD_MAGIC))
+    except OSError as exc:
+        raise ReplayDownloadError(
+            "replay_decompression_failed",
+            stage="replay_decompression",
+        ) from exc
+
+    if magic.startswith(_BZIP2_MAGIC):
+        return "bzip2"
+    if magic.startswith(_ZSTANDARD_MAGIC):
+        return "zstandard"
+    raise ReplayDownloadError(
+        "unsupported_replay_compression",
+        stage="replay_decompression",
+    )
+
+
 def _decompress_bzip2(source: Path, destination: Path) -> int:
     decompressed_size = 0
     try:
@@ -881,6 +912,39 @@ def _decompress_bzip2(source: Path, destination: Path) -> int:
     except (EOFError, OSError) as exc:
         raise ReplayDownloadError(
             "corrupt_bzip2_replay",
+            stage="replay_decompression",
+        ) from exc
+    return decompressed_size
+
+
+def _decompress_zstandard(source: Path, destination: Path) -> int:
+    decompressed_size = 0
+    try:
+        decompressor = zstandard.ZstdDecompressor().decompressobj()
+        with source.open("rb") as compressed_file:
+            with destination.open("wb") as decompressed_file:
+                while True:
+                    compressed_chunk = compressed_file.read(_COPY_CHUNK_SIZE)
+                    if not compressed_chunk:
+                        break
+                    chunk = decompressor.decompress(compressed_chunk)
+                    if chunk:
+                        decompressed_file.write(chunk)
+                        decompressed_size += len(chunk)
+                chunk = decompressor.flush()
+                if chunk:
+                    decompressed_file.write(chunk)
+                    decompressed_size += len(chunk)
+                if not decompressor.eof:
+                    raise ReplayDownloadError(
+                        "corrupt_zstd_replay",
+                        stage="replay_decompression",
+                    )
+                decompressed_file.flush()
+                os.fsync(decompressed_file.fileno())
+    except (zstandard.ZstdError, EOFError, OSError) as exc:
+        raise ReplayDownloadError(
+            "corrupt_zstd_replay",
             stage="replay_decompression",
         ) from exc
     return decompressed_size
