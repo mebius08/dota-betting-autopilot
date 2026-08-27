@@ -29,6 +29,9 @@ dev = [
 include = ["app*"]
 exclude = ["tests*"]
 
+[tool.setuptools.package-data]
+"app.config" = ["tournament_allowlist.yaml"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

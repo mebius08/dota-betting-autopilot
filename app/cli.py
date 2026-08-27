@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import sys
 import time
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, TextIO, cast
 
 from app.collectors import TranscriptFileStreamerSpeechCollector
 from app.domain import Bet, BetCandidate, BetResult, Match, OddsSnapshot, Session
@@ -17,8 +17,83 @@ from app.scoring.hybrid_scorer import BetScorePredictor
 from app.services import SessionManager, create_autopilot_service
 from app.storage import SQLiteRepository, init_db
 
+if TYPE_CHECKING:
+    from app.replay_fetcher import LeagueDiscoveryProgress, ReplayDownloadProgress
+
 
 EXECUTION_MODE_CHOICES = ("paper", "signal", "confirm", "auto")
+
+
+class _LeagueDiscoveryProgressRenderer:
+    def __init__(self, stream: TextIO, *, bar_width: int = 20) -> None:
+        self._stream = stream
+        self._bar_width = bar_width
+        self._active = False
+        self._finished = False
+
+    def update(self, progress: "LeagueDiscoveryProgress") -> None:
+        if self._finished or progress.total <= 1:
+            return
+        completed = min(progress.completed, progress.total)
+        filled = self._bar_width * completed // progress.total
+        bar = "#" * filled + "-" * (self._bar_width - filled)
+        self._stream.write(
+            f"\rDISCOVERY [{bar}] {completed}/{progress.total} "
+            f"league_id={progress.league_id} outcome={progress.outcome}"
+        )
+        self._stream.flush()
+        self._active = True
+        if completed >= progress.total or progress.outcome == "rate_limited":
+            self.finish()
+
+    def finish(self) -> None:
+        if self._active and not self._finished:
+            self._stream.write("\n")
+            self._stream.flush()
+        self._finished = True
+
+
+class _ReplayDownloadProgressRenderer:
+    def __init__(self, stream: TextIO, *, bar_width: int = 20) -> None:
+        self._stream = stream
+        self._bar_width = bar_width
+        self._active = False
+        self._match_id: int | None = None
+
+    def update(self, progress: "ReplayDownloadProgress") -> None:
+        if self._active and self._match_id != progress.match_id:
+            self.finish()
+
+        downloaded_mib = progress.downloaded_bytes / (1024 * 1024)
+        if progress.total_bytes is not None:
+            fraction = min(progress.downloaded_bytes / progress.total_bytes, 1.0)
+            filled = int(self._bar_width * fraction)
+            bar = "#" * filled + "-" * (self._bar_width - filled)
+            total_mib = progress.total_bytes / (1024 * 1024)
+            percent = int(fraction * 100)
+            measurement = (
+                f"{downloaded_mib:.1f}/{total_mib:.1f} MiB {percent}%"
+            )
+        else:
+            position = (progress.downloaded_bytes // (1024 * 1024)) % self._bar_width
+            bar = "-" * position + "#" + "-" * (self._bar_width - position - 1)
+            measurement = f"{downloaded_mib:.1f} MiB"
+
+        self._stream.write(
+            f"\rDOWNLOAD [{bar}] {measurement} match_id={progress.match_id}"
+        )
+        self._stream.flush()
+        self._active = True
+        self._match_id = progress.match_id
+        if progress.outcome in ("success", "failure"):
+            self.finish()
+
+    def finish(self) -> None:
+        if self._active:
+            self._stream.write("\n")
+            self._stream.flush()
+        self._active = False
+        self._match_id = None
 
 
 def build_config_from_args(args: Namespace) -> dict[str, Any]:
@@ -169,17 +244,20 @@ def create_parser() -> ArgumentParser:
 
     fetch_pro_replays_parser = subparsers.add_parser(
         "fetch-pro-replays",
-        help="Download recent professional Dota replay files from OpenDota.",
+        help="Download replays only from the exact tournament allowlist.",
     )
     fetch_pro_replays_parser.add_argument(
         "--league-id",
         type=int,
-        help="Optional OpenDota league ID filter.",
+        help="Optional exact allowlisted OpenDota league ID.",
     )
     fetch_pro_replays_parser.add_argument(
         "--all-league-matches",
         action="store_true",
-        help="Discover all matches for --league-id instead of recent matches.",
+        help=(
+            "Process every eligible match for the exact --league-id within the "
+            "18-calendar-month as_of_utc window; ignores --count."
+        ),
     )
     fetch_pro_replays_parser.add_argument(
         "--count",
@@ -198,6 +276,22 @@ def create_parser() -> ArgumentParser:
         type=_positive_int,
         default=25,
         help="Maximum match-detail requests (default: 25).",
+    )
+    fetch_pro_replays_parser.add_argument(
+        "--as-of-utc",
+        type=_utc_datetime,
+        help=(
+            "ISO-8601 UTC reference time for the 18-month cutoff "
+            "(default: current UTC)."
+        ),
+    )
+    fetch_pro_replays_parser.add_argument(
+        "--status",
+        action="store_true",
+        help=(
+            "Inspect allowlisted league activity and exclusions without "
+            "downloading replays."
+        ),
     )
 
     sync_history_parser = subparsers.add_parser(
@@ -1725,15 +1819,58 @@ def _fetch_pro_replays_command(
 ) -> int:
     from app.replay_fetcher import (
         ReplayFetchError,
+        fetch_tournament_allowlist_status,
         format_replay_fetch_failure,
         format_replay_fetch_result,
         format_replay_fetch_summary,
+        format_tournament_allowlist_status,
         fetch_pro_replays,
     )
 
     if args.all_league_matches and args.league_id is None:
         print("--all-league-matches requires --league-id.", file=sys.stderr)
         return 2
+    if args.status and args.all_league_matches:
+        print("--status cannot be combined with --all-league-matches.", file=sys.stderr)
+        return 2
+
+    progress_renderer = (
+        _LeagueDiscoveryProgressRenderer(sys.stderr)
+        if args.league_id is None and sys.stderr.isatty()
+        else None
+    )
+    progress_callback = (
+        progress_renderer.update if progress_renderer is not None else None
+    )
+
+    if args.status:
+        try:
+            status = fetch_tournament_allowlist_status(
+                league_id=args.league_id,
+                as_of_utc=args.as_of_utc,
+                sleep_func=sleep_func,
+                progress_callback=progress_callback,
+            )
+        except ReplayFetchError as exc:
+            print(f"FAILED reason={exc}")
+            return 1
+        finally:
+            if progress_renderer is not None:
+                progress_renderer.finish()
+        for line in format_tournament_allowlist_status(status):
+            print(line)
+        return int(any(league.state == "unavailable" for league in status.leagues))
+
+    download_progress_renderer = (
+        _ReplayDownloadProgressRenderer(sys.stderr)
+        if sys.stderr.isatty()
+        else None
+    )
+    download_progress_callback = (
+        download_progress_renderer.update
+        if download_progress_renderer is not None
+        else None
+    )
 
     try:
         summary = fetch_pro_replays(
@@ -1743,14 +1880,25 @@ def _fetch_pro_replays_command(
             output_dir=args.output_dir,
             max_details=args.max_details,
             sleep_func=sleep_func,
+            as_of_utc=args.as_of_utc,
+            progress_callback=progress_callback,
+            download_progress_callback=download_progress_callback,
         )
     except ReplayFetchError as exc:
         print(f"FAILED match_id=- reason={exc}")
         print("SUMMARY DOWNLOADED=0 UNCHANGED=0 SKIPPED=0 FAILED=1")
         return 1
+    finally:
+        if progress_renderer is not None:
+            progress_renderer.finish()
+        if download_progress_renderer is not None:
+            download_progress_renderer.finish()
 
-    if summary.discovery_failure is not None:
-        print(format_replay_fetch_failure(summary.discovery_failure))
+    discovery_failures = summary.discovery_failures
+    if not discovery_failures and summary.discovery_failure is not None:
+        discovery_failures = (summary.discovery_failure,)
+    for failure in discovery_failures:
+        print(format_replay_fetch_failure(failure))
     for result in summary.results:
         print(format_replay_fetch_result(result))
     print(format_replay_fetch_summary(summary))

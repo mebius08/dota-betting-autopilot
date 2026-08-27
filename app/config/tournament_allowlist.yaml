@@ -1,0 +1,154 @@
+version: 1
+leagues:
+  - league_id: 19422
+    canonical_series: ESL One
+    edition: Birmingham 2026
+    stage: main
+  - league_id: 17795
+    canonical_series: ESL One
+    edition: Raleigh 2025
+    stage: main
+  - league_id: 19543
+    canonical_series: PGL Wallachia
+    edition: 2026 Season 8
+    stage: main
+  - league_id: 19435
+    canonical_series: PGL Wallachia
+    edition: 2026 Season 7
+    stage: main
+  - league_id: 18920
+    canonical_series: PGL Wallachia
+    edition: 2025 Season 6
+    stage: main
+  - league_id: 18358
+    canonical_series: PGL Wallachia
+    edition: 2025 Season 5
+    stage: main
+  - league_id: 18058
+    canonical_series: PGL Wallachia
+    edition: 2025 Season 4
+    stage: main
+  - league_id: 17891
+    canonical_series: PGL Wallachia
+    edition: 2025 Season 3
+    stage: main
+  - league_id: 19696
+    canonical_series: DreamLeague
+    edition: Season 29
+    stage: main
+  - league_id: 19269
+    canonical_series: DreamLeague
+    edition: Season 28
+    stage: main
+  - league_id: 18988
+    canonical_series: DreamLeague
+    edition: Season 27
+    stage: main
+  - league_id: 18111
+    canonical_series: DreamLeague
+    edition: Season 26
+    stage: main
+  - league_id: 17765
+    canonical_series: DreamLeague
+    edition: Season 25
+    stage: main
+  - league_id: 19785
+    canonical_series: Esports World Cup
+    edition: "2026"
+    stage: main
+  - league_id: 18375
+    canonical_series: Esports World Cup
+    edition: "2025"
+    stage: main
+  - league_id: 19719
+    canonical_series: The International
+    edition: "2026"
+    stage: main
+  - league_id: 18324
+    canonical_series: The International
+    edition: "2025"
+    stage: main
+  - league_id: 19890
+    canonical_series: The International
+    edition: 2026 Regional Qualifier North America
+    stage: ti_closed_qualifier
+  - league_id: 19891
+    canonical_series: The International
+    edition: 2026 Regional Qualifier South America
+    stage: ti_closed_qualifier
+  - league_id: 19892
+    canonical_series: The International
+    edition: 2026 Regional Qualifier Europe
+    stage: ti_closed_qualifier
+  - league_id: 19893
+    canonical_series: The International
+    edition: 2026 Regional Qualifier China
+    stage: ti_closed_qualifier
+  - league_id: 19894
+    canonical_series: The International
+    edition: 2026 Regional Qualifier Southeast Asia
+    stage: ti_closed_qualifier
+  - league_id: 18304
+    canonical_series: The International
+    edition: 2025 Regional Qualifier Eastern Europe
+    stage: ti_closed_qualifier
+  - league_id: 18305
+    canonical_series: The International
+    edition: 2025 Regional Qualifier South America
+    stage: ti_closed_qualifier
+  - league_id: 18306
+    canonical_series: The International
+    edition: 2025 Regional Qualifier China
+    stage: ti_closed_qualifier
+  - league_id: 18307
+    canonical_series: The International
+    edition: 2025 Regional Qualifier North America
+    stage: ti_closed_qualifier
+  - league_id: 18308
+    canonical_series: The International
+    edition: 2025 Regional Qualifier Southeast Asia
+    stage: ti_closed_qualifier
+  - league_id: 18309
+    canonical_series: The International
+    edition: 2025 Regional Qualifier Western Europe
+    stage: ti_closed_qualifier
+  - league_id: 19101
+    canonical_series: BLAST Slam
+    edition: VII
+    stage: main
+  - league_id: 19099
+    canonical_series: BLAST Slam
+    edition: VI
+    stage: main
+  - league_id: 20009
+    canonical_series: 1win Essence
+    edition: II
+    stage: main
+  - league_id: 19656
+    canonical_series: 1win Essence
+    edition: I
+    stage: main
+  - league_id: 20053
+    canonical_series: FISSURE Universe
+    edition: PARI Universe by FISSURE
+    stage: main
+  - league_id: 19239
+    canonical_series: FISSURE Universe
+    edition: Episode 8
+    stage: main
+  - league_id: 18633
+    canonical_series: FISSURE Universe
+    edition: Episode 7
+    stage: main
+  - league_id: 18433
+    canonical_series: FISSURE Universe
+    edition: Episode 6
+    stage: main
+  - league_id: 18107
+    canonical_series: FISSURE Universe
+    edition: Episode 5
+    stage: main
+  - league_id: 17907
+    canonical_series: FISSURE Universe
+    edition: Episode 4
+    stage: main
