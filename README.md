@@ -1,6 +1,28 @@
 # Dota Betting Autopilot
 
-Rule-based MVP for Dota 2 betting research. It can run a scoped tournament
+The target product is a universal, on-demand, medium-frequency LIVE predictor
+for professional Dota 2. The user selects an individual map/match (distinct from
+a series), can attach after play has started, and receives repeated predictions
+as new observations arrive. The research focus is short-horizon changes in game
+state and win probabilities; approximately five minutes is a research direction,
+not a fixed horizon or update interval. Frequent updates must not artificially
+create position switches.
+
+The target output is structured predictions with horizons, observation and
+prediction timestamps, model identity, uncertainty, and data-quality information.
+Missing, stale, or out-of-distribution inputs must be reported and may prevent a
+numerical prediction; missing observations must not be fabricated. A decision
+engine, BUY/SELL/HOLD commands, position switching, cash-out, and bet execution
+are outside the current product scope. Market-reaction predictions require
+separate reliable historical and LIVE market data. These are target requirements,
+not a claim that existing provider adapters supply a complete LIVE feed.
+
+EWC 2026 is a historical baseline, not a LIVE runtime restriction. Historical
+training eligibility is separate from LIVE inference eligibility: a tournament
+name outside the training whitelist alone must not reject a selected LIVE match.
+Inference still requires adequate source coverage and model applicability.
+
+The existing legacy rule-based MVP supports Dota 2 betting research. It can run a scoped tournament
 session, collect fake matches/odds/streamer speech opinions, score bet
 candidates, select a small number of candidates, and record paper bets.
 
@@ -31,7 +53,7 @@ pytest
 python -m app.main
 ```
 
-## Pipeline
+## Legacy paper research pipeline
 
 1. Load `config.example.yaml`.
 2. Start a session for a tournament keyword.
@@ -1117,7 +1139,8 @@ and fixture-only IDs excluded. It is intentionally much smaller than a crawl:
 14 IDs were already persisted in the local STRATZ public game store at manifest
 selection time and 4 were documented EWC smoke IDs not yet persisted. The
 bounded live manifest run inserted those 4 rows, so the current local corpus has
-all 18 manifest IDs persisted.
+all 18 manifest IDs persisted on the original development machine. This does
+not establish that the database or model artifacts exist in a new checkout.
 
 ```powershell
 python -m app.cli sync-drafts --provider stratz-public --db data/autopilot.db --manifest stratz-public-trajectory-v1 --delay-seconds 1 --max-retries 1
@@ -1137,11 +1160,12 @@ python -m app.cli stratz-trajectory-audit --db data/autopilot.db
 The audit reports corpus identity, player/composition normalization, gold and
 XP point-count distributions, gold/XP pairing, temporal semantics status,
 patch-level source-shape variance, family-level source-shape variance, and the
-trajectory corpus architecture decision. The current local audit found 18
+trajectory corpus architecture decision. The recorded audit on the original
+development machine found 18
 persisted `stratz_public` games, 18 games with both gold and XP curves, 1,626
 total advantage points, equal gold/XP point counts for every persisted game,
 and no duplicate or non-monotonic stored source indices. It also found 0
-explicit source-time values and 0 normalized elapsed-second values; all current
+explicit source-time values and 0 normalized elapsed-second values; all audited
 points remain `source_index_unstable`.
 
 Investigate the unresolved time-axis contract with a bounded public-page
@@ -1189,13 +1213,15 @@ TRAJECTORY_TIME_SEMANTICS_UNRESOLVED
 STRATZ_TRAJECTORY_CORPUS_NEEDS_SOURCE_SEMANTICS_WORK
 ```
 
-Future trading-roadmap note: the primary intended product direction is
-short-horizon in-play position trading, approximately `t -> t + 5 minutes`,
-with future decisions framed as `OPEN / HOLD / CASH OUT / FLIP`. Final match win
-probability can remain useful as long-horizon context, an auxiliary target, or a
-baseline, but it is not necessarily the primary trading target. The future
-decomposition is game-state trajectory prediction, then market probability/odds
-reaction modeling, then position execution and cash-out policy. STRATZ historical
+Target prediction roadmap: the primary research direction is short-horizon
+game-state and probability changes, approximately `t -> t + 5 minutes`, with
+horizons validated against available data. Final match win probability remains
+useful as long-horizon context, an auxiliary target, or a baseline. The target
+decomposition is game-state trajectory prediction, then win-probability changes,
+and, where supported by data, market probability/odds reaction modeling, ending
+in structured predictions with uncertainty and data-quality information.
+Decision engines, position execution, and cash-out policy are outside scope;
+existing paper components remain legacy research tools. STRATZ historical
 match trajectories provide game-state trajectory data; they do not provide
 historical bookmaker probability or odds trajectories, so market-reaction work
 will require a separate bookmaker odds-history dataset or prospectively collected
