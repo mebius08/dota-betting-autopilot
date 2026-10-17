@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+import pytest
 
 from app import cli
 from app.draft_history import (
@@ -19,6 +22,22 @@ from app.public_pages import (
     observations_from_public_state,
 )
 from app.storage import SQLiteRepository
+
+
+@pytest.mark.parametrize("normalized_seconds", (0, 60))
+def test_unstable_source_index_rejects_normalized_seconds(
+    normalized_seconds: int,
+) -> None:
+    point = _point(_game("8886013461"), "gold", 1, 20.0)
+
+    assert point.source_index == 1
+    assert point.source_time_value is None
+    assert point.normalized_time_seconds is None
+    assert point.time_semantics_status == "source_index_unstable"
+    with pytest.raises(
+        ValueError, match="source_index_unstable status must not set normalized seconds"
+    ):
+        replace(point, normalized_time_seconds=normalized_seconds)
 
 
 def test_public_client_mapping_can_confirm_while_preserving_source_index() -> None:
