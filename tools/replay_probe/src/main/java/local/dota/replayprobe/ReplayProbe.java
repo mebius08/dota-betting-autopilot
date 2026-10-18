@@ -70,6 +70,7 @@ public final class ReplayProbe {
     private final ClockTracker clock = new ClockTracker();
     private final List<Map<String, Object>> snapshots = new ArrayList<>();
     private final List<Map<String, Object>> spatialSnapshots = new ArrayList<>();
+    private final List<Map<String, Object>> visibilitySnapshots = new ArrayList<>();
     private final SpatialSampling spatialSampling = new SpatialSampling();
     private final Map<String, PropertyProvenance> fieldProvenance = new LinkedHashMap<>();
     private int nextSnapshotSecond;
@@ -116,10 +117,17 @@ public final class ReplayProbe {
                 ? outputName.substring(0, outputName.length() - 5) : outputName) + ".spatial.json";
         Path spatialOutput = output.resolveSibling(spatialName);
         Files.writeString(spatialOutput, JsonWriter.toJson(probe.spatialArtifact(diagnostic)), StandardCharsets.UTF_8);
+        String visibilityName = (outputName.endsWith(".json")
+                ? outputName.substring(0, outputName.length() - 5) : outputName) + ".visibility.json";
+        Path visibilityOutput = output.resolveSibling(visibilityName);
+        Files.writeString(visibilityOutput, JsonWriter.toJson(probe.visibilityArtifact(diagnostic, spatialOutput)),
+                StandardCharsets.UTF_8);
 
         System.out.println("wrote " + output);
         System.out.println("spatial_sidecar=" + spatialOutput);
         System.out.println("spatial_snapshot_count=" + probe.spatialSnapshots.size());
+        System.out.println("visibility_sidecar=" + visibilityOutput);
+        System.out.println("visibility_snapshot_count=" + probe.visibilitySnapshots.size());
         if (compact) {
             System.out.println("output_kind=compact_trajectory");
             System.out.println("snapshot_count=" + probe.snapshots.size());
@@ -211,6 +219,46 @@ public final class ReplayProbe {
                 "hero_selection_property", "CDOTA_PlayerResource.m_vecPlayerTeamData.<player_slot>.m_hSelectedHero",
                 "observation_policy", "only current active selected hero with matching team and m_lifeState=0; no fill-forward",
                 "snapshots", spatialSnapshots
+        );
+    }
+
+    private Map<String, Object> visibilityArtifact(Map<String, Object> diagnostic, Path spatialOutput) {
+        Map<String, Object> replay = mapValue(diagnostic, "replay");
+        Map<String, Object> dota = mapValue(mapValue(mapValue(replay, "demo_file_info"), "game_info"), "dota");
+        return mapOf(
+                "schema_version", 1,
+                "artifact_kind", "replay_hero_visibility",
+                "information_scope", "GLOBAL_REPLAY_TELEMETRY_WITH_SEPARATE_TEAM_VISIBILITY",
+                "match_id", dota.get("match_id"),
+                "replay_sha256", replay.get("sha256"),
+                "clarity_version", replay.get("clarity_version"),
+                "snapshot_interval_seconds", SpatialSampling.INTERVAL_SECONDS,
+                "game_time_semantics", "current completed real unpaused frame; same observed time and tick as spatial sidecar",
+                "clock_normalization_status", clock.isProven() ? "PROVEN" : "UNRESOLVED",
+                "clock_normalization_method", clock.mode() == null ? null : clock.mode().toString(),
+                "zero_replay_tick", clock.isProven() ? clock.zeroTick() : null,
+                "game_end_time_seconds", clock.gameEndNormalizedTime(),
+                "pause_ticks", clock.pauseTicks(),
+                "pause_seconds", clock.pauseTicks() * clock.millisPerTick() / 1000.0,
+                "pause_witnessed", clock.witnessedActivePause(),
+                "visibility_source", mapOf(
+                        "property", HeroVisibility.FIELD,
+                        "layout", "uint64[256]; word = hero_entity_index >>> 6; bit = hero_entity_index & 63",
+                        "radiant_entity", HeroVisibility.RADIANT_SOURCE,
+                        "radiant_team_number", 2,
+                        "dire_entity", HeroVisibility.DIRE_SOURCE,
+                        "dire_team_number", 3,
+                        "unavailable_policy", "missing, inactive, unverified or unsupported state is UNKNOWN, never assumed HIDDEN",
+                        "life_state_policy", "retain authoritative entity flags with life_state context, including dead entities"
+                ),
+                "global_spatial_reference", mapOf(
+                        "filename", spatialOutput.getFileName().toString(),
+                        "information_scope", "GLOBAL_STATE",
+                        "join_keys", List.of("match_id", "replay_sha256", "game_time_seconds", "replay_tick", "player_slot", "hero_id")
+                ),
+                "pov_projection_policy", "a current enemy POV position requires the viewer's VISIBLE flag and a same-frame spatial OBSERVED living position; HIDDEN/UNKNOWN provide no current position; other-team flags and raw evidence are global diagnostics",
+                "limitations", "no coordinates or last-known positions; no inference of Smoke, inventory, abilities, cooldowns or player attention; last field-update time is not tracked",
+                "snapshots", visibilitySnapshots
         );
     }
 
@@ -441,7 +489,9 @@ public final class ReplayProbe {
         SpatialSampling.Sample spatialSample = spatialSampling.observe(sourceGameTime, tick, synthetic,
                 Boolean.TRUE.equals(gamePaused));
         if (spatialSample != null) {
-            spatialSnapshots.add(spatialSnapshot(spatialSample, extractSpatialPlayers()));
+            HeroObservations observations = extractHeroObservations();
+            spatialSnapshots.add(spatialSnapshot(spatialSample, observations.positions()));
+            visibilitySnapshots.add(spatialSnapshot(spatialSample, observations.visibility()));
         }
         if (sourceGameTime < nextSnapshotSecond) {
             return;
@@ -476,12 +526,17 @@ public final class ReplayProbe {
         );
     }
 
-    private List<Map<String, Object>> extractSpatialPlayers() {
+    private record HeroObservations(List<Map<String, Object>> positions, List<Map<String, Object>> visibility) {}
+
+    private HeroObservations extractHeroObservations() {
         Entity resource = entities.getByDtName("CDOTA_PlayerResource");
         if (resource == null) {
-            return List.of();
+            return new HeroObservations(List.of(), List.of());
         }
         List<Map<String, Object>> rows = new ArrayList<>();
+        List<Map<String, Object>> visibility = new ArrayList<>();
+        Entity radiant = entities.getByDtName(HeroVisibility.RADIANT_SOURCE);
+        Entity dire = entities.getByDtName(HeroVisibility.DIRE_SOURCE);
         for (int slot = 0; slot < 64; slot++) {
             String index = Util.arrayIdxToString(slot);
             Integer team = readIntegerDirect(resource, "m_vecPlayerData." + index + ".m_iPlayerTeam");
@@ -492,8 +547,9 @@ public final class ReplayProbe {
             Entity hero = handle == null ? null : entities.getByHandle(handle);
             Integer heroId = readIntegerInternal(resource, selectedHeroIdPaths(index), null);
             rows.add(HeroPositions.observe(slot, team, heroId, handle, hero));
+            visibility.add(HeroVisibility.observe(slot, team, heroId, handle, hero, radiant, dire));
         }
-        return rows;
+        return new HeroObservations(rows, visibility);
     }
 
     private static List<String> selectedHeroIdPaths(String index) {

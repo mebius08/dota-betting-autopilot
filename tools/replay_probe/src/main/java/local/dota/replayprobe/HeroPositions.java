@@ -19,12 +19,24 @@ final class HeroPositions {
     record Source(int handle, String entityClass, boolean existent, boolean active,
                   Function<String, Object> property) {}
 
-    static Map<String, Object> observe(int slot, int team, Integer heroId, Integer selectedHandle, Entity hero) {
-        Source source = hero == null ? null : new Source(
-                hero.getHandle(), hero.getDtClass().getDtName(), hero.isExistent(), hero.isActive(),
-                name -> readProperty(hero, name)
+    static Source sourceOf(Entity entity) {
+        return entity == null ? null : new Source(
+                entity.getHandle(), entity.getDtClass().getDtName(), entity.isExistent(), entity.isActive(),
+                name -> readProperty(entity, name)
         );
-        return observeSource(slot, team, heroId, selectedHandle, source);
+    }
+
+    static boolean primaryIdentityMatches(int team, Integer heroId, Integer selectedHandle, Source source) {
+        return source != null && source.existent() && source.active()
+                && selectedHandle != null && selectedHandle == source.handle()
+                && heroId != null && heroId > 0 && (team == 2 || team == 3)
+                && source.entityClass().startsWith("CDOTA_Unit_Hero_")
+                && Integer.valueOf(team).equals(source.property().apply("m_iTeamNum"))
+                && !Boolean.TRUE.equals(source.property().apply("m_bIsClone"));
+    }
+
+    static Map<String, Object> observe(int slot, int team, Integer heroId, Integer selectedHandle, Entity hero) {
+        return observeSource(slot, team, heroId, selectedHandle, sourceOf(hero));
     }
 
     static Map<String, Object> observeSource(int slot, int team, Integer heroId, Integer selectedHandle,
@@ -48,11 +60,7 @@ final class HeroPositions {
             row.put("position_status", "ENTITY_INACTIVE");
             return row;
         }
-        if (selectedHandle == null || selectedHandle != source.handle()
-                || heroId == null || heroId <= 0 || (team != 2 && team != 3)
-                || !source.entityClass().startsWith("CDOTA_Unit_Hero_")
-                || !Integer.valueOf(team).equals(source.property().apply("m_iTeamNum"))
-                || Boolean.TRUE.equals(source.property().apply("m_bIsClone"))) {
+        if (!primaryIdentityMatches(team, heroId, selectedHandle, source)) {
             row.put("position_status", "IDENTITY_UNVERIFIED");
             return row;
         }

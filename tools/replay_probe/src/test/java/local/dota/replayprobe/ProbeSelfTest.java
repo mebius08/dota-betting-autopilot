@@ -29,7 +29,8 @@ public final class ProbeSelfTest {
         testSpatialSamplingWithDifferentTickOrigins();
         testRealPauseTickBoundaries();
         testActivePauseRequiresMeasuredTickMapping();
-        System.out.println("probeTest: 20 focused tests passed");
+        HeroVisibilitySelfTest.run();
+        System.out.println("probeTest: 26 focused tests passed");
     }
 
     private static void testClockRequiresWitnessedCrossing() {
