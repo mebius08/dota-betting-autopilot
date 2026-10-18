@@ -16,7 +16,13 @@ public final class ProbeSelfTest {
         testDuplicateDetection();
         testCompactSnapshotOrderingAndAggregates();
         testCompactSnapshotRequiresTenPlayers();
-        System.out.println("probeTest: 7 focused tests passed");
+        testCellPositionConversion();
+        testInvalidPositionComponents();
+        testSelectedHeroPosition();
+        testPositionRequiresCurrentPrimaryHero();
+        testDeadOrUnknownLifeStateHasNoPosition();
+        testMissingEntityOrAxisNeverReusesPosition();
+        System.out.println("probeTest: 13 focused tests passed");
     }
 
     private static void testClockRequiresWitnessedCrossing() {
@@ -44,6 +50,12 @@ public final class ProbeSelfTest {
                 "wrong game-start clock mode");
         require(Math.abs(tracker.normalizedGameTime() - (50 * 33.333333f / 1000.0f)) < 0.0001f,
                 "completed pause ticks were not removed");
+        float beforePause = tracker.normalizedGameTime();
+        tracker.observe(170, 5.666667, 33.333333f, null, 5, true, 20, 160, 500.0f, 0.0f);
+        tracker.observe(200, 6.666667, 33.333333f, null, 5, true, 20, 160, 500.0f, 0.0f);
+        require(tracker.normalizedGameTime() == beforePause, "active pause advanced the shared snapshot clock");
+        tracker.observe(220, 7.333333, 33.333333f, null, 5, false, 80, null, 500.0f, 0.0f);
+        require(tracker.normalizedGameTime() == beforePause, "unpausing caused a game-time jump");
     }
 
     private static void testJsonEscapingAndNonFiniteNumbers() {
@@ -137,6 +149,94 @@ public final class ProbeSelfTest {
             rejected = true;
         }
         require(rejected, "compact snapshot accepted a non-ten-player source snapshot");
+    }
+
+    private static void testCellPositionConversion() {
+        require(HeroPositions.coordinate(132, 97.75).equals(16993.75), "cell scale or offset was lost");
+        require(HeroPositions.coordinate(90, 246.375).equals(11766.375),
+                "a valid offset greater than one cell must not be rejected or wrapped");
+        require(HeroPositions.coordinate(131, 225.75).equals(HeroPositions.coordinate(132, 97.75)),
+                "equivalent cell/offset representations must agree");
+    }
+
+    private static void testInvalidPositionComponents() {
+        for (Object[] pair : new Object[][] {
+                {null, 1}, {1, null}, {-1, 1}, {65536, 1}, {1.5, 1},
+                {Double.NaN, 1}, {1, Double.POSITIVE_INFINITY}, {1, -1}, {1, 256}, {"132", 1}
+        }) {
+            require(HeroPositions.coordinate(pair[0], pair[1]) == null, "invalid coordinate became an observation");
+        }
+    }
+
+    private static Map<String, Object> positionProperties() {
+        return new LinkedHashMap<>(Map.of(
+                "m_iTeamNum", 2, "m_lifeState", 0, "m_bIsClone", false,
+                HeroPositions.CELL_X, 132, HeroPositions.CELL_Y, 90,
+                HeroPositions.OFFSET_X, 97.75, HeroPositions.OFFSET_Y, 246.375
+        ));
+    }
+
+    private static HeroPositions.Source positionSource(Map<String, Object> properties) {
+        return new HeroPositions.Source(123, "CDOTA_Unit_Hero_Juggernaut", true, true, properties::get);
+    }
+
+    private static Map<String, Object> positionRow(HeroPositions.Source source) {
+        return HeroPositions.observeSource(0, 2, 8, 123, source);
+    }
+
+    private static void requireNoPosition(Map<String, Object> row, String status) {
+        require(status.equals(row.get("position_status")), "wrong missing-position reason: " + row);
+        require(row.get("x") == null && row.get("y") == null, "unreliable position must be explicit null");
+    }
+
+    private static void testSelectedHeroPosition() {
+        Map<String, Object> row = positionRow(positionSource(positionProperties()));
+        require("OBSERVED".equals(row.get("position_status")), "selected hero position was not observed");
+        require(row.get("x").equals(16993.75) && row.get("y").equals(11766.375), "wrong world position");
+        require(row.get("player_slot").equals(0) && row.get("hero_id").equals(8), "player identity changed");
+        require(row.get("selected_hero_handle").equals(row.get("hero_entity_handle")), "selected handle was lost");
+        Map<String, Object> properties = positionProperties();
+        Float decodedOffset = 105.53124f;
+        properties.put(HeroPositions.OFFSET_Y, decodedOffset);
+        Map<String, Object> precise = positionRow(positionSource(properties));
+        require(precise.get("offset_y").equals(decodedOffset.doubleValue()),
+                "serialized component must preserve the same decoded precision as the world coordinate");
+    }
+
+    private static void testPositionRequiresCurrentPrimaryHero() {
+        Map<String, Object> properties = positionProperties();
+        requireNoPosition(positionRow(new HeroPositions.Source(124, "CDOTA_Unit_Hero_Juggernaut",
+                true, true, properties::get)), "IDENTITY_UNVERIFIED");
+        requireNoPosition(positionRow(new HeroPositions.Source(123, "CDOTA_Unit_Courier",
+                true, true, properties::get)), "IDENTITY_UNVERIFIED");
+        requireNoPosition(positionRow(new HeroPositions.Source(123, "CDOTA_Unit_Hero_Juggernaut",
+                true, false, properties::get)), "ENTITY_INACTIVE");
+        requireNoPosition(positionRow(new HeroPositions.Source(123, "CDOTA_Unit_Hero_Juggernaut",
+                false, true, properties::get)), "ENTITY_INACTIVE");
+        properties.put("m_iTeamNum", 3);
+        requireNoPosition(positionRow(positionSource(properties)), "IDENTITY_UNVERIFIED");
+        properties.put("m_iTeamNum", 2);
+        properties.put("m_bIsClone", true);
+        requireNoPosition(positionRow(positionSource(properties)), "IDENTITY_UNVERIFIED");
+    }
+
+    private static void testDeadOrUnknownLifeStateHasNoPosition() {
+        Map<String, Object> properties = positionProperties();
+        for (int state : List.of(1, 2)) {
+            properties.put("m_lifeState", state);
+            requireNoPosition(positionRow(positionSource(properties)), "HERO_NOT_ALIVE");
+        }
+        properties.remove("m_lifeState");
+        requireNoPosition(positionRow(positionSource(properties)), "LIFE_STATE_UNAVAILABLE");
+    }
+
+    private static void testMissingEntityOrAxisNeverReusesPosition() {
+        Map<String, Object> properties = positionProperties();
+        Map<String, Object> observed = positionRow(positionSource(properties));
+        requireNoPosition(positionRow(null), "ENTITY_UNAVAILABLE");
+        properties.remove(HeroPositions.OFFSET_Y);
+        requireNoPosition(positionRow(positionSource(properties)), "COORDINATES_UNAVAILABLE");
+        require(observed.get("x").equals(16993.75), "an older observation was mutated");
     }
 
     private static void require(boolean condition, String message) {

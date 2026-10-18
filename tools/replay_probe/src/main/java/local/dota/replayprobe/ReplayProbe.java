@@ -67,6 +67,7 @@ public final class ReplayProbe {
     private final Path outputPath;
     private final ClockTracker clock = new ClockTracker();
     private final List<Map<String, Object>> snapshots = new ArrayList<>();
+    private final List<Map<String, Object>> spatialSnapshots = new ArrayList<>();
     private final Map<String, PropertyProvenance> fieldProvenance = new LinkedHashMap<>();
     private int nextSnapshotSecond;
     private int lastReplayTick;
@@ -107,8 +108,14 @@ public final class ReplayProbe {
             Files.createDirectories(parent);
         }
         Files.writeString(output, JsonWriter.toJson(result), StandardCharsets.UTF_8);
+        String outputName = output.getFileName().toString();
+        String spatialName = (outputName.endsWith(".json")
+                ? outputName.substring(0, outputName.length() - 5) : outputName) + ".spatial.json";
+        Path spatialOutput = output.resolveSibling(spatialName);
+        Files.writeString(spatialOutput, JsonWriter.toJson(probe.spatialArtifact(diagnostic)), StandardCharsets.UTF_8);
 
         System.out.println("wrote " + output);
+        System.out.println("spatial_sidecar=" + spatialOutput);
         if (compact) {
             System.out.println("output_kind=compact_trajectory");
             System.out.println("snapshot_count=" + probe.snapshots.size());
@@ -162,6 +169,40 @@ public final class ReplayProbe {
         root.put("version_dependent_property_inventory", collectRelevantProperties());
         root.put("validation", validate(finalPlayers));
         return root;
+    }
+
+    private Map<String, Object> spatialArtifact(Map<String, Object> diagnostic) {
+        Map<String, Object> replay = mapValue(diagnostic, "replay");
+        Map<String, Object> dota = mapValue(mapValue(mapValue(replay, "demo_file_info"), "game_info"), "dota");
+        return mapOf(
+                "schema_version", 1,
+                "artifact_kind", "replay_hero_positions",
+                "match_id", dota.get("match_id"),
+                "replay_sha256", replay.get("sha256"),
+                "clarity_version", replay.get("clarity_version"),
+                "snapshot_interval_seconds", SNAPSHOT_INTERVAL_SECONDS,
+                "clock_normalization_status", clock.isProven() ? "PROVEN" : "UNRESOLVED",
+                "clock_normalization_method", clock.mode() == null ? null : clock.mode().toString(),
+                "zero_replay_tick", clock.isProven() ? clock.zeroTick() : null,
+                "game_end_time_seconds", clock.gameEndNormalizedTime(),
+                "pause_ticks", clock.pauseTicks(),
+                "pause_seconds", clock.pauseTicks() * clock.millisPerTick() / 1000.0,
+                "pause_witnessed", clock.witnessedActivePause(),
+                "coordinate_system", mapOf(
+                        "name", "SOURCE2_NATIVE_CELL_GRID",
+                        "units", "Source 2 world units",
+                        "cell_size_units", HeroPositions.CELL_SIZE,
+                        "axis_formula", "cell * 128 + offset",
+                        "origin", "native cell grid; no recentering or image-coordinate conversion",
+                        "cell_x_property", HeroPositions.CELL_X,
+                        "cell_y_property", HeroPositions.CELL_Y,
+                        "offset_x_property", HeroPositions.OFFSET_X,
+                        "offset_y_property", HeroPositions.OFFSET_Y
+                ),
+                "hero_selection_property", "CDOTA_PlayerResource.m_vecPlayerTeamData.<player_slot>.m_hSelectedHero",
+                "observation_policy", "only current active selected hero with matching team and m_lifeState=0; no fill-forward",
+                "snapshots", spatialSnapshots
+        );
     }
 
     private Map<String, Object> compactTrajectory(Map<String, Object> diagnostic) {
@@ -386,6 +427,7 @@ public final class ReplayProbe {
         if (players.isEmpty()) {
             return;
         }
+        List<Map<String, Object>> spatialPlayers = extractSpatialPlayers(players);
         while (sourceGameTime >= nextSnapshotSecond) {
             snapshots.add(mapOf(
                     "game_time_seconds", nextSnapshotSecond,
@@ -396,8 +438,29 @@ public final class ReplayProbe {
                     "game_state", gameState,
                     "players", deepCopyRows(players)
             ));
+            spatialSnapshots.add(mapOf(
+                    "game_time_seconds", nextSnapshotSecond,
+                    "source_game_time_seconds", sourceGameTime,
+                    "replay_tick", tick,
+                    "players", deepCopyRows(spatialPlayers)
+            ));
             nextSnapshotSecond += SNAPSHOT_INTERVAL_SECONDS;
         }
+    }
+
+    private List<Map<String, Object>> extractSpatialPlayers(List<Map<String, Object>> players) {
+        Entity resource = entities.getByDtName("CDOTA_PlayerResource");
+        return players.stream()
+                .sorted(Comparator.comparingInt(player -> requiredInteger(player, "player_slot")))
+                .map(player -> {
+                    int slot = requiredInteger(player, "player_slot");
+                    int team = "RADIANT".equals(player.get("team")) ? 2 : 3;
+                    Integer handle = readIntegerDirect(resource,
+                            "m_vecPlayerTeamData." + Util.arrayIdxToString(slot) + ".m_hSelectedHero");
+                    Entity hero = handle == null ? null : entities.getByHandle(handle);
+                    return HeroPositions.observe(slot, team, (Integer) player.get("hero_id"), handle, hero);
+                })
+                .toList();
     }
 
     private List<Map<String, Object>> extractPlayers() {
