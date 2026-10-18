@@ -68,6 +68,7 @@ public final class ReplayProbe {
     private final ClockTracker clock = new ClockTracker();
     private final List<Map<String, Object>> snapshots = new ArrayList<>();
     private final List<Map<String, Object>> spatialSnapshots = new ArrayList<>();
+    private final SpatialSampling spatialSampling = new SpatialSampling();
     private final Map<String, PropertyProvenance> fieldProvenance = new LinkedHashMap<>();
     private int nextSnapshotSecond;
     private int lastReplayTick;
@@ -116,6 +117,7 @@ public final class ReplayProbe {
 
         System.out.println("wrote " + output);
         System.out.println("spatial_sidecar=" + spatialOutput);
+        System.out.println("spatial_snapshot_count=" + probe.spatialSnapshots.size());
         if (compact) {
             System.out.println("output_kind=compact_trajectory");
             System.out.println("snapshot_count=" + probe.snapshots.size());
@@ -180,7 +182,12 @@ public final class ReplayProbe {
                 "match_id", dota.get("match_id"),
                 "replay_sha256", replay.get("sha256"),
                 "clarity_version", replay.get("clarity_version"),
-                "snapshot_interval_seconds", SNAPSHOT_INTERVAL_SECONDS,
+                "snapshot_interval_seconds", SpatialSampling.INTERVAL_SECONDS,
+                "game_time_semantics", "game_time_seconds and source_game_time_seconds are observed frame time; target_game_time_seconds is the nominal grid",
+                "sampling_policy", "one current non-synthetic unpaused frame at or after each grid target; expired targets are skipped, never backfilled",
+                "skipped_grid_targets", spatialSampling.skippedTargets(),
+                "synthetic_ticks_ignored", spatialSampling.syntheticTicksIgnored(),
+                "paused_frames_ignored", spatialSampling.pausedFramesIgnored(),
                 "clock_normalization_status", clock.isProven() ? "PROVEN" : "UNRESOLVED",
                 "clock_normalization_method", clock.mode() == null ? null : clock.mode().toString(),
                 "zero_replay_tick", clock.isProven() ? clock.zeroTick() : null,
@@ -419,7 +426,15 @@ public final class ReplayProbe {
         Float sourceGameTime = clock.normalizedGameTime();
         lastGameTime = sourceGameTime;
 
-        if (!clock.isProven() || sourceGameTime == null || sourceGameTime < nextSnapshotSecond) {
+        if (!clock.isProven() || sourceGameTime == null) {
+            return;
+        }
+        SpatialSampling.Sample spatialSample = spatialSampling.observe(sourceGameTime, tick, synthetic,
+                Boolean.TRUE.equals(gamePaused));
+        if (spatialSample != null) {
+            spatialSnapshots.add(spatialSnapshot(spatialSample, extractSpatialPlayers()));
+        }
+        if (sourceGameTime < nextSnapshotSecond) {
             return;
         }
 
@@ -427,7 +442,6 @@ public final class ReplayProbe {
         if (players.isEmpty()) {
             return;
         }
-        List<Map<String, Object>> spatialPlayers = extractSpatialPlayers(players);
         while (sourceGameTime >= nextSnapshotSecond) {
             snapshots.add(mapOf(
                     "game_time_seconds", nextSnapshotSecond,
@@ -438,29 +452,47 @@ public final class ReplayProbe {
                     "game_state", gameState,
                     "players", deepCopyRows(players)
             ));
-            spatialSnapshots.add(mapOf(
-                    "game_time_seconds", nextSnapshotSecond,
-                    "source_game_time_seconds", sourceGameTime,
-                    "replay_tick", tick,
-                    "players", deepCopyRows(spatialPlayers)
-            ));
             nextSnapshotSecond += SNAPSHOT_INTERVAL_SECONDS;
         }
     }
 
-    private List<Map<String, Object>> extractSpatialPlayers(List<Map<String, Object>> players) {
+    static Map<String, Object> spatialSnapshot(SpatialSampling.Sample sample, List<Map<String, Object>> players) {
+        return mapOf(
+                "game_time_seconds", sample.frameGameTimeSeconds(),
+                "source_game_time_seconds", sample.frameGameTimeSeconds(),
+                "target_game_time_seconds", sample.targetGameTimeSeconds(),
+                "grid_offset_seconds", (double) sample.frameGameTimeSeconds() - sample.targetGameTimeSeconds(),
+                "replay_tick", sample.replayTick(),
+                "players", deepCopyRows(players)
+        );
+    }
+
+    private List<Map<String, Object>> extractSpatialPlayers() {
         Entity resource = entities.getByDtName("CDOTA_PlayerResource");
-        return players.stream()
-                .sorted(Comparator.comparingInt(player -> requiredInteger(player, "player_slot")))
-                .map(player -> {
-                    int slot = requiredInteger(player, "player_slot");
-                    int team = "RADIANT".equals(player.get("team")) ? 2 : 3;
-                    Integer handle = readIntegerDirect(resource,
-                            "m_vecPlayerTeamData." + Util.arrayIdxToString(slot) + ".m_hSelectedHero");
-                    Entity hero = handle == null ? null : entities.getByHandle(handle);
-                    return HeroPositions.observe(slot, team, (Integer) player.get("hero_id"), handle, hero);
-                })
-                .toList();
+        if (resource == null) {
+            return List.of();
+        }
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (int slot = 0; slot < 64; slot++) {
+            String index = Util.arrayIdxToString(slot);
+            Integer team = readIntegerDirect(resource, "m_vecPlayerData." + index + ".m_iPlayerTeam");
+            if (team == null || (team != 2 && team != 3)) {
+                continue;
+            }
+            Integer handle = readIntegerDirect(resource, "m_vecPlayerTeamData." + index + ".m_hSelectedHero");
+            Entity hero = handle == null ? null : entities.getByHandle(handle);
+            Integer heroId = readIntegerInternal(resource, selectedHeroIdPaths(index), null);
+            rows.add(HeroPositions.observe(slot, team, heroId, handle, hero));
+        }
+        return rows;
+    }
+
+    private static List<String> selectedHeroIdPaths(String index) {
+        return List.of(
+                "m_vecPlayerTeamData." + index + ".m_nSelectedHeroID",
+                "m_vecPlayerData." + index + ".m_nSelectedHeroID",
+                "m_vecPlayerTeamData." + index + ".m_iSelectedHeroID"
+        );
     }
 
     private List<Map<String, Object>> extractPlayers() {
@@ -507,11 +539,7 @@ public final class ReplayProbe {
         }
         Entity hero = heroHandle == null ? null : entities.getByHandle(heroHandle);
 
-        Integer heroId = readInteger("hero_id", playerResource, List.of(
-                "m_vecPlayerTeamData." + playerIndex + ".m_nSelectedHeroID",
-                "m_vecPlayerData." + playerIndex + ".m_nSelectedHeroID",
-                "m_vecPlayerTeamData." + playerIndex + ".m_iSelectedHeroID"
-        ));
+        Integer heroId = readInteger("hero_id", playerResource, selectedHeroIdPaths(playerIndex));
         String heroName = resolveEntityName("hero_name", hero);
 
         Integer level = firstInteger("level",

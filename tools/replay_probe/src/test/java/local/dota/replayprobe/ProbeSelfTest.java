@@ -22,7 +22,12 @@ public final class ProbeSelfTest {
         testPositionRequiresCurrentPrimaryHero();
         testDeadOrUnknownLifeStateHasNoPosition();
         testMissingEntityOrAxisNeverReusesPosition();
-        System.out.println("probeTest: 13 focused tests passed");
+        testSpatialSamplingPreservesFrameTime();
+        testSpatialSamplingDoesNotBackfillGaps();
+        testSpatialSamplingUsesPausedGameClock();
+        testSpatialSamplingRejectsRewinds();
+        testSpatialSamplingIgnoresPausedClockCorrection();
+        System.out.println("probeTest: 18 focused tests passed");
     }
 
     private static void testClockRequiresWitnessedCrossing() {
@@ -243,5 +248,92 @@ public final class ProbeSelfTest {
         if (!condition) {
             throw new AssertionError(message);
         }
+    }
+
+    private static void testSpatialSamplingPreservesFrameTime() {
+        SpatialSampling sampling = new SpatialSampling();
+        require(sampling.observe(0, 100).targetGameTimeSeconds() == 0, "spatial grid must start at zero");
+        require(sampling.observe(9.99f, 399) == null, "spatial sample was emitted before the grid target");
+        SpatialSampling.Sample sample = sampling.observe(10.025f, 400);
+        Map<String, Object> snapshot = ReplayProbe.spatialSnapshot(sample, List.of());
+        require(snapshot.get("game_time_seconds").equals(10.025f), "late frame was backdated to its grid target");
+        require(snapshot.get("source_game_time_seconds").equals(10.025f), "observed frame time was lost");
+        require(snapshot.get("target_game_time_seconds").equals(10), "nominal grid target was lost");
+        require((Double) snapshot.get("grid_offset_seconds") > 0, "sampling delay was hidden");
+        require(snapshot.get("replay_tick").equals(400), "sample tick changed");
+        require(sampling.observe(10.025f, 400) == null, "one replay tick produced duplicate observations");
+        require(sampling.observe(10.05f, 401) == null, "one grid target was sampled twice");
+        require(sampling.observe(20, 700, true, false) == null, "synthetic tick was treated as a fresh entity observation");
+        require(sampling.observe(20.025f, 701).targetGameTimeSeconds() == 20,
+                "synthetic tick consumed a real frame's grid target");
+        require(sampling.syntheticTicksIgnored() == 1, "synthetic tick was not accounted for");
+    }
+
+    private static void testSpatialSamplingDoesNotBackfillGaps() {
+        SpatialSampling sampling = new SpatialSampling();
+        sampling.observe(0, 100);
+        SpatialSampling.Sample sample = sampling.observe(35, 1150);
+        require(sample.targetGameTimeSeconds() == 30 && sample.frameGameTimeSeconds() == 35,
+                "a later frame must retain its true time, with only the latest grid target annotated");
+        require(sampling.skippedTargets() == 2, "missed targets 10 and 20 must be skipped, not filled from t=35");
+        require(sampling.observe(35, 1151) == null, "frozen frame created an additional observation");
+        require(sampling.observe(40, 1300).targetGameTimeSeconds() == 40, "schedule did not resume after a gap");
+    }
+
+    private static void testSpatialSamplingUsesPausedGameClock() {
+        ReplayProbe.ClockTracker clock = new ReplayProbe.ClockTracker();
+        SpatialSampling sampling = new SpatialSampling();
+        clock.observe(99, 3.3, 33.333336f, null, 4, false, 0, null, 0.0f, 0.0f);
+        clock.observe(100, 3.333333, 33.333336f, null, 5, false, 0, null, 500.0f, 0.0f);
+        require(clock.isProven(), "spatial sampling must use the existing proven game clock");
+        sampling.observe(clock.normalizedGameTime(), 100);
+        clock.observe(400, 13.333333, 33.333336f, null, 5, false, 0, null, 500.0f, 0.0f);
+        require(sampling.observe(clock.normalizedGameTime(), 400).targetGameTimeSeconds() == 10,
+                "wrong spatial target before pause");
+        for (int tick : List.of(430, 490)) {
+            clock.observe(tick, tick / 30.0, 33.333336f, null, 5, true, 0, 400, 500.0f, 0.0f);
+            require(sampling.observe(clock.normalizedGameTime(), tick) == null,
+                    "paused replay ticks must not generate extra game-time observations");
+        }
+        clock.observe(490, 490 / 30.0, 33.333336f, null, 5, false, 90, null, 500.0f, 0.0f);
+        require(sampling.observe(clock.normalizedGameTime(), 490) == null, "unpausing duplicated an observation");
+        clock.observe(790, 790 / 30.0, 33.333336f, null, 5, false, 90, null, 500.0f, 0.0f);
+        require(sampling.observe(clock.normalizedGameTime(), 790).targetGameTimeSeconds() == 20,
+                "pause duration leaked into the spatial game-time grid");
+    }
+
+    private static void testSpatialSamplingRejectsRewinds() {
+        for (boolean rewindTick : List.of(false, true)) {
+            SpatialSampling sampling = new SpatialSampling();
+            sampling.observe(10, 400);
+            boolean rejected = false;
+            try {
+                sampling.observe(rewindTick ? 11 : 9, rewindTick ? 399 : 401);
+            } catch (IllegalStateException expected) {
+                rejected = true;
+            }
+            require(rejected, "nonmonotonic frame time or tick was accepted");
+        }
+    }
+
+    private static void testSpatialSamplingIgnoresPausedClockCorrection() {
+        ReplayProbe.ClockTracker clock = new ReplayProbe.ClockTracker();
+        SpatialSampling sampling = new SpatialSampling();
+        clock.observe(99, 3.3, 33.333336f, null, 4, false, 0, null, 0.0f, 0.0f);
+        clock.observe(100, 3.333333, 33.333336f, null, 5, false, 0, null, 500.0f, 0.0f);
+        sampling.observe(clock.normalizedGameTime(), 100);
+        clock.observe(400, 13.333333, 33.333336f, null, 5, false, 0, null, 500.0f, 0.0f);
+        sampling.observe(clock.normalizedGameTime(), 400);
+        // Observed replay behavior: pause-start tick is ahead of the demo's current tick.
+        clock.observe(700, 700 / 30.0, 33.333336f, null, 5, true, 0, 1200, 500.0f, 0.0f);
+        require(sampling.observe(clock.normalizedGameTime(), 700, false, true) == null,
+                "active-pause clock advance must not produce a spatial observation");
+        clock.observe(790, 790 / 30.0, 33.333336f, null, 5, false, 390, null, 500.0f, 0.0f);
+        require(sampling.observe(clock.normalizedGameTime(), 790) == null,
+                "post-pause correction must not duplicate the last grid target");
+        clock.observe(1090, 1090 / 30.0, 33.333336f, null, 5, false, 390, null, 500.0f, 0.0f);
+        require(sampling.observe(clock.normalizedGameTime(), 1090).targetGameTimeSeconds() == 20,
+                "corrected unpaused frame did not retain its grid target");
+        require(sampling.pausedFramesIgnored() == 1, "paused frame was not accounted for");
     }
 }
