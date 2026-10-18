@@ -26,8 +26,10 @@ public final class ProbeSelfTest {
         testSpatialSamplingDoesNotBackfillGaps();
         testSpatialSamplingUsesPausedGameClock();
         testSpatialSamplingRejectsRewinds();
-        testSpatialSamplingIgnoresPausedClockCorrection();
-        System.out.println("probeTest: 18 focused tests passed");
+        testSpatialSamplingWithDifferentTickOrigins();
+        testRealPauseTickBoundaries();
+        testActivePauseRequiresMeasuredTickMapping();
+        System.out.println("probeTest: 20 focused tests passed");
     }
 
     private static void testClockRequiresWitnessedCrossing() {
@@ -47,6 +49,7 @@ public final class ProbeSelfTest {
 
     private static void testGameStartPropertyAndPauseTicks() {
         ReplayProbe.ClockTracker tracker = new ReplayProbe.ClockTracker();
+        tracker.observeNetworkTick(0, 0);
         tracker.observe(99, 3.3, 33.333333f, null, 4, false, 10, null, 0.0f, 0.0f);
         tracker.observe(100, 3.333333, 33.333333f, null, 5, false, 10, null, 500.0f, 0.0f);
         tracker.observe(160, 5.333333, 33.333333f, null, 5, false, 20, null, 500.0f, 0.0f);
@@ -282,6 +285,7 @@ public final class ProbeSelfTest {
 
     private static void testSpatialSamplingUsesPausedGameClock() {
         ReplayProbe.ClockTracker clock = new ReplayProbe.ClockTracker();
+        clock.observeNetworkTick(0, 0);
         SpatialSampling sampling = new SpatialSampling();
         clock.observe(99, 3.3, 33.333336f, null, 4, false, 0, null, 0.0f, 0.0f);
         clock.observe(100, 3.333333, 33.333336f, null, 5, false, 0, null, 500.0f, 0.0f);
@@ -316,24 +320,67 @@ public final class ProbeSelfTest {
         }
     }
 
-    private static void testSpatialSamplingIgnoresPausedClockCorrection() {
+    private static void testSpatialSamplingWithDifferentTickOrigins() {
         ReplayProbe.ClockTracker clock = new ReplayProbe.ClockTracker();
+        clock.observeNetworkTick(100, 900);
         SpatialSampling sampling = new SpatialSampling();
         clock.observe(99, 3.3, 33.333336f, null, 4, false, 0, null, 0.0f, 0.0f);
         clock.observe(100, 3.333333, 33.333336f, null, 5, false, 0, null, 500.0f, 0.0f);
         sampling.observe(clock.normalizedGameTime(), 100);
         clock.observe(400, 13.333333, 33.333336f, null, 5, false, 0, null, 500.0f, 0.0f);
         sampling.observe(clock.normalizedGameTime(), 400);
-        // Observed replay behavior: pause-start tick is ahead of the demo's current tick.
+        float pausedTime = clock.normalizedGameTime();
+        // Pause-start tick 1200 maps to replay tick 400, using the measured -800 offset.
         clock.observe(700, 700 / 30.0, 33.333336f, null, 5, true, 0, 1200, 500.0f, 0.0f);
+        require(clock.normalizedGameTime() == pausedTime, "network pause-start tick was mixed with replay tick");
         require(sampling.observe(clock.normalizedGameTime(), 700, false, true) == null,
-                "active-pause clock advance must not produce a spatial observation");
+                "active pause must not produce a spatial observation");
         clock.observe(790, 790 / 30.0, 33.333336f, null, 5, false, 390, null, 500.0f, 0.0f);
         require(sampling.observe(clock.normalizedGameTime(), 790) == null,
-                "post-pause correction must not duplicate the last grid target");
+                "unpausing must not duplicate the last grid target");
         clock.observe(1090, 1090 / 30.0, 33.333336f, null, 5, false, 390, null, 500.0f, 0.0f);
         require(sampling.observe(clock.normalizedGameTime(), 1090).targetGameTimeSeconds() == 20,
                 "corrected unpaused frame did not retain its grid target");
         require(sampling.pausedFramesIgnored() == 1, "paused frame was not accounted for");
+    }
+
+    private static void testRealPauseTickBoundaries() {
+        ReplayProbe.ClockTracker clock = new ReplayProbe.ClockTracker();
+        clock.observeNetworkTick(32234, 32506);
+        clock.observe(32233, 32233 / 30.0, 33.333336f, null, 4, false, 0, 0, 0.0f, 0.0f);
+        clock.observe(32234, 32234 / 30.0, 33.333336f, null, 5, false, 0, 0, 1083.5f, 0.0f);
+        clock.observe(147930, 147930 / 30.0, 33.333336f, null, 5, false, 0, 0, 1083.5f, 0.0f);
+        float beforePause = clock.normalizedGameTime();
+        clock.observeNetworkTick(147932, 148204);
+        clock.observe(147932, 147932 / 30.0, 33.333336f, null, 5, true, 0, 148204, 1083.5f, 0.0f);
+        float pausedTime = clock.normalizedGameTime();
+        require(pausedTime >= beforePause, "pause entry rewound game time");
+        for (int tick : List.of(147933, 147934, 148000, 148100, 148116, 148117)) {
+            clock.observe(tick, tick / 30.0, 33.333336f, null, 5, true, 0, 148204, 1083.5f, 0.0f);
+            require(clock.normalizedGameTime() == pausedTime, "game time advanced inside the actual replay pause");
+        }
+        clock.observeNetworkTick(148118, 148390);
+        clock.observe(148118, 148118 / 30.0, 33.333336f, null, 5, false, 185, 0, 1083.5f, 0.0f);
+        float resumed = clock.normalizedGameTime();
+        require(resumed >= pausedTime && Math.abs(resumed - pausedTime - 1.0f / 30) < 0.0005f,
+                "pause exit caused an artificial game-time jump");
+        clock.observe(148120, 148120 / 30.0, 33.333336f, null, 5, false, 185, 0, 1083.5f, 0.0f);
+        require(Math.abs(clock.normalizedGameTime() - resumed - 2.0f / 30) < 0.0005f,
+                "post-pause game clock has the wrong rate");
+        require(clock.pauseTicks() == 185 && clock.networkToReplayTickOffset() == -272,
+                "pause duration or measured tick-domain offset was lost");
+    }
+
+    private static void testActivePauseRequiresMeasuredTickMapping() {
+        ReplayProbe.ClockTracker clock = new ReplayProbe.ClockTracker();
+        clock.observe(99, 3.3, 33.333336f, null, 4, false, 0, null, 0.0f, 0.0f);
+        clock.observe(100, 3.333333, 33.333336f, null, 5, false, 0, null, 500.0f, 0.0f);
+        boolean rejected = false;
+        try {
+            clock.observe(400, 400 / 30.0, 33.333336f, null, 5, true, 0, 1200, 500.0f, 0.0f);
+        } catch (IllegalStateException expected) {
+            rejected = true;
+        }
+        require(rejected, "active pause was silently normalized without knowing its tick domain");
     }
 }

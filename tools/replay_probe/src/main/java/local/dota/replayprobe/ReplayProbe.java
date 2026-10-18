@@ -10,11 +10,13 @@ import skadistats.clarity.model.Entity;
 import skadistats.clarity.model.FieldPath;
 import skadistats.clarity.processor.entities.Entities;
 import skadistats.clarity.processor.entities.UsesEntities;
+import skadistats.clarity.processor.reader.OnMessage;
 import skadistats.clarity.processor.reader.OnTickEnd;
 import skadistats.clarity.processor.runner.Context;
 import skadistats.clarity.processor.runner.SimpleRunner;
 import skadistats.clarity.source.MappedFileSource;
 import skadistats.clarity.wire.dota.s2.proto.DOTAS2MatchMetadata;
+import skadistats.clarity.wire.shared.common.proto.CommonNetworkBaseTypes.CNETMsg_Tick;
 import skadistats.clarity.wire.shared.demo.proto.Demo;
 
 import java.io.IOException;
@@ -385,6 +387,13 @@ public final class ReplayProbe {
             throw new IllegalStateException("Expected numeric compact field: " + field);
         }
         return number.intValue();
+    }
+
+    @OnMessage(CNETMsg_Tick.class)
+    public void onNetworkTick(Context context, CNETMsg_Tick message) {
+        if (message.hasTick() && context.getTick() >= 0) {
+            clock.observeNetworkTick(context.getTick(), message.getTick());
+        }
     }
 
     @OnTickEnd
@@ -863,6 +872,9 @@ public final class ReplayProbe {
                 "total_paused_ticks_property", GAME_RULES_ENTITY + "." + TOTAL_PAUSED_TICKS_PATH,
                 "active_pause_property", GAME_RULES_ENTITY + "." + GAME_PAUSED_PATH,
                 "pause_start_tick_property", GAME_RULES_ENTITY + "." + PAUSE_START_TICK_PATH,
+                "pause_start_tick_domain", "network tick (CNETMsg_Tick.tick), converted to replay tick before subtraction",
+                "network_to_replay_tick_offset", clock.networkToReplayTickOffset(),
+                "tick_mapping_witnesses", clock.tickMappingWitnesses(),
                 "baseline_total_paused_ticks", clock.baselineTotalPausedTicks(),
                 "last_total_paused_ticks", clock.lastTotalPausedTicks(),
                 "witnessed_active_pause", clock.witnessedActivePause()
@@ -1229,6 +1241,7 @@ public final class ReplayProbe {
         private Float lastGameStartTime;
         private Float lastGameEndTime;
         private Integer baselineTotalPausedTicks;
+        private Integer networkToReplayTickOffset;
         private Integer previousTick;
         private Double previousRawReplayTime;
         private Float previousGameTime;
@@ -1249,6 +1262,19 @@ public final class ReplayProbe {
         private boolean witnessedActivePause;
         private final List<Map<String, Object>> gameStateTransitions = new ArrayList<>();
         private final List<Map<String, Object>> engineTimeTransitions = new ArrayList<>();
+        private final List<Map<String, Object>> tickMappingWitnesses = new ArrayList<>();
+
+        void observeNetworkTick(int replayTick, int networkTick) {
+            int offset = Math.subtractExact(replayTick, networkTick);
+            if (!Objects.equals(networkToReplayTickOffset, offset)) {
+                tickMappingWitnesses.add(mapOf(
+                        "replay_tick", replayTick,
+                        "network_tick", networkTick,
+                        "network_to_replay_tick_offset", offset
+                ));
+            }
+            networkToReplayTickOffset = offset;
+        }
 
         void observe(int tick, double rawReplayTime, Float gameTime, Integer gameState) {
             observe(tick, rawReplayTime, 1000.0f / 30.0f, gameTime, gameState, false, 0, null, null, null);
@@ -1335,9 +1361,14 @@ public final class ReplayProbe {
                 int completedPausedTicks = Math.max(0,
                         (totalPausedTicks == null ? baselineTotalPausedTicks : totalPausedTicks)
                                 - (baselineTotalPausedTicks == null ? 0 : baselineTotalPausedTicks));
-                int activePauseTicks = Boolean.TRUE.equals(gamePaused) && pauseStartTick != null
-                        ? Math.max(0, tick - pauseStartTick)
-                        : 0;
+                int activePauseTicks = 0;
+                if (Boolean.TRUE.equals(gamePaused)) {
+                    if (pauseStartTick == null || networkToReplayTickOffset == null) {
+                        throw new IllegalStateException("Active pause requires a measured CNETMsg_Tick to replay-tick mapping");
+                    }
+                    int replayPauseStartTick = Math.addExact(pauseStartTick, networkToReplayTickOffset);
+                    activePauseTicks = Math.max(0, tick - replayPauseStartTick);
+                }
                 int activeTicks = Math.max(0, tick - zeroTick - completedPausedTicks - activePauseTicks);
                 normalizedGameTime = activeTicks * millisPerTick / 1000.0f;
             }
@@ -1383,6 +1414,8 @@ public final class ReplayProbe {
         }
         float millisPerTick() { return millisPerTick; }
         Integer baselineTotalPausedTicks() { return baselineTotalPausedTicks; }
+        Integer networkToReplayTickOffset() { return networkToReplayTickOffset; }
+        List<Map<String, Object>> tickMappingWitnesses() { return new ArrayList<>(tickMappingWitnesses); }
         Integer lastTotalPausedTicks() { return lastTotalPausedTicks; }
         boolean witnessedActivePause() { return witnessedActivePause; }
         List<Map<String, Object>> gameStateTransitions() { return new ArrayList<>(gameStateTransitions); }
