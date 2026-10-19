@@ -3,6 +3,27 @@
 Only own positions and VISIBLE enemy positions enter current geometry. Last
 seen means the last sampled VISIBLE position, not the exact disappearance time.
 Historical coordinates have separate columns and never fill current positions.
+
+CSV semantics (counts always cover the five selected enemy entities):
+- visible_enemy_count counts raw VISIBLE flags, including flags retained while
+  an entity is DYING/DEAD. It is not a count of currently observed living enemies.
+- hidden_enemy_count and unknown_enemy_count count HIDDEN and UNKNOWN flags.
+  UNKNOWN is unverified visibility, not HIDDEN, death, or absence of an enemy.
+- visible_enemy_with_position_count requires VISIBLE plus a verified primary
+  ALIVE entity with an OBSERVED, valid Source 2 position. It is a count of
+  confirmed living positions, not a total alive count. Missing positions may
+  reflect incomplete telemetry as well as a non-alive entity.
+- nearest_visible_enemy_distance uses only those current positions and valid
+  own living positions; a missing distance is not zero or proof of no enemies.
+
+VISIBLE_POSITION_UNAVAILABLE deliberately gives no cause and is not an enemy
+death announcement. HIDDEN/UNKNOWN enemy life_state and coordinates are never
+consulted to improve POV coverage, clear history, or detect a respawn.
+LAST_SEEN remains a historical sampled living position across unavailable
+positions, deaths, and unseen respawns. It asserts neither current location nor
+life state. Its actual timestamp/age must accompany any use; only a fresh
+VISIBLE valid living position can refresh it. No death labels or future events
+are inputs to this extractor.
 """
 
 from __future__ import annotations

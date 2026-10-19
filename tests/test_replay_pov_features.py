@@ -118,6 +118,33 @@ def test_hidden_global_coordinate_perturbation_cannot_change_observer_pov():
     assert _pov(before[0], "DIRE") != _pov(after[0], "DIRE")
 
 
+@pytest.mark.parametrize("state", ["HIDDEN", "UNKNOWN"])
+def test_unobserved_global_death_or_respawn_cannot_change_pov_or_last_seen(state):
+    spatial, visibility = _inputs(0, 10, 20, 30)
+    _flag(visibility, 0, 5, "VISIBLE")
+    for frame in (1, 2, 3):
+        _flag(visibility, frame, 5, state)
+    before = build_pov_feature_rows(spatial, visibility)
+    changed_spatial, changed_visibility = deepcopy(spatial), deepcopy(visibility)
+    for frame, life in ((1, 2), (2, None), (3, 0)):
+        player = changed_spatial["snapshots"][frame]["players"][5]
+        player["life_state"] = life
+        changed_visibility["snapshots"][frame]["players"][5]["life_state"] = life
+        if life == 0:
+            _coordinates(player, 9000, 8000)  # Respawn position remains unobserved.
+        else:
+            player["position_status"] = "HERO_NOT_ALIVE" if life == 2 else "LIFE_STATE_UNAVAILABLE"
+            for key in ("x", "y", "cell_x", "cell_y", "offset_x", "offset_y"):
+                player[key] = None
+    after = build_pov_feature_rows(changed_spatial, changed_visibility)
+    assert _pov(before[0]) == _pov(after[0])
+    assert _pov(before[1]) == _pov(after[1])
+    assert _pov(before[0], "DIRE") != _pov(after[0], "DIRE")  # Own-state access is legitimate.
+    records = [r for r in _pov(after[1]) if r["enemy_player_slot"] == 5][1:]
+    assert all(r["current_x"] is None and r["last_seen_game_time_seconds"] == 0 for r in records)
+    assert [r["last_seen_age_seconds"] for r in records] == [10, 20, 30]
+
+
 def test_other_teams_visibility_and_global_status_do_not_enter_observer_pov():
     spatial, visibility = _inputs(0)
     _flag(visibility, 0, 5, "VISIBLE")
@@ -146,6 +173,44 @@ def test_dead_or_missing_positions_do_not_refresh_last_seen():
     assert records[1]["last_seen_x"] == 100 and records[1]["current_x"] is None
     assert records[2]["last_seen_x"] == 200
     assert records[2]["last_seen_age_seconds"] == 0
+
+
+def test_lifecycle_flags_missing_live_positions_and_hidden_respawn_keep_separate_semantics():
+    spatial, visibility = _inputs(0, 10, 20, 30, 40, 50, 60)
+    states = ("VISIBLE", "VISIBLE", "VISIBLE", "HIDDEN", "HIDDEN", "UNKNOWN", "VISIBLE")
+    for frame, (state, life) in enumerate(zip(states, (0, 1, 2, 2, 0, 0, 0), strict=True)):
+        _flag(visibility, frame, 5, state)
+        player = spatial["snapshots"][frame]["players"][5]
+        player["life_state"] = life
+        visibility["snapshots"][frame]["players"][5]["life_state"] = life
+        if life in (1, 2):
+            player["position_status"] = "HERO_NOT_ALIVE"
+            for key in ("x", "y", "cell_x", "cell_y", "offset_x", "offset_y"):
+                player[key] = None
+        elif frame > 0:
+            _coordinates(player, 2000 if frame == 6 else 9000, 0)
+    teams, enemies = build_pov_feature_rows(spatial, visibility)
+    team_rows = _pov(teams)
+    records = [r for r in _pov(enemies) if r["enemy_player_slot"] == 5]
+    assert [r["visible_enemy_count"] for r in team_rows] == [1, 1, 1, 0, 0, 0, 1]
+    assert [r["visible_enemy_with_position_count"] for r in team_rows] == [1, 0, 0, 0, 0, 0, 1]
+    assert team_rows[5]["unknown_enemy_count"] == 1 and team_rows[5]["hidden_enemy_count"] == 4
+    assert all(sum(r[k] for k in ("visible_enemy_count", "hidden_enemy_count", "unknown_enemy_count")) == 5 for r in team_rows)
+    assert [r["current_position_status"] for r in records] == [
+        "OBSERVED", "VISIBLE_POSITION_UNAVAILABLE", "VISIBLE_POSITION_UNAVAILABLE",
+        "HIDDEN", "HIDDEN", "UNKNOWN", "OBSERVED",
+    ]
+    assert all(r["nearest_visible_enemy_distance"] is None for r in team_rows[1:6])
+    for frame in range(1, 6):
+        assert records[frame]["current_x"] is records[frame]["current_y"] is None
+        assert records[frame]["last_seen_status"] == "LAST_SEEN"
+        assert records[frame]["last_seen_x"] == 100
+        assert records[frame]["last_seen_game_time_seconds"] == 0
+        assert records[frame]["last_seen_age_seconds"] == frame * 10
+    assert records[6]["current_x"] == records[6]["last_seen_x"] == 2000
+    assert records[6]["last_seen_game_time_seconds"] == 60
+    assert records[6]["last_seen_age_seconds"] == 0
+    assert team_rows[6]["nearest_visible_enemy_distance"] == 2000
 
 
 def test_never_seen_visible_without_coordinate_and_insufficient_own_coverage():
