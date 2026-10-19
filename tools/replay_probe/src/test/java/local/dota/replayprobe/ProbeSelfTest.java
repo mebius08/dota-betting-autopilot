@@ -31,7 +31,8 @@ public final class ProbeSelfTest {
         testActivePauseRequiresMeasuredTickMapping();
         HeroVisibilitySelfTest.run();
         VisibilityTransitionsSelfTest.run();
-        System.out.println("probeTest: 33 focused tests passed");
+        HeroDeathsSelfTest.run();
+        System.out.println("probeTest: 40 focused tests passed");
     }
 
     private static void testClockRequiresWitnessedCrossing() {

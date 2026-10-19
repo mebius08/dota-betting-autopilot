@@ -74,6 +74,7 @@ public final class ReplayProbe {
     private final List<Map<String, Object>> visibilitySnapshots = new ArrayList<>();
     private final SpatialSampling spatialSampling = new SpatialSampling();
     private VisibilityTransitions visibilityTransitions;
+    private HeroDeaths heroDeaths;
     private final Map<String, Integer> pendingVisibilityWordUpdates = new LinkedHashMap<>();
     private int pendingVisibilityEntityUpdates;
     private final Map<String, PropertyProvenance> fieldProvenance = new LinkedHashMap<>();
@@ -99,8 +100,9 @@ public final class ReplayProbe {
     public static void main(String[] args) throws Exception {
         boolean compact = args.length == 3 && "--compact".equals(args[2]);
         boolean transitions = args.length == 3 && "--visibility-transitions".equals(args[2]);
-        if (args.length != 2 && !compact && !transitions) {
-            System.err.println("Usage: ReplayProbe <replay.dem> <output.json> [--compact|--visibility-transitions]");
+        boolean deaths = args.length == 3 && "--hero-deaths".equals(args[2]);
+        if (args.length != 2 && !compact && !transitions && !deaths) {
+            System.err.println("Usage: ReplayProbe <replay.dem> <output.json> [--compact|--visibility-transitions|--hero-deaths]");
             System.exit(2);
         }
         Path replay = Path.of(args[0]).toAbsolutePath().normalize();
@@ -110,6 +112,15 @@ public final class ReplayProbe {
         }
 
         ReplayProbe probe = new ReplayProbe(replay, output);
+        if (deaths) {
+            probe.heroDeaths = new HeroDeaths();
+            Map<String, Object> result = probe.runHeroDeaths();
+            Files.createDirectories(output.getParent());
+            Files.writeString(output, JsonWriter.toJson(result), StandardCharsets.UTF_8);
+            System.out.println("wrote " + output);
+            System.out.println("hero_deaths=" + ((List<?>) result.get("hero_deaths")).size());
+            return;
+        }
         if (transitions) {
             probe.visibilityTransitions = new VisibilityTransitions(2250, 2340);
             Map<String, Object> result = probe.runVisibilityTransitions();
@@ -156,6 +167,35 @@ public final class ReplayProbe {
             System.out.println("final_state_mismatches="
                     + ((List<?>) ((Map<?, ?>) validation.get("final_state_comparison")).get("mismatches")).size());
         }
+    }
+
+    private Map<String, Object> runHeroDeaths() throws Exception {
+        Demo.CDemoFileInfo info = Clarity.infoForFile(replayPath.toString());
+        heroDeaths.footer(info.getGameInfo().getDota().getPlayerInfoList());
+        try (MappedFileSource source = new MappedFileSource(replayPath.toString())) {
+            new SimpleRunner(source).runWith(this, heroDeaths);
+        }
+        Map<String, Object> root = mapOf(
+                "schema_version", 1, "artifact_kind", "replay_primary_hero_deaths",
+                "match_id", info.getGameInfo().getDota().getMatchId(),
+                "replay_sha256", sha256(replayPath), "clarity_version", "4.0.1",
+                "clock_normalization_status", clock.isProven() ? "PROVEN" : "UNRESOLVED",
+                "clock_normalization_method", clock.mode() == null ? null : clock.mode().toString(),
+                "zero_replay_tick", clock.zeroTick(), "millis_per_replay_tick", clock.millisPerTick(),
+                "zero_raw_replay_time_seconds", clock.zeroRawReplayTime(),
+                "zero_game_start_time_property", clock.zeroGameStartTime(),
+                "game_end_time_property", clock.gameEndPropertyTime(),
+                "game_end_normalized_time_seconds", clock.gameEndNormalizedTime(),
+                "game_end_replay_tick", clock.gameEndTick(),
+                "game_end_raw_replay_time_seconds", clock.gameEndRawReplayTime(),
+                "pause_ticks", clock.pauseTicks(), "pause_witnessed", clock.witnessedActivePause(),
+                "eof_replay_tick", lastReplayTick,
+                "identity_policy", "exact demo-footer hero name joined privately to PlayerResource by SteamID, verified team and m_hSelectedHero primary; targetHero and not targetIllusion; selected entity must be nonclone; active same-class clones make identity ambiguous; player IDs are not exported",
+                "timestamp_policy", "native timestamp/raw retained separately; event time = timestamp minus witnessed GameRules game-start property, only when corroborated by proven delivery-frame clock within one replay tick plus float ULPs; no frame-time substitution or extra pause subtraction",
+                "limitations", "combat log has no target entity handle; ambiguous hero identities are rejected; no attribution from proximity or damage-source ownership"
+        );
+        root.putAll(heroDeaths.artifact());
+        return root;
     }
 
     private Map<String, Object> runVisibilityTransitions() throws Exception {
@@ -533,6 +573,18 @@ public final class ReplayProbe {
         Float sourceGameTime = clock.normalizedGameTime();
         lastGameTime = sourceGameTime;
 
+        if (heroDeaths != null) {
+            heroDeaths.frame(tick, mapOf(
+                    "frame_replay_tick", tick, "frame_game_time_seconds", sourceGameTime,
+                    "frame_clock_proven", clock.isProven(), "frame_synthetic", synthetic,
+                    "frame_millis_per_tick", clock.millisPerTick(),
+                    "frame_raw_replay_time_seconds", rawReplayTime,
+                    "frame_game_start_time_property", clock.zeroGameStartTime(),
+                    "frame_pause_ticks", clock.pauseTicks(), "frame_game_paused", gamePaused,
+                    "frame_game_end_frozen", clock.gameEndTick() != null
+            ));
+            return;
+        }
         if (visibilityTransitions != null) {
             if (clock.isProven() && sourceGameTime != null && !synthetic
                     && visibilityTransitions.needsFrame(sourceGameTime)) {

@@ -95,3 +95,15 @@ tasks.register<JavaExec>("probeVisibilityTransitions") {
         args(replay, output, "--visibility-transitions")
     }
 }
+
+tasks.register<JavaExec>("probeHeroDeaths") {
+    group = "application"
+    description = "Writes only combat-log deaths of verified primary heroes."
+    dependsOn(tasks.classes)
+    classpath = sourceSets.main.get().runtimeClasspath
+    mainClass.set("local.dota.replayprobe.ReplayProbe")
+    maxHeapSize = "4g"
+    doFirst {
+        args(providers.gradleProperty("replay").get(), providers.gradleProperty("output").get(), "--hero-deaths")
+    }
+}

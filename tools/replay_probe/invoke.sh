@@ -23,7 +23,7 @@ usage() {
     cat <<'USAGE'
 Usage: tools/replay_probe/invoke.sh --prepare
        tools/replay_probe/invoke.sh check|probeTest|--version
-       tools/replay_probe/invoke.sh probeReplay|probeCompactReplay|probeVisibilityTransitions REPLAY OUTPUT
+       tools/replay_probe/invoke.sh probeReplay|probeCompactReplay|probeVisibilityTransitions|probeHeroDeaths REPLAY OUTPUT
 
 Only --prepare downloads tools and dependencies. Other commands run offline.
 Relative replay/output paths are resolved from the repository root.
@@ -134,7 +134,7 @@ case "$task" in
         [[ $# -le 1 ]] || die "$task does not accept replay/output arguments."
         task_args=("$task")
         ;;
-    probeReplay|probeCompactReplay|probeVisibilityTransitions)
+    probeReplay|probeCompactReplay|probeVisibilityTransitions|probeHeroDeaths)
         [[ $# == 3 ]] || { usage >&2; exit 1; }
         case "$2" in /*) replay_path="$2" ;; *) replay_path="$repo_root/$2" ;; esac
         case "$3" in /*) output_path="$3" ;; *) output_path="$repo_root/$3" ;; esac
