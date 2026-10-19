@@ -57,6 +57,22 @@ For a real replay already available locally:
 ./tools/replay_probe/invoke.sh probeCompactReplay local-data/replays/MATCH_ID.dem tools/replay_probe/output/MATCH_ID.compact.json
 ```
 
+For the bounded visibility investigation on the existing match, a separate mode
+writes only a diagnostic JSON (no compact/spatial/visibility sidecars):
+
+```bash
+./tools/replay_probe/invoke.sh probeVisibilityTransitions local-data/replays/8960991322.dem tools/replay_probe/output/visibility-transitions-check/8960991322.visibility-transitions.json
+```
+
+The window is actual game time 2250–2340 seconds, seeded by the last real frame
+before 2250. Enemy flags are compared at every completed non-synthetic network
+frame, with source-word update witnesses; unchanged entity updates are not
+transitions. Same-tick updates are coalesced to the final frame state. UNKNOWN
+gaps and entity replacements are separate discontinuities. Real paused frames
+retain frozen game time and increasing replay ticks. Recorded time is replay
+network observation time, not the time a player noticed the enemy. Cadence and
+the pre-window baseline are included in the diagnostic artifact.
+
 Relative replay/output paths are always relative to the repository root, even
 when the launcher is called from another directory. `probeTest` is also accepted
 to run only the focused Java self-tests. These checks establish build readiness;

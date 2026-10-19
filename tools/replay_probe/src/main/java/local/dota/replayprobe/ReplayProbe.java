@@ -9,6 +9,7 @@ import skadistats.clarity.io.Util;
 import skadistats.clarity.model.Entity;
 import skadistats.clarity.model.FieldPath;
 import skadistats.clarity.processor.entities.Entities;
+import skadistats.clarity.processor.entities.OnEntityUpdated;
 import skadistats.clarity.processor.entities.UsesEntities;
 import skadistats.clarity.processor.reader.OnMessage;
 import skadistats.clarity.processor.reader.OnTickEnd;
@@ -72,6 +73,9 @@ public final class ReplayProbe {
     private final List<Map<String, Object>> spatialSnapshots = new ArrayList<>();
     private final List<Map<String, Object>> visibilitySnapshots = new ArrayList<>();
     private final SpatialSampling spatialSampling = new SpatialSampling();
+    private VisibilityTransitions visibilityTransitions;
+    private final Map<String, Integer> pendingVisibilityWordUpdates = new LinkedHashMap<>();
+    private int pendingVisibilityEntityUpdates;
     private final Map<String, PropertyProvenance> fieldProvenance = new LinkedHashMap<>();
     private int nextSnapshotSecond;
     private int lastReplayTick;
@@ -94,8 +98,9 @@ public final class ReplayProbe {
 
     public static void main(String[] args) throws Exception {
         boolean compact = args.length == 3 && "--compact".equals(args[2]);
-        if (args.length != 2 && !compact) {
-            System.err.println("Usage: ReplayProbe <replay.dem> <output.json> [--compact]");
+        boolean transitions = args.length == 3 && "--visibility-transitions".equals(args[2]);
+        if (args.length != 2 && !compact && !transitions) {
+            System.err.println("Usage: ReplayProbe <replay.dem> <output.json> [--compact|--visibility-transitions]");
             System.exit(2);
         }
         Path replay = Path.of(args[0]).toAbsolutePath().normalize();
@@ -105,6 +110,15 @@ public final class ReplayProbe {
         }
 
         ReplayProbe probe = new ReplayProbe(replay, output);
+        if (transitions) {
+            probe.visibilityTransitions = new VisibilityTransitions(2250, 2340);
+            Map<String, Object> result = probe.runVisibilityTransitions();
+            Files.createDirectories(output.getParent());
+            Files.writeString(output, JsonWriter.toJson(result), StandardCharsets.UTF_8);
+            System.out.println("wrote " + output);
+            System.out.println("visibility_transitions=" + ((List<?>) result.get("transitions")).size());
+            return;
+        }
         Map<String, Object> diagnostic = probe.run();
         Map<String, Object> result = compact ? probe.compactTrajectory(diagnostic) : diagnostic;
         Path parent = output.getParent();
@@ -142,6 +156,30 @@ public final class ReplayProbe {
             System.out.println("final_state_mismatches="
                     + ((List<?>) ((Map<?, ?>) validation.get("final_state_comparison")).get("mismatches")).size());
         }
+    }
+
+    private Map<String, Object> runVisibilityTransitions() throws Exception {
+        Demo.CDemoFileInfo info = Clarity.infoForFile(replayPath.toString());
+        try (MappedFileSource source = new MappedFileSource(replayPath.toString())) {
+            new SimpleRunner(source).runWith(this);
+        }
+        if (!clock.isProven()) throw new IllegalStateException("Visibility clock is not PROVEN");
+        Map<String, Object> root = mapOf(
+                "schema_version", 1, "artifact_kind", "replay_visibility_transitions",
+                "information_scope", "GLOBAL_DIAGNOSTIC_WITH_SEPARATE_OBSERVING_TEAMS",
+                "match_id", info.getGameInfo().getDota().getMatchId(),
+                "replay_sha256", sha256(replayPath), "clarity_version", "4.0.1",
+                "clock_normalization_status", "PROVEN", "clock_normalization_method", clock.mode().toString(),
+                "zero_replay_tick", clock.zeroTick(), "millis_per_replay_tick", clock.millisPerTick(),
+                "network_to_replay_tick_offset_at_end", clock.networkToReplayTickOffset(),
+                "pause_ticks", clock.pauseTicks(), "pause_witnessed", clock.witnessedActivePause(),
+                "sampling_policy", "compare validated enemy flags at every completed non-synthetic network frame; no 10-second sampling; same-tick updates coalesced to final frame state",
+                "initial_state_policy", "last completed real frame strictly before window start; changes at first in-window frame are retained",
+                "pause_policy", "real paused frames retained with frozen normalized game time and separate increasing replay ticks",
+                "limitations", "source network update time is not human noticing time; transient changes within one completed frame may be coalesced; death does not imply HIDDEN; no coordinates, Smoke, kills or ability events"
+        );
+        root.putAll(visibilityTransitions.artifact());
+        return root;
     }
 
     private Map<String, Object> run() throws Exception {
@@ -444,6 +482,18 @@ public final class ReplayProbe {
         }
     }
 
+    @OnEntityUpdated(classPattern = "CDOTA_Data(Radiant|Dire)")
+    public void onVisibilityEntityUpdated(Entity entity, FieldPath[] paths, int count) {
+        if (visibilityTransitions == null) return;
+        pendingVisibilityEntityUpdates++;
+        for (int i = 0; i < count; i++) {
+            String name = entity.getDtClass().getNameForFieldPath(paths[i]);
+            if (name != null && name.startsWith(HeroVisibility.FIELD + ".")) {
+                pendingVisibilityWordUpdates.merge(entity.getDtClass().getDtName(), 1, Integer::sum);
+            }
+        }
+    }
+
     @OnTickEnd
     public void onTickEnd(Context context, boolean synthetic) {
         int tick = context.getTick();
@@ -483,6 +533,17 @@ public final class ReplayProbe {
         Float sourceGameTime = clock.normalizedGameTime();
         lastGameTime = sourceGameTime;
 
+        if (visibilityTransitions != null) {
+            if (clock.isProven() && sourceGameTime != null && !synthetic
+                    && visibilityTransitions.needsFrame(sourceGameTime)) {
+                visibilityTransitions.observe(sourceGameTime, tick, false, Boolean.TRUE.equals(gamePaused),
+                        extractHeroObservations(false).visibility(), pendingVisibilityEntityUpdates,
+                        pendingVisibilityWordUpdates);
+            }
+            pendingVisibilityEntityUpdates = 0;
+            pendingVisibilityWordUpdates.clear();
+            return;
+        }
         if (!clock.isProven() || sourceGameTime == null) {
             return;
         }
@@ -529,6 +590,10 @@ public final class ReplayProbe {
     private record HeroObservations(List<Map<String, Object>> positions, List<Map<String, Object>> visibility) {}
 
     private HeroObservations extractHeroObservations() {
+        return extractHeroObservations(true);
+    }
+
+    private HeroObservations extractHeroObservations(boolean includePositions) {
         Entity resource = entities.getByDtName("CDOTA_PlayerResource");
         if (resource == null) {
             return new HeroObservations(List.of(), List.of());
@@ -546,7 +611,7 @@ public final class ReplayProbe {
             Integer handle = readIntegerDirect(resource, "m_vecPlayerTeamData." + index + ".m_hSelectedHero");
             Entity hero = handle == null ? null : entities.getByHandle(handle);
             Integer heroId = readIntegerInternal(resource, selectedHeroIdPaths(index), null);
-            rows.add(HeroPositions.observe(slot, team, heroId, handle, hero));
+            if (includePositions) rows.add(HeroPositions.observe(slot, team, heroId, handle, hero));
             visibility.add(HeroVisibility.observe(slot, team, heroId, handle, hero, radiant, dire));
         }
         return new HeroObservations(rows, visibility);

@@ -81,3 +81,17 @@ tasks.register<JavaExec>("probeCompactReplay") {
         args(replay, output, "--compact")
     }
 }
+
+tasks.register<JavaExec>("probeVisibilityTransitions") {
+    group = "application"
+    description = "Writes real-frame enemy visibility changes in game-time window 2250..2340."
+    dependsOn(tasks.classes)
+    classpath = sourceSets.main.get().runtimeClasspath
+    mainClass.set("local.dota.replayprobe.ReplayProbe")
+    maxHeapSize = "4g"
+    doFirst {
+        val replay = providers.gradleProperty("replay").get()
+        val output = providers.gradleProperty("output").get()
+        args(replay, output, "--visibility-transitions")
+    }
+}
