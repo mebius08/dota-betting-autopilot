@@ -58,15 +58,21 @@ Start the server from the repository root:
 python -m uvicorn app.api:create_app --factory --host 127.0.0.1 --port 8000
 ```
 
-The default database is the repository's existing `data/autopilot.db`. To select
-another file, set `DOTA_ANALYTICS_DB_PATH` before starting the server. Relative
-configured paths are resolved from the current working directory. Python callers
+The default backend is SQLite with the repository's existing `data/autopilot.db`.
+To select another file, set `DOTA_ANALYTICS_DB_PATH` before starting the server.
+Relative configured paths are resolved from the current working directory. Python callers
 can use `create_app(db_path=...)`; an explicit path takes precedence over the
 environment variable.
 
-Application creation initializes the existing SQLite schema through
+For SQLite, application creation initializes the existing schema through
 `SQLiteRepository`. A missing database file is created with empty tables; no match
 data is inserted. Database initialization errors prevent startup. Database errors
 while reading matches produce HTTP `500`; they are not converted to an empty
 successful response. The browser interface at `GET /` loads records from this
 endpoint.
+
+Set `DOTA_ANALYTICS_DB_BACKEND=postgresql` to use the PostgreSQL adapter with the
+same JSON response contract. This requires `POSTGRES_HOST`, `POSTGRES_PORT`,
+`POSTGRES_DB`, `POSTGRES_USER` and `POSTGRES_PASSWORD`; `db_path` is then invalid.
+Only the historical match table is initialized. Initialization and read errors
+are propagated, without a fallback to SQLite. See the README for Compose startup.

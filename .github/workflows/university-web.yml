@@ -33,10 +33,11 @@ jobs:
       - name: Ruff web code and tests
         run: >-
           python -m ruff check app/api.py tools/check_api.py
-          tests/test_api.py tests/test_check_api.py
+          app/storage/postgres.py tests/test_api.py tests/test_check_api.py
+          tests/test_postgres_api.py
 
       - name: Focused API and client tests
-        run: python -m pytest -q tests/test_api.py tests/test_check_api.py
+        run: python -m pytest -q tests/test_api.py tests/test_check_api.py tests/test_postgres_api.py
 
       - name: Build web image
         run: docker build --tag dota-analytics-web:ci .

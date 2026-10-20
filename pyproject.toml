@@ -13,6 +13,7 @@ dependencies = [
     "joblib>=1.4.0",
     "numpy>=1.26.0",
     "pandas>=2.2.0",
+    "psycopg[binary]>=3.3.3",
     "PyYAML>=6.0",
     "pytest>=8.0",
     "scikit-learn>=1.5.0",
@@ -35,6 +36,7 @@ exclude = ["tests*"]
 [tool.setuptools.package-data]
 "app" = ["web/*.html"]
 "app.config" = ["tournament_allowlist.yaml"]
+"app.storage" = ["*.sql"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

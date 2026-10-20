@@ -104,9 +104,9 @@ from the host's project Python environment:
 python tools/check_api.py --base-url http://127.0.0.1:8000
 ```
 
-The image uses official Python 3.13 slim and installs only FastAPI, Uvicorn and
-their runtime dependencies from `requirements-web.txt`. Local databases,
-replays, caches and research outputs are excluded from the build context.
+The image uses official Python 3.13 slim and installs FastAPI, Uvicorn, the
+PostgreSQL driver and their runtime dependencies from `requirements-web.txt`.
+Local databases, replays, caches and research outputs are excluded from the build context.
 A new volume starts with an empty database; no match records are generated.
 The named volume retains SQLite data when the container stops:
 
@@ -119,6 +119,49 @@ To use an existing SQLite directory, replace the volume mount with
 `DOTA_ANALYTICS_DB_PATH` to the file's container path. The container runs as
 UID/GID `10001:10001`; the mounted directory and database must be writable by
 that user. Server logs are available with `docker logs dota-analytics`.
+
+### PostgreSQL with Docker Compose
+
+Copy the environment template without overwriting an existing local file:
+
+```bash
+cp -n .env.example .env
+```
+
+Set `POSTGRES_PASSWORD` in `.env` to your local database password. Database and
+role names are configured with `POSTGRES_DB` and `POSTGRES_USER`. Then run:
+
+```bash
+docker compose config --quiet
+docker compose up --build -d --wait --wait-timeout 120
+python tools/check_api.py --base-url http://127.0.0.1:8000
+```
+
+Open **http://127.0.0.1:8000/**. If port 8000 is already occupied, set
+`DOTA_ANALYTICS_WEB_PORT` in `.env` and use that port in the URL and check-client.
+Compose waits for PostgreSQL's healthcheck before starting the web service;
+the web healthcheck verifies that `/api/matches` can read the database.
+
+Compose explicitly sets `DOTA_ANALYTICS_DB_BACKEND=postgresql` and connects to
+service `db` using `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`,
+`POSTGRES_USER` and `POSTGRES_PASSWORD`. On application startup, the PostgreSQL
+adapter creates just the `historical_matches` table needed for the existing JSON
+contract. It inserts no match records and does not import SQLite data. A fresh
+database returns `[]`. Connection and schema errors prevent startup; subsequent
+database read failures return HTTP 500, with no fallback to SQLite.
+
+Outside Compose, `DOTA_ANALYTICS_DB_BACKEND` defaults to `sqlite` and the existing
+`DOTA_ANALYTICS_DB_PATH` behavior is unchanged. For a direct PostgreSQL launch,
+explicitly export `DOTA_ANALYTICS_DB_BACKEND=postgresql` and all five connection
+variables above. The local Uvicorn launcher does not automatically load `.env`.
+
+PostgreSQL data persists in the `postgres-data` named volume. These commands
+show logs and stop the services while retaining that volume:
+
+```bash
+docker compose logs web db
+docker compose down
+```
 
 ## Legacy paper research pipeline
 

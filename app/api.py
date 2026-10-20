@@ -2,7 +2,7 @@
 
 import os
 from pathlib import Path
-from typing import Annotated, cast
+from typing import Annotated, Protocol, cast
 
 from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.responses import HTMLResponse
@@ -15,31 +15,47 @@ DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "data" / "autopilot.d
 router = APIRouter(prefix="/api")
 
 
-def get_repository(request: Request) -> SQLiteRepository:
-    return cast(SQLiteRepository, request.app.state.repository)
+class MatchRepository(Protocol):
+    def list_historical_matches(self) -> list[HistoricalMatch]: ...
+
+
+def get_repository(request: Request) -> MatchRepository:
+    return cast(MatchRepository, request.app.state.repository)
 
 
 @router.get("/matches", response_model=list[HistoricalMatch])
 def list_matches(
-    repository: Annotated[SQLiteRepository, Depends(get_repository)],
+    repository: Annotated[MatchRepository, Depends(get_repository)],
 ) -> list[HistoricalMatch]:
     return repository.list_historical_matches()
 
 
 def create_app(db_path: str | Path | None = None) -> FastAPI:
-    """Create an application using the existing SQLite schema and repository."""
-    selected_path = (
-        Path(db_path)
-        if db_path is not None
-        else Path(os.environ.get("DOTA_ANALYTICS_DB_PATH", DEFAULT_DB_PATH))
-    )
+    """Create an application with the explicitly selected database backend."""
+    backend = os.environ.get("DOTA_ANALYTICS_DB_BACKEND", "sqlite").strip().lower()
+    repository: MatchRepository
+    if backend == "sqlite":
+        selected_path = (
+            Path(db_path)
+            if db_path is not None
+            else Path(os.environ.get("DOTA_ANALYTICS_DB_PATH", DEFAULT_DB_PATH))
+        )
+        repository = SQLiteRepository(selected_path)
+    elif backend == "postgresql":
+        if db_path is not None:
+            raise ValueError("db_path is only supported by the SQLite backend.")
+        from app.storage.postgres import PostgresMatchRepository
+
+        repository = PostgresMatchRepository.from_env()
+    else:
+        raise ValueError("DOTA_ANALYTICS_DB_BACKEND must be sqlite or postgresql.")
     application = FastAPI(
         title="Dota 2 Live Analytics & Prediction Platform",
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
     )
-    application.state.repository = SQLiteRepository(selected_path)
+    application.state.repository = repository
     application.include_router(router)
 
     @application.get("/", response_class=HTMLResponse)
