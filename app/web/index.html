@@ -66,6 +66,10 @@
     th { padding: 14px 26px; background: #fafbf8; font-size: 11px; letter-spacing: .8px; text-transform: uppercase; font-weight: 650; color: var(--muted); }
     td { padding: 21px 26px; border-top: 1px solid #edf0eb; vertical-align: middle; overflow-wrap: anywhere; }
     tbody tr:hover { background: #fcfdfb; }
+    tbody tr[data-match-link] { cursor: pointer; }
+    tbody tr:focus-within { background: #f3f7ef; }
+    .match-link { display: block; color: inherit; text-decoration: none; border-radius: 3px; }
+    .open-match { display: block; margin-top: 8px; font-size: 11px; color: var(--accent); font-weight: 500; }
     .teams { min-width: 180px; }
     .team { font-weight: 650; line-height: 1.45; }
     .versus { display: block; color: var(--muted); font-size: 10px; letter-spacing: 1px; margin: 3px 0; }
@@ -75,6 +79,24 @@
     .result { font-size: 13px; }
     .winner { display: inline-block; color: var(--accent); background: #eef5ee; padding: 5px 10px; border-radius: 6px; }
     .not-recorded { color: var(--muted); }
+    .detail-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 18px; margin-bottom: 28px; }
+    .back-link { color: var(--accent); text-decoration: none; font-size: 14px; }
+    .back-link:hover { text-decoration: underline; }
+    .detail-heading { margin-bottom: 28px; }
+    .detail-heading h1 { overflow-wrap: anywhere; }
+    .detail-matchup { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 28px; padding: 32px; }
+    .detail-team:last-child { text-align: right; }
+    .detail-team-label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+    .detail-team h2 { font-size: clamp(20px, 3vw, 30px); line-height: 1.3; overflow-wrap: anywhere; }
+    .detail-result { display: flex; align-items: baseline; gap: 18px; padding: 18px 32px; background: #eef5ee; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+    .detail-result span { color: var(--muted); font-size: 13px; flex-shrink: 0; }
+    .detail-result strong { min-width: 0; color: var(--accent); }
+    .detail-fields { padding: 28px 32px; border-top: 1px solid var(--line); }
+    .detail-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px 30px; margin: 22px 0 0; }
+    .detail-grid dt { font-size: 12px; color: var(--muted); margin-bottom: 5px; }
+    .detail-grid dd { margin: 0; overflow-wrap: anywhere; }
+    .detail-extra { padding: 22px 32px; border-top: 1px solid var(--line); }
+    .detail-extra summary { cursor: pointer; color: var(--accent); font-size: 14px; }
     .state { padding: 64px 24px 70px; text-align: center; }
     .state-symbol { margin: 0 auto 18px; width: 42px; height: 42px; display: grid; place-items: center; background: #eef3ed; color: var(--accent); border-radius: 50%; font-size: 23px; }
     .state h3 { margin: 0 0 8px; font-size: 18px; font-weight: 650; }
@@ -95,6 +117,7 @@
       th, td { padding-left: 18px; padding-right: 18px; }
       .teams { min-width: 150px; }
       .data-note { grid-template-columns: 130px 1fr; gap: 16px; }
+      .detail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     @media (max-width: 620px) {
       .header-inner { flex-wrap: wrap; gap: 14px; padding: 18px 20px 12px; }
@@ -113,6 +136,12 @@
       .teams { min-width: 0; }
       .data-note { grid-template-columns: 1fr; gap: 8px; padding-left: 4px; padding-right: 4px; }
       .footer-inner { padding: 20px; flex-direction: column; gap: 4px; }
+      .detail-toolbar { align-items: flex-start; flex-wrap: wrap; margin-bottom: 24px; }
+      .detail-matchup { gap: 14px; padding: 24px 18px; }
+      .detail-team h2 { font-size: 20px; }
+      .detail-result { padding: 18px; gap: 12px; flex-wrap: wrap; }
+      .detail-fields, .detail-extra { padding: 22px 18px; }
+      .detail-grid { grid-template-columns: 1fr; gap: 20px; }
     }
     @media (prefers-reduced-motion: reduce) {
       html { scroll-behavior: auto; }
@@ -124,22 +153,23 @@
   <a class="skip-link" href="#matches">Перейти к матчам</a>
   <header class="header">
     <div class="header-inner">
-      <a class="brand" href="#matches" aria-label="Dota 2 Analytics — история матчей">
+      <a class="brand" href="/#matches" data-match-list aria-label="Dota 2 Analytics — история матчей">
         <span class="brand-mark" aria-hidden="true">D2</span>
         <span><span class="brand-name">Dota 2 Analytics</span><span class="brand-caption">MATCH EXPLORER</span></span>
       </a>
       <nav aria-label="Основная навигация">
-        <a href="#matches">Матчи</a>
+        <a href="/#matches" data-match-list>Матчи</a>
         <a href="#data">О данных</a>
       </nav>
       <span class="archive-label">Исторические данные</span>
     </div>
   </header>
   <main id="matches">
+    <div id="list-view">
     <div class="intro">
       <div>
         <p class="eyebrow">АРХИВ · DOTA 2</p>
-        <h1>История матчей</h1>
+        <h1 id="page-title" tabindex="-1">История матчей</h1>
         <p class="intro-text">Команды, турниры и результаты сохранённых матчей.<br>Отправная точка для исследования игры.</p>
       </div>
       <button id="refresh" class="refresh" type="button" disabled>
@@ -163,6 +193,41 @@
       </table>
       <noscript><p class="state">Для загрузки матчей включите JavaScript в браузере.</p></noscript>
     </section>
+    </div>
+    <section id="detail-view" aria-labelledby="detail-title" hidden>
+      <div class="detail-toolbar">
+        <a id="back-to-list" class="back-link" href="/#matches" data-match-list>← К списку матчей</a>
+        <button id="detail-refresh" class="refresh" type="button">Обновить данные</button>
+      </div>
+      <div class="detail-heading">
+        <p class="eyebrow">АРХИВ · DOTA 2</p>
+        <h1 id="detail-title" tabindex="-1">Подробности матча</h1>
+        <p class="intro-text">Команды, результат и метаданные выбранного исторического матча.</p>
+      </div>
+      <div class="matches-panel" id="detail-panel" aria-busy="false">
+        <div class="state" id="detail-state" data-state="loading" role="status" aria-live="polite">
+          <div class="state-symbol" id="detail-symbol" aria-hidden="true">↻</div>
+          <h3 id="detail-state-title">Загружаем матч</h3>
+          <p id="detail-state-description">Получаем запись из исторического каталога.</p>
+        </div>
+        <div id="detail-content" hidden>
+          <div class="detail-matchup">
+            <div class="detail-team"><span class="detail-team-label">Команда A</span><h2 id="detail-team-a"></h2></div>
+            <span class="versus" aria-hidden="true">VS</span>
+            <div class="detail-team"><span class="detail-team-label">Команда B</span><h2 id="detail-team-b"></h2></div>
+          </div>
+          <div class="detail-result"><span>Победитель</span><strong id="detail-winner"></strong></div>
+          <section class="detail-fields" aria-labelledby="detail-info-title">
+            <h2 id="detail-info-title">О матче</h2>
+            <dl class="detail-grid" id="detail-fields"></dl>
+          </section>
+          <details class="detail-extra">
+            <summary>Метаданные записи</summary>
+            <dl class="detail-grid" id="detail-metadata"></dl>
+          </details>
+        </div>
+      </div>
+    </section>
     <section class="data-note" id="data" aria-labelledby="data-title">
       <h2 id="data-title">Об этих данных</h2>
       <p>Здесь отображаются исторические записи, а не состояние текущих игр.
@@ -173,7 +238,7 @@
   <footer><div class="footer-inner"><span>Dota 2 Analytics</span><span>История матчей · Исследование игровых данных</span></div></footer>
   <template id="match-row">
     <tr>
-      <td data-label="Матч"><div class="teams"><div class="team team-a"></div><span class="versus">VS</span><div class="team team-b"></div></div></td>
+      <td data-label="Матч"><a class="teams match-link"><div class="team team-a"></div><span class="versus">VS</span><div class="team team-b"></div><span class="open-match">Подробнее →</span></a></td>
       <td data-label="Дата"><div class="date"><span class="match-date"></span><span class="match-time"></span></div></td>
       <td data-label="Турнир"><span class="tournament"></span></td>
       <td data-label="Результат"><span class="result"></span></td>
@@ -190,6 +255,74 @@
     const template = document.getElementById("match-row");
     const dateFormat = new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "short", year: "numeric" });
     const timeFormat = new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" });
+    const detailTimeFormat = new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    const listView = document.getElementById("list-view");
+    const detailView = document.getElementById("detail-view");
+    const detailPanel = document.getElementById("detail-panel");
+    const detailState = document.getElementById("detail-state");
+    const detailContent = document.getElementById("detail-content");
+    const detailRefresh = document.getElementById("detail-refresh");
+    let activeRequest = null;
+
+    const stageNames = {
+      unknown: "Неизвестно", group: "Групповая стадия", crossover: "Переходная стадия",
+      upper_bracket: "Верхняя сетка", lower_bracket: "Нижняя сетка",
+      single_elimination: "Сетка на выбывание", grand_final: "Гранд-финал", placement: "Матч за место"
+    };
+    const roundNames = {
+      ...stageNames, play_in: "Предварительный этап", upper_bracket_round: "Раунд верхней сетки",
+      upper_bracket_quarterfinal: "Четвертьфинал верхней сетки", upper_bracket_semifinal: "Полуфинал верхней сетки",
+      upper_bracket_final: "Финал верхней сетки", lower_bracket_round: "Раунд нижней сетки",
+      lower_bracket_quarterfinal: "Четвертьфинал нижней сетки", lower_bracket_semifinal: "Полуфинал нижней сетки",
+      lower_bracket_final: "Финал нижней сетки", round_of_16: "1/8 финала", quarterfinal: "Четвертьфинал",
+      semifinal: "Полуфинал", final: "Финал", third_place: "Матч за третье место"
+    };
+
+    function displayValue(value) {
+      if (typeof value === "number" && Number.isFinite(value)) return String(value);
+      return valueOr(value, "Нет данных");
+    }
+
+    function enumValue(value, labels) {
+      return Object.hasOwn(labels, value) ? labels[value] : displayValue(value);
+    }
+
+    function dateTime(value) {
+      const date = typeof value === "string" ? new Date(value) : null;
+      return date !== null && !Number.isNaN(date.getTime())
+        ? `${dateFormat.format(date)}, ${detailTimeFormat.format(date)}` : "Нет данных";
+    }
+
+    function listUrl() {
+      const url = new URL(location.href);
+      url.searchParams.delete("source");
+      url.searchParams.delete("source_match_id");
+      url.hash = "matches";
+      return url;
+    }
+
+    function detailUrl(match) {
+      const url = listUrl();
+      url.searchParams.set("source", match.source);
+      url.searchParams.set("source_match_id", match.source_match_id);
+      url.hash = "";
+      return url;
+    }
+
+    function isPlainClick(event) {
+      return event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
+    }
+
+    function navigate(url) {
+      history.pushState(null, "", url);
+      renderRoute(true);
+    }
+
+    function beginRequest() {
+      if (activeRequest) activeRequest.abort();
+      activeRequest = new AbortController();
+      return activeRequest;
+    }
 
     function valueOr(value, fallback) {
       return typeof value === "string" && value.trim() ? value : fallback;
@@ -208,16 +341,25 @@
       const fragment = document.createDocumentFragment();
       for (const match of matches) {
         const row = template.content.cloneNode(true);
-        row.querySelector(".team-a").textContent = valueOr(match.team_a_name, "Команда не указана");
-        row.querySelector(".team-b").textContent = valueOr(match.team_b_name, "Команда не указана");
-        row.querySelector(".tournament").textContent = valueOr(match.tournament_name, "Турнир не указан");
+        const link = row.querySelector(".match-link");
+        link.href = detailUrl(match).href;
+        const entry = row.querySelector("tr");
+        entry.dataset.matchLink = "true";
+        entry.addEventListener("click", event => {
+          if (!isPlainClick(event) || window.getSelection()?.toString()) return;
+          event.preventDefault();
+          navigate(link.href);
+        });
+        row.querySelector(".team-a").textContent = displayValue(match.team_a_name);
+        row.querySelector(".team-b").textContent = displayValue(match.team_b_name);
+        row.querySelector(".tournament").textContent = displayValue(match.tournament_name);
         const date = typeof match.started_at === "string" ? new Date(match.started_at) : null;
         const validDate = date !== null && !Number.isNaN(date.getTime());
-        row.querySelector(".match-date").textContent = validDate ? dateFormat.format(date) : "Дата не указана";
+        row.querySelector(".match-date").textContent = validDate ? dateFormat.format(date) : "Нет данных";
         row.querySelector(".match-time").textContent = validDate ? timeFormat.format(date) : "";
-        const winner = valueOr(match.winner_name, match.winner_side === "team_a" ? match.team_a_name : match.winner_side === "team_b" ? match.team_b_name : "");
+        const winner = valueOr(match.winner_name, "");
         const result = row.querySelector(".result");
-        result.textContent = winner ? `Победа: ${winner}` : "Результат не указан";
+        result.textContent = winner ? `Победа: ${winner}` : "Нет данных";
         result.classList.add(winner ? "winner" : "not-recorded");
         fragment.append(row);
       }
@@ -232,31 +374,165 @@
     }
 
     async function loadMatches() {
+      const request = beginRequest();
       refresh.disabled = true;
       panel.setAttribute("aria-busy", "true");
       count.textContent = "—";
       rows.replaceChildren();
       showState("loading", "Загружаем матчи", "Получаем записи из исторической базы.", "↻");
       try {
-        const response = await fetch("/api/matches", { headers: { Accept: "application/json" }, cache: "no-store" });
+        const response = await fetch("/api/matches", { headers: { Accept: "application/json" }, cache: "no-store", signal: request.signal });
         if (!response.ok) throw new Error("API request failed");
         const matches = await response.json();
-        if (!Array.isArray(matches) || matches.some(match => match === null || typeof match !== "object" || Array.isArray(match))) {
+        if (!Array.isArray(matches) || matches.some(match => !validIdentity(match))) {
           throw new Error("Invalid match response");
         }
+        if (activeRequest !== request) return;
         renderMatches(matches);
       } catch {
+        if (request.signal.aborted || activeRequest !== request) return;
         rows.replaceChildren();
         count.textContent = "—";
         showState("error", "Не удалось загрузить матчи", "Проверьте соединение и попробуйте обновить список. Если ошибка повторяется, сервис может быть временно недоступен.", "!");
       } finally {
-        refresh.disabled = false;
-        panel.setAttribute("aria-busy", "false");
+        if (activeRequest === request) {
+          refresh.disabled = false;
+          panel.setAttribute("aria-busy", "false");
+        }
       }
     }
 
+    function validIdentity(match) {
+      return match !== null && typeof match === "object" && !Array.isArray(match)
+        && typeof match.source === "string" && match.source.length > 0
+        && typeof match.source_match_id === "string" && match.source_match_id.length > 0;
+    }
+
+    function showDetailState(kind, title, description, symbol) {
+      detailState.dataset.state = kind;
+      document.getElementById("detail-state-title").textContent = title;
+      document.getElementById("detail-state-description").textContent = description;
+      document.getElementById("detail-symbol").textContent = symbol;
+      detailState.hidden = false;
+      detailContent.hidden = true;
+    }
+
+    function renderFields(containerId, match, definitions) {
+      const fragment = document.createDocumentFragment();
+      for (const [label, key, format = displayValue] of definitions) {
+        const item = document.createElement("div");
+        const term = document.createElement("dt");
+        const description = document.createElement("dd");
+        term.textContent = label;
+        description.textContent = format(match[key]);
+        item.append(term, description);
+        fragment.append(item);
+      }
+      document.getElementById(containerId).replaceChildren(fragment);
+    }
+
+    function renderMatch(match) {
+      document.getElementById("detail-title").textContent = `Матч ${match.source_match_id}`;
+      document.getElementById("detail-team-a").textContent = displayValue(match.team_a_name);
+      document.getElementById("detail-team-b").textContent = displayValue(match.team_b_name);
+      document.getElementById("detail-winner").textContent = displayValue(match.winner_name);
+      renderFields("detail-fields", match, [
+        ["Начало", "started_at", dateTime], ["Окончание", "ended_at", dateTime],
+        ["Турнир", "tournament_name"], ["Стадия", "competitive_stage", value => enumValue(value, stageNames)],
+        ["Раунд", "normalized_round", value => enumValue(value, roundNames)],
+        ["Статус записи", "status", value => enumValue(value, { completed: "Завершён", finished: "Завершён", unknown: "Неизвестно" })],
+        ["Лига", "league_name"], ["Серия", "series_name"], ["Формат серии (best of)", "best_of"]
+      ]);
+      renderFields("detail-metadata", match, [
+        ["Источник", "source"], ["ID матча у источника", "source_match_id"], ["ID записи каталога", "id"],
+        ["ID команды A", "team_a_source_id"], ["ID команды B", "team_b_source_id"],
+        ["ID победившей команды", "winner_source_id"],
+        ["Сторона победителя", "winner_side", value => enumValue(value, { team_a: "Команда A", team_b: "Команда B" })],
+        ["ID турнира", "tournament_source_id"], ["ID лиги", "league_source_id"], ["ID серии", "series_source_id"],
+        ["Исходная стадия", "raw_stage_label"], ["Добавлен в каталог", "ingested_at", dateTime]
+      ]);
+      document.title = `${displayValue(match.team_a_name)} — ${displayValue(match.team_b_name)} · Dota 2 Analytics`;
+      detailState.hidden = true;
+      detailContent.hidden = false;
+    }
+
+    async function loadMatch(source, sourceMatchId) {
+      const request = beginRequest();
+      detailRefresh.disabled = true;
+      detailPanel.setAttribute("aria-busy", "true");
+      document.getElementById("detail-title").textContent = "Подробности матча";
+      document.title = "Подробности матча · Dota 2 Analytics";
+      document.querySelector(".detail-extra").open = false;
+      showDetailState("loading", "Загружаем матч", "Получаем запись из исторического каталога.", "↻");
+      try {
+        const response = await fetch(`/api/matches/${encodeURIComponent(source)}/${encodeURIComponent(sourceMatchId)}`, {
+          headers: { Accept: "application/json" }, cache: "no-store", signal: request.signal
+        });
+        if (activeRequest !== request) return;
+        if (response.status === 404) {
+          showDetailState("not-found", "Матч не найден", "Запись с такими источником и ID отсутствует в каталоге. Вернитесь к списку матчей.", "∅");
+          document.title = "Матч не найден · Dota 2 Analytics";
+          return;
+        }
+        if (!response.ok) throw new Error("API request failed");
+        const match = await response.json();
+        if (activeRequest !== request) return;
+        if (!validIdentity(match) || match.source !== source || match.source_match_id !== sourceMatchId) {
+          throw new Error("Invalid match response");
+        }
+        renderMatch(match);
+      } catch {
+        if (request.signal.aborted || activeRequest !== request) return;
+        showDetailState("error", "Не удалось загрузить матч", "Проверьте соединение и попробуйте обновить данные. Сервис также может быть временно недоступен.", "!");
+      } finally {
+        if (activeRequest === request) {
+          detailRefresh.disabled = false;
+          detailPanel.setAttribute("aria-busy", "false");
+        }
+      }
+    }
+
+    function renderRoute(moveFocus = false) {
+      const parameters = new URL(location.href).searchParams;
+      const detail = parameters.has("source") || parameters.has("source_match_id");
+      listView.hidden = detail;
+      detailView.hidden = !detail;
+      document.querySelectorAll("[data-match-list]").forEach(link => { link.href = listUrl().href; });
+      if (detail) {
+        const source = parameters.get("source");
+        const sourceMatchId = parameters.get("source_match_id");
+        if (source && sourceMatchId) {
+          loadMatch(source, sourceMatchId);
+        } else {
+          if (activeRequest) activeRequest.abort();
+          activeRequest = null;
+          document.getElementById("detail-title").textContent = "Подробности матча";
+          document.title = "Неполная ссылка · Dota 2 Analytics";
+          detailRefresh.disabled = false;
+          detailPanel.setAttribute("aria-busy", "false");
+          showDetailState("error", "Неполная ссылка на матч", "В ссылке должны быть указаны источник и ID матча. Выберите запись из списка.", "!");
+        }
+      } else {
+        document.title = "История матчей · Dota 2 Analytics";
+        loadMatches();
+      }
+      if (moveFocus) {
+        document.getElementById(detail ? "detail-title" : "page-title").focus({ preventScroll: true });
+        window.scrollTo(0, 0);
+      }
+    }
+
+    document.querySelectorAll("[data-match-list]").forEach(link => {
+      link.addEventListener("click", event => {
+        if (!isPlainClick(event)) return;
+        event.preventDefault();
+        navigate(listUrl());
+      });
+    });
+    detailRefresh.addEventListener("click", () => renderRoute());
+    window.addEventListener("popstate", () => renderRoute(true));
     refresh.addEventListener("click", loadMatches);
-    loadMatches();
+    renderRoute();
   </script>
 </body>
 </html>
