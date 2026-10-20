@@ -1,9 +1,10 @@
 from contextlib import closing
+from dataclasses import fields
 from datetime import datetime, timezone
 import json
 from pathlib import Path
-from sqlite3 import Connection
-from typing import cast
+from sqlite3 import Connection, Row, connect
+from typing import cast, get_args, get_type_hints
 
 from app.domain import (
     Bet,
@@ -741,6 +742,29 @@ class SQLiteRepository:
                 """
             ).fetchall()
 
+        return [_row_to_historical_match(row) for row in rows]
+
+    @classmethod
+    def read_historical_matches(cls, db_path: str | Path) -> list[HistoricalMatch]:
+        """Read an existing catalog without schema initialization or source writes."""
+        path = Path(db_path).resolve(strict=True)
+        columns = tuple(field.name for field in fields(HistoricalMatch))
+        hints = get_type_hints(HistoricalMatch)
+        with closing(connect(path.as_uri() + "?mode=ro", uri=True)) as connection:
+            connection.row_factory = Row
+            rows = connection.execute(
+                "SELECT " + ", ".join(columns) + " FROM historical_matches "
+                "ORDER BY started_at, source, source_match_id"
+            ).fetchall()
+        for row in rows:
+            for name in columns:
+                value = row[name]
+                if value is None:
+                    compatible = type(None) in get_args(hints[name])
+                else:
+                    compatible = isinstance(value, int if name == "best_of" else str)
+                if not compatible:
+                    raise ValueError(f"Incompatible SQLite field: {name}.")
         return [_row_to_historical_match(row) for row in rows]
 
     def list_historical_matches_before(

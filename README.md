@@ -163,6 +163,54 @@ docker compose logs web db
 docker compose down
 ```
 
+### Import a historical SQLite catalog
+
+From the repository root, validate an explicitly selected source:
+
+```bash
+python -m tools.import_historical_matches --sqlite-path /absolute/path/to/catalog.sqlite3
+```
+
+This is a dry-run: the source is opened read-only, only the 24 `HistoricalMatch`
+fields are read, and record count, types, identifiers and timestamps are checked.
+PostgreSQL is not contacted and its current schema or existing records are not
+checked by dry-run. No source tables are created or changed. Timestamps must
+include a timezone; none is inferred.
+
+An applied import uses the same five `POSTGRES_*` connection variables as the
+web server and requires its initialized PostgreSQL schema. Rebuild/start the
+existing Compose services first so that the image contains the importer support:
+
+```bash
+docker compose up --build -d --wait --wait-timeout 120
+```
+
+To apply against Compose's PostgreSQL, mount the source directory and the CLI
+read-only into a one-off web container, which inherits the existing connection
+settings. Replace the source directory and filename with your actual catalog:
+
+```bash
+docker compose run --rm --no-deps \
+  --volume "$PWD/tools/import_historical_matches.py:/srv/app/tools/import_historical_matches.py:ro" \
+  --volume "/absolute/path/to/sqlite-directory:/import:ro" \
+  web python -m tools.import_historical_matches \
+  --sqlite-path /import/catalog.sqlite3 --apply
+```
+
+Omit `--apply` to dry-run that same mounted source. For a PostgreSQL instance
+already reachable from the host, the local command also accepts `--apply` after
+the five connection variables have been exported. `.env` is read by Compose,
+not automatically by the local CLI.
+
+All new records are inserted in one transaction. Existing
+`(source, source_match_id)` identities are skipped without overwriting their
+values; repeat imports create no duplicates. A conflicting primary key or another
+write error rolls back the batch. Connection and commit errors also fail the
+command; a retry safely skips any already imported identities. The summary reports
+source, inserted and skipped counts; errors return exit code 1. An empty source
+does not open a PostgreSQL connection, including with `--apply`. Other tables,
+source data and the existing API are unchanged.
+
 ## Legacy paper research pipeline
 
 1. Load `config.example.yaml`.
