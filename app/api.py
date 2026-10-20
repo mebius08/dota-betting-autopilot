@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends, FastAPI, Request
+from fastapi.responses import HTMLResponse
 
 from app.history.domain import HistoricalMatch
 from app.storage import SQLiteRepository
@@ -40,4 +41,11 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
     )
     application.state.repository = SQLiteRepository(selected_path)
     application.include_router(router)
+
+    @application.get("/", response_class=HTMLResponse)
+    def index() -> str:
+        return Path(__file__).with_name("web").joinpath("index.html").read_text(
+            encoding="utf-8"
+        )
+
     return application

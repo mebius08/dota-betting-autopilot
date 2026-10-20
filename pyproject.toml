@@ -33,6 +33,7 @@ include = ["app*"]
 exclude = ["tests*"]
 
 [tool.setuptools.package-data]
+"app" = ["web/*.html"]
 "app.config" = ["tournament_allowlist.yaml"]
 
 [tool.pytest.ini_options]

@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>История матчей · Dota 2 Analytics</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #172f2c;
+      --muted: #64746e;
+      --line: #dce4de;
+      --accent: #176753;
+      --paper: #f5f7f2;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; scroll-padding-top: 24px; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font: 15px/1.6 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    a { color: inherit; }
+    button { font: inherit; }
+    [hidden] { display: none !important; }
+    :focus-visible { outline: 3px solid #b46a24; outline-offset: 5px; }
+    .skip-link { position: absolute; top: -60px; left: 20px; }
+    .skip-link:focus { top: 12px; padding: 8px 16px; background: white; z-index: 1; }
+    .header { background: #fff; border-bottom: 1px solid var(--line); }
+    .header-inner, main, .footer-inner { max-width: 1200px; margin: auto; }
+    .header-inner { display: flex; align-items: center; gap: 48px; padding: 22px 36px; }
+    .brand { display: flex; align-items: center; gap: 12px; text-decoration: none; }
+    .brand-mark {
+      display: grid; place-items: center; width: 40px; height: 40px;
+      border-radius: 11px; background: var(--ink); color: white; font-weight: 750;
+    }
+    .brand-name { font-size: 17px; font-weight: 750; letter-spacing: -.5px; }
+    .brand-caption { display: block; font-size: 11px; color: var(--muted); letter-spacing: 1px; }
+    nav { display: flex; gap: 28px; font-size: 14px; }
+    nav a { text-decoration: none; color: var(--muted); padding: 8px 0; }
+    nav a:hover { color: var(--accent); }
+    .archive-label {
+      margin-left: auto; padding: 5px 11px; border: 1px solid var(--line);
+      border-radius: 20px; font-size: 12px; color: var(--muted); white-space: nowrap;
+    }
+    main { padding: 55px 36px 64px; }
+    .eyebrow { margin: 0 0 12px; color: var(--accent); font-size: 11px; font-weight: 750; letter-spacing: 2px; }
+    .intro { display: flex; align-items: flex-end; justify-content: space-between; gap: 28px; margin-bottom: 34px; }
+    h1 { margin: 0; font-size: clamp(30px, 4vw, 44px); line-height: 1.2; font-weight: 700; letter-spacing: -1.5px; }
+    .intro-text { margin: 14px 0 0; color: var(--muted); max-width: 580px; }
+    .refresh {
+      display: inline-flex; align-items: center; justify-content: center; gap: 9px;
+      border: 1px solid var(--line); border-radius: 8px; padding: 10px 17px;
+      background: white; color: var(--ink); cursor: pointer; white-space: nowrap;
+    }
+    .refresh:hover { border-color: var(--accent); color: var(--accent); }
+    .refresh:disabled { cursor: wait; opacity: .6; }
+    .refresh svg { width: 17px; height: 17px; }
+    .matches-panel { background: white; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+    .panel-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 22px 26px; border-bottom: 1px solid var(--line); }
+    h2 { margin: 0; font-size: 17px; font-weight: 650; }
+    .count { font-variant-numeric: tabular-nums; border-radius: 6px; background: #eef3ed; color: var(--accent); padding: 3px 10px; font-size: 13px; }
+    table { width: 100%; border-collapse: collapse; text-align: left; }
+    th { padding: 14px 26px; background: #fafbf8; font-size: 11px; letter-spacing: .8px; text-transform: uppercase; font-weight: 650; color: var(--muted); }
+    td { padding: 21px 26px; border-top: 1px solid #edf0eb; vertical-align: middle; overflow-wrap: anywhere; }
+    tbody tr:hover { background: #fcfdfb; }
+    .teams { min-width: 180px; }
+    .team { font-weight: 650; line-height: 1.45; }
+    .versus { display: block; color: var(--muted); font-size: 10px; letter-spacing: 1px; margin: 3px 0; }
+    .date { white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .match-time { display: block; color: var(--muted); font-size: 12px; }
+    .tournament { color: #475c54; }
+    .result { font-size: 13px; }
+    .winner { display: inline-block; color: var(--accent); background: #eef5ee; padding: 5px 10px; border-radius: 6px; }
+    .not-recorded { color: var(--muted); }
+    .state { padding: 64px 24px 70px; text-align: center; }
+    .state-symbol { margin: 0 auto 18px; width: 42px; height: 42px; display: grid; place-items: center; background: #eef3ed; color: var(--accent); border-radius: 50%; font-size: 23px; }
+    .state h3 { margin: 0 0 8px; font-size: 18px; font-weight: 650; }
+    .state p { margin: 0 auto; max-width: 420px; color: var(--muted); font-size: 14px; }
+    .state[data-state="error"] .state-symbol { background: #fff1e7; color: #9a4c16; }
+    .state[data-state="loading"] .state-symbol { animation: pulse 1s ease-in-out infinite alternate; }
+    .data-note { display: grid; grid-template-columns: 180px 1fr; gap: 28px; margin-top: 30px; padding: 24px 0 0; }
+    .data-note h2 { font-size: 14px; }
+    .data-note p { margin: 0; max-width: 730px; font-size: 13px; color: var(--muted); }
+    footer { border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+    .footer-inner { display: flex; justify-content: space-between; gap: 16px; padding: 22px 36px; }
+    @keyframes pulse { to { opacity: .35; } }
+    @media (max-width: 850px) {
+      .header-inner { gap: 28px; padding: 18px 24px; }
+      .archive-label { display: none; }
+      nav { margin-left: auto; gap: 20px; }
+      main { padding: 36px 24px 48px; }
+      th, td { padding-left: 18px; padding-right: 18px; }
+      .teams { min-width: 150px; }
+      .data-note { grid-template-columns: 130px 1fr; gap: 16px; }
+    }
+    @media (max-width: 620px) {
+      .header-inner { flex-wrap: wrap; gap: 14px; padding: 18px 20px 12px; }
+      .brand-name { font-size: 16px; }
+      nav { width: 100%; margin: 0; }
+      main { padding: 30px 16px 40px; }
+      .intro { align-items: flex-start; flex-direction: column; gap: 20px; margin-bottom: 24px; }
+      .intro-text { font-size: 14px; }
+      .panel-heading { padding: 18px; }
+      table, tbody, tr, td { display: block; }
+      thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+      tbody tr { padding: 18px; border-top: 1px solid var(--line); }
+      tbody tr:first-child { border-top: 0; }
+      td { display: grid; grid-template-columns: 75px minmax(0, 1fr); gap: 14px; padding: 7px 0; border: 0; }
+      td::before { content: attr(data-label); font-size: 12px; color: var(--muted); padding-top: 2px; }
+      .teams { min-width: 0; }
+      .data-note { grid-template-columns: 1fr; gap: 8px; padding-left: 4px; padding-right: 4px; }
+      .footer-inner { padding: 20px; flex-direction: column; gap: 4px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      .state[data-state="loading"] .state-symbol { animation: none; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#matches">Перейти к матчам</a>
+  <header class="header">
+    <div class="header-inner">
+      <a class="brand" href="#matches" aria-label="Dota 2 Analytics — история матчей">
+        <span class="brand-mark" aria-hidden="true">D2</span>
+        <span><span class="brand-name">Dota 2 Analytics</span><span class="brand-caption">MATCH EXPLORER</span></span>
+      </a>
+      <nav aria-label="Основная навигация">
+        <a href="#matches">Матчи</a>
+        <a href="#data">О данных</a>
+      </nav>
+      <span class="archive-label">Исторические данные</span>
+    </div>
+  </header>
+  <main id="matches">
+    <div class="intro">
+      <div>
+        <p class="eyebrow">АРХИВ · DOTA 2</p>
+        <h1>История матчей</h1>
+        <p class="intro-text">Команды, турниры и результаты сохранённых матчей.<br>Отправная точка для исследования игры.</p>
+      </div>
+      <button id="refresh" class="refresh" type="button" disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 7a7 7 0 0 1 11.4-1L20 9M4 15l2.5 3A7 7 0 0 0 18 17"/></svg>
+        Обновить список
+      </button>
+    </div>
+    <section class="matches-panel" id="matches-panel" aria-labelledby="list-title" aria-busy="true">
+      <div class="panel-heading">
+        <h2 id="list-title">Сохранённые матчи</h2>
+        <span class="count" id="match-count" aria-label="Количество матчей">—</span>
+      </div>
+      <div class="state" id="state" data-state="loading" role="status" aria-live="polite">
+        <div class="state-symbol" id="state-symbol" aria-hidden="true">↻</div>
+        <h3 id="state-title">Загружаем матчи</h3>
+        <p id="state-detail">Получаем записи из исторической базы.</p>
+      </div>
+      <table id="match-table" aria-label="Исторические матчи Dota 2" hidden>
+        <thead><tr><th scope="col">Матч</th><th scope="col">Дата</th><th scope="col">Турнир</th><th scope="col">Результат</th></tr></thead>
+        <tbody id="match-rows"></tbody>
+      </table>
+      <noscript><p class="state">Для загрузки матчей включите JavaScript в браузере.</p></noscript>
+    </section>
+    <section class="data-note" id="data" aria-labelledby="data-title">
+      <h2 id="data-title">Об этих данных</h2>
+      <p>Здесь отображаются исторические записи, а не состояние текущих игр.
+        Даты указаны в часовом поясе вашего браузера. Если дата, турнир или результат
+        отсутствуют в базе, это отмечено в списке.</p>
+    </section>
+  </main>
+  <footer><div class="footer-inner"><span>Dota 2 Analytics</span><span>История матчей · Исследование игровых данных</span></div></footer>
+  <template id="match-row">
+    <tr>
+      <td data-label="Матч"><div class="teams"><div class="team team-a"></div><span class="versus">VS</span><div class="team team-b"></div></div></td>
+      <td data-label="Дата"><div class="date"><span class="match-date"></span><span class="match-time"></span></div></td>
+      <td data-label="Турнир"><span class="tournament"></span></td>
+      <td data-label="Результат"><span class="result"></span></td>
+    </tr>
+  </template>
+  <script>
+    "use strict";
+    const refresh = document.getElementById("refresh");
+    const panel = document.getElementById("matches-panel");
+    const table = document.getElementById("match-table");
+    const rows = document.getElementById("match-rows");
+    const count = document.getElementById("match-count");
+    const state = document.getElementById("state");
+    const template = document.getElementById("match-row");
+    const dateFormat = new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "short", year: "numeric" });
+    const timeFormat = new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" });
+
+    function valueOr(value, fallback) {
+      return typeof value === "string" && value.trim() ? value : fallback;
+    }
+
+    function showState(kind, title, detail, symbol) {
+      state.dataset.state = kind;
+      document.getElementById("state-title").textContent = title;
+      document.getElementById("state-detail").textContent = detail;
+      document.getElementById("state-symbol").textContent = symbol;
+      state.hidden = false;
+      table.hidden = true;
+    }
+
+    function renderMatches(matches) {
+      const fragment = document.createDocumentFragment();
+      for (const match of matches) {
+        const row = template.content.cloneNode(true);
+        row.querySelector(".team-a").textContent = valueOr(match.team_a_name, "Команда не указана");
+        row.querySelector(".team-b").textContent = valueOr(match.team_b_name, "Команда не указана");
+        row.querySelector(".tournament").textContent = valueOr(match.tournament_name, "Турнир не указан");
+        const date = typeof match.started_at === "string" ? new Date(match.started_at) : null;
+        const validDate = date !== null && !Number.isNaN(date.getTime());
+        row.querySelector(".match-date").textContent = validDate ? dateFormat.format(date) : "Дата не указана";
+        row.querySelector(".match-time").textContent = validDate ? timeFormat.format(date) : "";
+        const winner = valueOr(match.winner_name, match.winner_side === "team_a" ? match.team_a_name : match.winner_side === "team_b" ? match.team_b_name : "");
+        const result = row.querySelector(".result");
+        result.textContent = winner ? `Победа: ${winner}` : "Результат не указан";
+        result.classList.add(winner ? "winner" : "not-recorded");
+        fragment.append(row);
+      }
+      rows.replaceChildren(fragment);
+      count.textContent = String(matches.length);
+      if (matches.length === 0) {
+        showState("empty", "Пока нет сохранённых матчей", "В исторической базе ещё нет записей. Когда они появятся, обновите список.", "∅");
+      } else {
+        state.hidden = true;
+        table.hidden = false;
+      }
+    }
+
+    async function loadMatches() {
+      refresh.disabled = true;
+      panel.setAttribute("aria-busy", "true");
+      count.textContent = "—";
+      rows.replaceChildren();
+      showState("loading", "Загружаем матчи", "Получаем записи из исторической базы.", "↻");
+      try {
+        const response = await fetch("/api/matches", { headers: { Accept: "application/json" }, cache: "no-store" });
+        if (!response.ok) throw new Error("API request failed");
+        const matches = await response.json();
+        if (!Array.isArray(matches) || matches.some(match => match === null || typeof match !== "object" || Array.isArray(match))) {
+          throw new Error("Invalid match response");
+        }
+        renderMatches(matches);
+      } catch {
+        rows.replaceChildren();
+        count.textContent = "—";
+        showState("error", "Не удалось загрузить матчи", "Проверьте соединение и попробуйте обновить список. Если ошибка повторяется, сервис может быть временно недоступен.", "!");
+      } finally {
+        refresh.disabled = false;
+        panel.setAttribute("aria-busy", "false");
+      }
+    }
+
+    refresh.addEventListener("click", loadMatches);
+    loadMatches();
+  </script>
+</body>
+</html>

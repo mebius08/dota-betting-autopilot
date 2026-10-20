@@ -70,3 +70,34 @@ def test_matches_returns_empty_list_for_empty_database(
     assert response.headers["content-type"] == "application/json"
     assert response.json() == []
     assert SQLiteRepository(db_path).list_historical_matches() == []
+
+
+@pytest.mark.parametrize("has_matches", [False, True])
+def test_homepage_and_matches_api_share_existing_storage(
+    tmp_path: Path, has_matches: bool
+) -> None:
+    db_path = tmp_path / "web.sqlite3"
+    repository = SQLiteRepository(db_path)
+    match = make_historical_match("stored-match")
+    if has_matches:
+        repository.save_historical_match(match)
+    application = create_app(db_path)
+
+    async def request_page_and_matches() -> tuple[httpx.Response, httpx.Response]:
+        transport = httpx.ASGITransport(app=application)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as client:
+            return await client.get("/"), await client.get("/api/matches")
+
+    page, api_response = asyncio.run(request_page_and_matches())
+
+    assert page.status_code == 200
+    assert page.headers["content-type"] == "text/html; charset=utf-8"
+    assert '<html lang="ru">' in page.text
+    assert "История матчей" in page.text
+    assert 'fetch("/api/matches"' in page.text
+    assert api_response.status_code == 200
+    expected = [match] if has_matches else []
+    assert TypeAdapter(list[HistoricalMatch]).validate_python(api_response.json()) == expected
+    assert repository.list_historical_matches() == expected

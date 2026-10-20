@@ -68,4 +68,5 @@ Application creation initializes the existing SQLite schema through
 `SQLiteRepository`. A missing database file is created with empty tables; no match
 data is inserted. Database initialization errors prevent startup. Database errors
 while reading matches produce HTTP `500`; they are not converted to an empty
-successful response. Only the documented application endpoint is enabled.
+successful response. The browser interface at `GET /` loads records from this
+endpoint.

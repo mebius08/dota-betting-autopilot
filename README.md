@@ -62,6 +62,10 @@ python -m pip install -e ".[dev]"
 python -m uvicorn app.api:create_app --factory --host 127.0.0.1 --port 8000
 ```
 
+Open **http://127.0.0.1:8000/** to browse historical matches. The responsive page
+loads records from the API and shows loading, empty-database, and error states.
+Use **Обновить список** to reload the data.
+
 `GET http://127.0.0.1:8000/api/matches` returns historical matches from the
 existing SQLite database, `data/autopilot.db` by default. Set
 `DOTA_ANALYTICS_DB_PATH` to select another SQLite file. An empty database returns
