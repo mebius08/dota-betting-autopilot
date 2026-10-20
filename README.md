@@ -66,6 +66,17 @@ Open **http://127.0.0.1:8000/** to browse historical matches. The responsive pag
 loads records from the API and shows loading, empty-database, and error states.
 Use **Обновить список** to reload the data.
 
+With the server running, check both the page and the API from another terminal:
+
+```bash
+python tools/check_api.py --base-url http://127.0.0.1:8000
+```
+
+`--base-url` is optional and defaults to the address above. The HTTPX client
+checks HTTP 200 and the HTML/JSON response types, accepts an empty match array,
+and prints `OK` or `FAIL` for each endpoint. Requests time out after 10 seconds.
+Exit codes: `0` for success, `1` for failed checks, `2` for invalid CLI arguments.
+
 `GET http://127.0.0.1:8000/api/matches` returns historical matches from the
 existing SQLite database, `data/autopilot.db` by default. Set
 `DOTA_ANALYTICS_DB_PATH` to select another SQLite file. An empty database returns
