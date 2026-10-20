@@ -2,7 +2,8 @@
 
 ## GET /api/matches
 
-Returns the historical match records stored in the selected SQLite database.
+Returns the historical match records stored in the configured SQLite or
+PostgreSQL database.
 The endpoint does not fetch external data or generate match records.
 
 **Parameters:** none. There are no path or query parameters and no request body.
@@ -49,6 +50,36 @@ Identifiers are strings. Dates use ISO 8601 with the timezone stored in the
 database; nullable fields remain JSON `null`. Stage and round enums serialize
 to their string values. The endpoint exposes stored statuses without inferring
 whether a historical record describes an individual map or a series.
+
+## GET /api/matches/{source}/{source_match_id}
+
+Returns one historical match identified by the exact pair of source and
+source-local match ID. The internal catalog `id` is not used for this lookup.
+
+**Path parameters:** `source` and `source_match_id` are strings. The same
+`source_match_id` may exist under different sources; both values must match.
+Each identifier occupies one URL path segment. There are no query parameters
+or request body.
+
+Example request for one of the imported local replay records:
+
+```bash
+curl http://127.0.0.1:8000/api/matches/replay_clarity/8960991322
+```
+
+**Response:** HTTP `200`, `Content-Type: application/json`, a single
+`HistoricalMatch` object with exactly the same 24 fields and serialization as
+one element of `GET /api/matches`, without the enclosing array. Nullable fields
+remain `null`; dates and enum values follow the contract above.
+
+An unknown pair returns HTTP `404`:
+
+```json
+{"detail": "Historical match not found."}
+```
+
+Database connection, query and decoding errors produce HTTP `500`, not `404`
+or an empty successful response. Both backends use parameterized queries.
 
 ## Database selection and errors
 

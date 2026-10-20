@@ -37,13 +37,13 @@ def postgres(monkeypatch):
     return connection, connect, sqlite, settings
 
 
-def get_matches(application):
+def get_matches(application, path="/api/matches"):
     async def request():
         transport = httpx.ASGITransport(app=application, raise_app_exceptions=False)
         async with httpx.AsyncClient(
             transport=transport, base_url="http://testserver"
         ) as client:
-            return await client.get("/api/matches")
+            return await client.get(path)
 
     return asyncio.run(request())
 
@@ -152,3 +152,66 @@ def test_unknown_backend_is_rejected(monkeypatch, tmp_path):
     monkeypatch.setenv("DOTA_ANALYTICS_DB_BACKEND", "unsupported")
     with pytest.raises(ValueError, match="DOTA_ANALYTICS_DB_BACKEND"):
         api.create_app(tmp_path / "unused.sqlite3")
+
+
+def test_postgres_detail_preserves_list_contract_and_binds_both_identifiers(postgres):
+    connection, _, sqlite, _ = postgres
+    match = replace(
+        make_historical_match("catalog-id", source_match_id="8960991322"),
+        source="replay_clarity",
+        ended_at=None,
+    )
+    row = asdict(match)
+    row["competitive_stage"] = match.competitive_stage.value
+    row["normalized_round"] = match.normalized_round.value
+    connection.execute.return_value.fetchall.return_value = [row]
+    connection.execute.return_value.fetchone.return_value = row
+    application = api.create_app()
+    listing = get_matches(application)
+
+    response = get_matches(application, "/api/matches/replay_clarity/8960991322")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/json"
+    assert response.json() == listing.json()[0]
+    assert TypeAdapter(HistoricalMatch).validate_python(response.json()) == match
+    query, parameters = connection.execute.call_args.args
+    assert "WHERE source = %s AND source_match_id = %s" in query
+    assert parameters == ("replay_clarity", "8960991322")
+    sqlite.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("source", "source_match_id"),
+    [
+        ("unknown_provider", "8960991322"),
+        ("replay_clarity", "missing' OR '1'='1"),
+    ],
+)
+def test_postgres_missing_detail_is_404_with_bound_parameters(
+    postgres, source, source_match_id
+):
+    connection, _, sqlite, _ = postgres
+    connection.execute.return_value.fetchone.return_value = None
+    application = api.create_app()
+
+    response = get_matches(application, f"/api/matches/{source}/{source_match_id}")
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Historical match not found."}
+    query, parameters = connection.execute.call_args.args
+    assert "WHERE source = %s AND source_match_id = %s" in query
+    assert parameters == (source, source_match_id)
+    sqlite.assert_not_called()
+
+
+@pytest.mark.parametrize("failure_at", ["connect", "query"])
+def test_postgres_detail_database_error_is_not_a_404(postgres, failure_at):
+    connection, connect, sqlite, _ = postgres
+    application = api.create_app()
+    if failure_at == "connect":
+        connect.side_effect = psycopg.OperationalError("database unavailable")
+    else:
+        connection.execute.side_effect = psycopg.ProgrammingError("query failed")
+
+    response = get_matches(application, "/api/matches/replay_clarity/8960991322")
+    assert response.status_code == 500
+    sqlite.assert_not_called()

@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Annotated, Protocol, cast
 
-from fastapi import APIRouter, Depends, FastAPI, Request
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from app.history.domain import HistoricalMatch
@@ -18,6 +18,10 @@ router = APIRouter(prefix="/api")
 class MatchRepository(Protocol):
     def list_historical_matches(self) -> list[HistoricalMatch]: ...
 
+    def get_historical_match_by_source(
+        self, source: str, source_match_id: str
+    ) -> HistoricalMatch | None: ...
+
 
 def get_repository(request: Request) -> MatchRepository:
     return cast(MatchRepository, request.app.state.repository)
@@ -28,6 +32,18 @@ def list_matches(
     repository: Annotated[MatchRepository, Depends(get_repository)],
 ) -> list[HistoricalMatch]:
     return repository.list_historical_matches()
+
+
+@router.get("/matches/{source}/{source_match_id}", response_model=HistoricalMatch)
+def get_match(
+    source: str,
+    source_match_id: str,
+    repository: Annotated[MatchRepository, Depends(get_repository)],
+) -> HistoricalMatch:
+    match = repository.get_historical_match_by_source(source, source_match_id)
+    if match is None:
+        raise HTTPException(status_code=404, detail="Historical match not found.")
+    return match
 
 
 def create_app(db_path: str | Path | None = None) -> FastAPI:

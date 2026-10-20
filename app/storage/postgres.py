@@ -28,6 +28,13 @@ def postgres_connection_options_from_env() -> dict[str, str]:
     return {key: os.environ[name] for key, name in CONNECTION_ENV.items()}
 
 
+def _match_from_row(row: Mapping[str, Any]) -> HistoricalMatch:
+    values = dict(row)
+    values["competitive_stage"] = CompetitiveStage(values["competitive_stage"])
+    values["normalized_round"] = TournamentRound(values["normalized_round"])
+    return HistoricalMatch(**values)
+
+
 class PostgresMatchRepository:
     def __init__(self, connection_options: Mapping[str, str]) -> None:
         self._connection_options = dict(connection_options)
@@ -52,10 +59,17 @@ class PostgresMatchRepository:
                 "SELECT * FROM historical_matches "
                 "ORDER BY started_at, source, source_match_id"
             ).fetchall()
-        matches = []
-        for row in rows:
-            values = dict(row)
-            values["competitive_stage"] = CompetitiveStage(values["competitive_stage"])
-            values["normalized_round"] = TournamentRound(values["normalized_round"])
-            matches.append(HistoricalMatch(**values))
-        return matches
+        return [_match_from_row(row) for row in rows]
+
+    def get_historical_match_by_source(
+        self, source: str, source_match_id: str
+    ) -> HistoricalMatch | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM historical_matches "
+                "WHERE source = %s AND source_match_id = %s",
+                (source, source_match_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return _match_from_row(row)

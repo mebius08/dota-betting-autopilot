@@ -14,12 +14,19 @@ from app.storage import SQLiteRepository
 from tests.history_test_helpers import make_historical_match
 
 
-async def _get_matches(application: FastAPI) -> httpx.Response:
-    transport = httpx.ASGITransport(app=application)
+async def _get_matches(
+    application: FastAPI,
+    path: str = "/api/matches",
+    *,
+    raise_app_exceptions: bool = True,
+) -> httpx.Response:
+    transport = httpx.ASGITransport(
+        app=application, raise_app_exceptions=raise_app_exceptions
+    )
     async with httpx.AsyncClient(
         transport=transport, base_url="http://testserver"
     ) as client:
-        return await client.get("/api/matches")
+        return await client.get(path)
 
 
 def test_matches_returns_stored_historical_records(
@@ -101,3 +108,88 @@ def test_homepage_and_matches_api_share_existing_storage(
     expected = [match] if has_matches else []
     assert TypeAdapter(list[HistoricalMatch]).validate_python(api_response.json()) == expected
     assert repository.list_historical_matches() == expected
+
+
+@pytest.mark.parametrize("source", ["replay_clarity", "other_provider"])
+def test_match_detail_uses_both_identifiers_and_matches_list_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str
+) -> None:
+    monkeypatch.setenv("DOTA_ANALYTICS_DB_BACKEND", "sqlite")
+    application = create_app(tmp_path / "detail.sqlite3")
+    repository = application.state.repository
+    matches = [
+        replace(
+            make_historical_match("catalog-other", source_match_id="8960991322"),
+            source="other_provider",
+        ),
+        replace(
+            make_historical_match("catalog-second", source_match_id="8960882635"),
+            source="replay_clarity",
+        ),
+        replace(
+            make_historical_match("catalog-replay", source_match_id="8960991322"),
+            source="replay_clarity",
+            ended_at=None,
+        ),
+    ]
+    for match in matches:
+        repository.save_historical_match(match)
+
+    response = asyncio.run(
+        _get_matches(application, f"/api/matches/{source}/8960991322")
+    )
+    listing = asyncio.run(_get_matches(application))
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/json"
+    expected = next(
+        match for match in matches
+        if (match.source, match.source_match_id) == (source, "8960991322")
+    )
+    assert TypeAdapter(HistoricalMatch).validate_python(response.json()) == expected
+    assert response.json() == next(
+        row for row in listing.json()
+        if (row["source"], row["source_match_id"]) == (source, "8960991322")
+    )
+    assert repository.list_historical_matches() == sorted(
+        matches, key=lambda match: (match.started_at, match.source, match.source_match_id)
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "source_match_id"),
+    [
+        ("unknown_provider", "8960991322"),
+        ("replay_clarity", "missing"),
+        ("replay_clarity", "catalog-internal-id"),
+    ],
+)
+def test_missing_match_detail_returns_404(tmp_path, monkeypatch, source, source_match_id):
+    monkeypatch.setenv("DOTA_ANALYTICS_DB_BACKEND", "sqlite")
+    application = create_app(tmp_path / "detail.sqlite3")
+    application.state.repository.save_historical_match(
+        replace(
+            make_historical_match("catalog-internal-id", source_match_id="8960991322"),
+            source="replay_clarity",
+        )
+    )
+
+    response = asyncio.run(
+        _get_matches(application, f"/api/matches/{source}/{source_match_id}")
+    )
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Historical match not found."}
+
+
+def test_sqlite_detail_database_error_is_not_a_404(tmp_path, monkeypatch):
+    monkeypatch.setenv("DOTA_ANALYTICS_DB_BACKEND", "sqlite")
+    db_path = tmp_path / "broken.sqlite3"
+    application = create_app(db_path)
+    db_path.write_bytes(b"invalid SQLite file")
+
+    response = asyncio.run(
+        _get_matches(
+            application, "/api/matches/replay_clarity/8960991322",
+            raise_app_exceptions=False,
+        )
+    )
+    assert response.status_code == 500
