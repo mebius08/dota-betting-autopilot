@@ -53,6 +53,21 @@ pytest
 python -m app.main
 ```
 
+## Analytics REST API
+
+From the repository root, using the project's Python environment:
+
+```bash
+python -m pip install -e ".[dev]"
+python -m uvicorn app.api:create_app --factory --host 127.0.0.1 --port 8000
+```
+
+`GET http://127.0.0.1:8000/api/matches` returns historical matches from the
+existing SQLite database, `data/autopilot.db` by default. Set
+`DOTA_ANALYTICS_DB_PATH` to select another SQLite file. An empty database returns
+`[]`. The server uses the existing repository and starts independently of the
+CLI scenarios. See [the endpoint documentation](docs.md) for the response format.
+
 ## Legacy paper research pipeline
 
 1. Load `config.example.yaml`.
