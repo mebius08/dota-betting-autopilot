@@ -83,6 +83,43 @@ existing SQLite database, `data/autopilot.db` by default. Set
 `[]`. The server uses the existing repository and starts independently of the
 CLI scenarios. See [the endpoint documentation](docs.md) for the response format.
 
+### Run the web server in Docker
+
+From the repository root, with Docker running:
+
+```bash
+docker build -t dota-analytics-web .
+docker volume create dota-analytics-data
+docker run --rm -d --name dota-analytics \
+  -p 127.0.0.1:8000:8000 \
+  --mount type=volume,source=dota-analytics-data,target=/data \
+  -e DOTA_ANALYTICS_DB_PATH=/data/history.sqlite3 \
+  dota-analytics-web
+```
+
+After startup, open **http://127.0.0.1:8000/** and run the existing check-client
+from the host's project Python environment:
+
+```bash
+python tools/check_api.py --base-url http://127.0.0.1:8000
+```
+
+The image uses official Python 3.13 slim and installs only FastAPI, Uvicorn and
+their runtime dependencies from `requirements-web.txt`. Local databases,
+replays, caches and research outputs are excluded from the build context.
+A new volume starts with an empty database; no match records are generated.
+The named volume retains SQLite data when the container stops:
+
+```bash
+docker stop dota-analytics
+```
+
+To use an existing SQLite directory, replace the volume mount with
+`--mount type=bind,source=/absolute/path/to/sqlite-directory,target=/data` and set
+`DOTA_ANALYTICS_DB_PATH` to the file's container path. The container runs as
+UID/GID `10001:10001`; the mounted directory and database must be writable by
+that user. Server logs are available with `docker logs dota-analytics`.
+
 ## Legacy paper research pipeline
 
 1. Load `config.example.yaml`.

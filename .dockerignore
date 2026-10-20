@@ -1,0 +1,25 @@
+# Allow only runtime source and build configuration into the context.
+# Everything else, including .git, venvs, data, local-data, tools, tests,
+# replay exports and research artifacts, remains outside the image.
+**
+!Dockerfile
+!.dockerignore
+!requirements-web.txt
+!app/
+!app/**
+
+# Exclude generated or local files even if they are placed inside app/.
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.DS_Store
+**/*.py[cod]
+**/*.db*
+**/*.sqlite*
+**/*.dem*
+**/*.bz2
+**/*.zst
+**/*.jar
+**/*.cbm
+**/*.joblib
