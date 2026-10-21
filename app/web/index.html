@@ -97,6 +97,22 @@
     .detail-grid dd { margin: 0; overflow-wrap: anywhere; }
     .detail-extra { padding: 22px 32px; border-top: 1px solid var(--line); }
     .detail-extra summary { cursor: pointer; color: var(--accent); font-size: 14px; }
+    .economy-panel { margin-top: 28px; }
+    .economy-body { padding: 22px 26px; }
+    .economy-note { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
+    .economy-legend { display: flex; flex-wrap: wrap; gap: 10px 24px; list-style: none; margin: 0 0 14px; padding: 0; }
+    .economy-legend li { display: flex; align-items: baseline; gap: 8px; min-width: 0; overflow-wrap: anywhere; }
+    .economy-swatch { display: inline-block; width: 20px; border-top: 3px solid var(--accent); flex-shrink: 0; }
+    .economy-swatch.dire { border-color: #aa5b21; border-top-style: dashed; }
+    .economy-plot { width: 100%; display: block; touch-action: pan-y; cursor: crosshair; }
+    .economy-lead { margin: 0 0 4px; font-weight: 650; overflow-wrap: anywhere; }
+    .economy-latest, .economy-help, .economy-time { margin: 4px 0 14px; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+    .economy-selection { padding-top: 18px; border-top: 1px solid var(--line); }
+    .economy-selection label { display: block; font-size: 13px; }
+    .economy-selection input { width: 100%; min-width: 0; margin: 12px 0; accent-color: var(--accent); }
+    .economy-values { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 0; }
+    .economy-values dt { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+    .economy-values dd { margin: 4px 0 0; font-weight: 650; font-variant-numeric: tabular-nums; }
     .state { padding: 64px 24px 70px; text-align: center; }
     .state-symbol { margin: 0 auto 18px; width: 42px; height: 42px; display: grid; place-items: center; background: #eef3ed; color: var(--accent); border-radius: 50%; font-size: 23px; }
     .state h3 { margin: 0 0 8px; font-size: 18px; font-weight: 650; }
@@ -142,6 +158,7 @@
       .detail-result { padding: 18px; gap: 12px; flex-wrap: wrap; }
       .detail-fields, .detail-extra { padding: 22px 18px; }
       .detail-grid { grid-template-columns: 1fr; gap: 20px; }
+      .economy-body { padding: 18px 12px; }
     }
     @media (prefers-reduced-motion: reduce) {
       html { scroll-behavior: auto; }
@@ -227,6 +244,40 @@
           </details>
         </div>
       </div>
+      <section class="matches-panel economy-panel" id="economy-panel" aria-labelledby="economy-title" aria-busy="false" hidden>
+        <div class="panel-heading">
+          <div>
+            <h2 id="economy-title">Экономика матча</h2>
+            <p class="economy-note">Исторические данные реплея, не LIVE.</p>
+          </div>
+        </div>
+        <div class="state" id="economy-state" data-state="loading" role="status" aria-live="polite">
+          <div class="state-symbol" id="economy-symbol" aria-hidden="true">↻</div>
+          <h3 id="economy-state-title">Загружаем экономику</h3>
+          <p id="economy-state-description">Получаем сохранённые снимки матча.</p>
+        </div>
+        <div class="economy-body" id="economy-content" hidden>
+          <p class="economy-lead" id="economy-lead"></p>
+          <p class="economy-latest" id="economy-latest"></p>
+          <ul class="economy-legend" aria-label="Команды на графике">
+            <li><span class="economy-swatch" aria-hidden="true"></span><span id="economy-radiant-name"></span></li>
+            <li><span class="economy-swatch dire" aria-hidden="true"></span><span id="economy-dire-name"></span></li>
+          </ul>
+          <svg class="economy-plot" id="economy-chart" role="img" aria-labelledby="economy-title economy-chart-description"></svg>
+          <p class="economy-help" id="economy-chart-description">Net worth обеих команд. Нажмите на график или выберите снимок ползунком; доступны клавиши со стрелками.</p>
+          <div class="economy-selection">
+            <label for="economy-point">Выбрать снимок</label>
+            <input id="economy-point" type="range" min="0" max="0" step="1" value="0">
+            <div aria-live="polite" aria-atomic="true">
+              <p class="economy-time" id="economy-time"></p>
+              <dl class="economy-values">
+                <div><dt id="economy-radiant-value-name"></dt><dd id="economy-radiant-value"></dd></div>
+                <div><dt id="economy-dire-value-name"></dt><dd id="economy-dire-value"></dd></div>
+              </dl>
+            </div>
+          </div>
+        </div>
+      </section>
     </section>
     <section class="data-note" id="data" aria-labelledby="data-title">
       <h2 id="data-title">Об этих данных</h2>
@@ -262,6 +313,16 @@
     const detailState = document.getElementById("detail-state");
     const detailContent = document.getElementById("detail-content");
     const detailRefresh = document.getElementById("detail-refresh");
+    const economyPanel = document.getElementById("economy-panel");
+    const economyState = document.getElementById("economy-state");
+    const economyContent = document.getElementById("economy-content");
+    const economyChart = document.getElementById("economy-chart");
+    const economyPoint = document.getElementById("economy-point");
+    const numberFormat = new Intl.NumberFormat("ru-RU");
+    const axisFormat = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 });
+    const worthAxisFormat = new Intl.NumberFormat("ru-RU", { notation: "compact", maximumFractionDigits: 1 });
+    let economyHistory = [];
+    let economyGeometry = null;
     let activeRequest = null;
 
     const stageNames = {
@@ -456,8 +517,152 @@
       detailContent.hidden = false;
     }
 
+    function showEconomyState(kind, title, description, symbol) {
+      economyState.dataset.state = kind;
+      document.getElementById("economy-state-title").textContent = title;
+      document.getElementById("economy-state-description").textContent = description;
+      document.getElementById("economy-symbol").textContent = symbol;
+      economyState.hidden = false;
+      economyContent.hidden = true;
+    }
+
+    function svgElement(tag, attributes, text) {
+      const element = document.createElementNS("http://www.w3.org/2000/svg", tag);
+      for (const [key, value] of Object.entries(attributes)) element.setAttribute(key, String(value));
+      if (text !== undefined) element.textContent = text;
+      return element;
+    }
+
+    function selectEconomyPoint(index) {
+      const snapshot = economyHistory[index];
+      if (!snapshot || !economyGeometry) return;
+      economyPoint.value = String(index);
+      const { x, y, top, bottom } = economyGeometry;
+      const selection = document.getElementById("economy-marker");
+      selection.replaceChildren(
+        svgElement("line", { x1: x(snapshot), x2: x(snapshot), y1: top, y2: bottom, stroke: "#64746e", "stroke-dasharray": "3 3" }),
+        svgElement("circle", { cx: x(snapshot), cy: y(snapshot.radiant_net_worth), r: 4, fill: "#176753", stroke: "white", "stroke-width": 1.5 }),
+        svgElement("circle", { cx: x(snapshot), cy: y(snapshot.dire_net_worth), r: 4, fill: "#aa5b21", stroke: "white", "stroke-width": 1.5 })
+      );
+      // Only labels are formatted; plotting and selection retain the original timestamps.
+      const moment = `${axisFormat.format(snapshot.actual_game_time_seconds / 60)} мин · ${snapshot.actual_game_time_seconds} с`;
+      document.getElementById("economy-time").textContent = `Игровое время: ${moment}`;
+      document.getElementById("economy-radiant-value").textContent = `${numberFormat.format(snapshot.radiant_net_worth)} золота`;
+      document.getElementById("economy-dire-value").textContent = `${numberFormat.format(snapshot.dire_net_worth)} золота`;
+      economyPoint.setAttribute("aria-valuetext", moment);
+    }
+
+    function drawEconomyChart() {
+      if (economyContent.hidden || detailView.hidden || !economyHistory.length) return;
+      const width = economyChart.getBoundingClientRect().width;
+      if (!width) return;
+      const height = width < 480 ? 250 : 300;
+      const left = 76, right = width - 14, top = 28, bottom = height - 44;
+      const start = economyHistory[0].actual_game_time_seconds;
+      const end = Math.max(start + 1, economyHistory.at(-1).actual_game_time_seconds);
+      const maximum = Math.max(1, ...economyHistory.flatMap(row => [row.radiant_net_worth, row.dire_net_worth]));
+      const x = row => left + (row.actual_game_time_seconds - start) / (end - start) * (right - left);
+      const y = value => bottom - value / maximum * (bottom - top);
+      economyGeometry = { x, y, left, right, top, bottom, width, start, end };
+      economyChart.setAttribute("viewBox", `0 0 ${width} ${height}`);
+      const drawing = document.createDocumentFragment();
+      for (let index = 0; index <= 4; index++) {
+        const value = maximum * index / 4;
+        drawing.append(
+          svgElement("line", { x1: left, x2: right, y1: y(value), y2: y(value), stroke: "#dce4de" }),
+          svgElement("text", { x: left - 8, y: y(value) + 4, "text-anchor": "end", fill: "#64746e", "font-size": 11 }, worthAxisFormat.format(value))
+        );
+      }
+      for (let index = 0; index <= 4; index++) {
+        const time = start + (end - start) * index / 4;
+        drawing.append(svgElement("text", {
+          x: x({ actual_game_time_seconds: time }), y: bottom + 19,
+          "text-anchor": index === 0 ? "start" : index === 4 ? "end" : "middle",
+          fill: "#64746e", "font-size": 11
+        }, axisFormat.format(time / 60)));
+      }
+      drawing.append(
+        svgElement("text", { x: left, y: 14, fill: "#64746e", "font-size": 11 }, "Net worth, золото"),
+        svgElement("text", { x: right, y: height - 4, "text-anchor": "end", fill: "#64746e", "font-size": 11 }, "Игровое время, мин")
+      );
+      for (const [field, color, dash] of [["radiant_net_worth", "#176753", "none"], ["dire_net_worth", "#aa5b21", "6 4"]]) {
+        const path = economyHistory.map((row, index) => `${index === 0 ? "M" : "L"}${x(row)},${y(row[field])}`).join(" ");
+        drawing.append(svgElement("path", { d: path, fill: "none", stroke: color, "stroke-width": 2.5, "stroke-dasharray": dash }));
+      }
+      drawing.append(svgElement("g", { id: "economy-marker" }));
+      economyChart.replaceChildren(drawing);
+      selectEconomyPoint(Number(economyPoint.value));
+    }
+
+    function validEconomy(history) {
+      const metrics = ["radiant_net_worth", "dire_net_worth", "radiant_current_gold", "dire_current_gold", "radiant_total_xp", "dire_total_xp"];
+      return Array.isArray(history) && history.every((row, index) => row !== null && typeof row === "object"
+        && Number.isFinite(row.actual_game_time_seconds) && row.actual_game_time_seconds >= 0
+        && Number.isSafeInteger(row.replay_tick) && row.replay_tick >= 0
+        && metrics.every(field => Number.isSafeInteger(row[field]) && row[field] >= 0)
+        && (index === 0 || (row.actual_game_time_seconds > history[index - 1].actual_game_time_seconds
+          && row.replay_tick > history[index - 1].replay_tick)));
+    }
+
+    async function loadEconomy(match, request) {
+      economyPanel.hidden = false;
+      economyPanel.setAttribute("aria-busy", "true");
+      try {
+        const response = await fetch(`/api/matches/${encodeURIComponent(match.source)}/${encodeURIComponent(match.source_match_id)}/economy`, {
+          headers: { Accept: "application/json" }, cache: "no-store", signal: request.signal
+        });
+        if (activeRequest !== request || request.signal.aborted) return;
+        const errors = {
+          404: ["Матч не найден", "Для этого источника и ID нет записи матча."],
+          501: ["Экономика недоступна", "Хранилище сервера не поддерживает экономическую историю."],
+          500: ["Не удалось загрузить экономику", "Ошибка сервера (HTTP 500). Попробуйте обновить данные позже."]
+        };
+        if (Object.hasOwn(errors, response.status)) {
+          showEconomyState("error", ...errors[response.status], "!");
+          return;
+        }
+        if (!response.ok) throw new Error("Economy API request failed");
+        const history = await response.json();
+        if (activeRequest !== request || request.signal.aborted) return;
+        if (!validEconomy(history)) throw new Error("Invalid economy history");
+        if (!history.length) {
+          showEconomyState("empty", "Нет экономических снимков", "Матч есть в каталоге, но его экономическая история ещё не сохранена.", "∅");
+          return;
+        }
+        economyHistory = history;
+        // The replay_clarity importer explicitly stores Radiant as A and Dire as B.
+        const radiant = match.source === "replay_clarity" ? `Radiant · ${displayValue(match.team_a_name)}` : "Radiant";
+        const dire = match.source === "replay_clarity" ? `Dire · ${displayValue(match.team_b_name)}` : "Dire";
+        for (const [side, name] of [["radiant", radiant], ["dire", dire]]) {
+          document.getElementById(`economy-${side}-name`).textContent = name;
+          document.getElementById(`economy-${side}-value-name`).textContent = name;
+        }
+        const latest = history.at(-1);
+        const lead = latest.radiant_net_worth - latest.dire_net_worth;
+        document.getElementById("economy-lead").textContent = lead === 0 ? "Net worth равен у обеих команд"
+          : `Лидирует ${lead > 0 ? radiant : dire}: +${numberFormat.format(Math.abs(lead))} золота`;
+        document.getElementById("economy-latest").textContent = `Последний доступный снимок: ${latest.actual_game_time_seconds} игровых секунд.`;
+        economyPoint.max = String(history.length - 1);
+        economyPoint.value = economyPoint.max;
+        economyPoint.disabled = history.length === 1;
+        economyState.hidden = true;
+        economyContent.hidden = false;
+        drawEconomyChart();
+      } catch {
+        if (activeRequest !== request || request.signal.aborted) return;
+        showEconomyState("error", "Не удалось загрузить экономику", "Проверьте соединение и попробуйте обновить данные. Ответ сервера также может быть некорректным.", "!");
+      } finally {
+        if (activeRequest === request) economyPanel.setAttribute("aria-busy", "false");
+      }
+    }
+
     async function loadMatch(source, sourceMatchId) {
       const request = beginRequest();
+      economyPanel.hidden = true;
+      economyHistory = [];
+      economyGeometry = null;
+      economyChart.replaceChildren();
+      showEconomyState("loading", "Загружаем экономику", "Получаем сохранённые снимки матча.", "↻");
       detailRefresh.disabled = true;
       detailPanel.setAttribute("aria-busy", "true");
       document.getElementById("detail-title").textContent = "Подробности матча";
@@ -481,6 +686,7 @@
           throw new Error("Invalid match response");
         }
         renderMatch(match);
+        await loadEconomy(match, request);
       } catch {
         if (request.signal.aborted || activeRequest !== request) return;
         showDetailState("error", "Не удалось загрузить матч", "Проверьте соединение и попробуйте обновить данные. Сервис также может быть временно недоступен.", "!");
@@ -506,6 +712,9 @@
         } else {
           if (activeRequest) activeRequest.abort();
           activeRequest = null;
+          economyPanel.hidden = true;
+          economyHistory = [];
+          economyGeometry = null;
           document.getElementById("detail-title").textContent = "Подробности матча";
           document.title = "Неполная ссылка · Dota 2 Analytics";
           detailRefresh.disabled = false;
@@ -529,6 +738,21 @@
         navigate(listUrl());
       });
     });
+    economyPoint.addEventListener("input", () => selectEconomyPoint(Number(economyPoint.value)));
+    economyChart.addEventListener("click", event => {
+      if (!economyGeometry || !economyHistory.length) return;
+      const bounds = economyChart.getBoundingClientRect();
+      const { left, right, width, start, end } = economyGeometry;
+      const position = (event.clientX - bounds.left) / bounds.width * width;
+      const time = start + Math.max(0, Math.min(1, (position - left) / (right - left))) * (end - start);
+      let index = 0;
+      for (let candidate = 1; candidate < economyHistory.length; candidate++) {
+        if (Math.abs(economyHistory[candidate].actual_game_time_seconds - time)
+          < Math.abs(economyHistory[index].actual_game_time_seconds - time)) index = candidate;
+      }
+      selectEconomyPoint(index);
+    });
+    new ResizeObserver(drawEconomyChart).observe(economyChart);
     detailRefresh.addEventListener("click", () => renderRoute());
     window.addEventListener("popstate", () => renderRoute(true));
     refresh.addEventListener("click", loadMatches);
