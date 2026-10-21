@@ -138,6 +138,87 @@ the match exists. Requests return HTTP `501`:
 {"detail": "Historical match economy is not supported by this database backend."}
 ```
 
+## GET /api/matches/{source}/{source_match_id}/pov
+
+Returns the stored **HISTORICAL_TEAM_POV** history from PostgreSQL. These are
+historical team observations, not GLOBAL data; availability of an equivalent
+LIVE stream has not been demonstrated. The endpoint only reads the existing
+`historical_match_pov_snapshots` table and does not initialize or import it.
+
+**Path parameters:** `source` and `source_match_id` are strings identifying the
+exact catalog pair. Each occupies one URL path segment. There are no query
+parameters or request body. Both Radiant and Dire histories are returned.
+
+Example request:
+
+```bash
+curl http://127.0.0.1:8000/api/matches/replay_clarity/8960991322/pov
+```
+
+**Response:** HTTP `200`, `Content-Type: application/json`, a JSON array ordered
+ascending by `actual_game_time_seconds`, `replay_tick`, then `pov_team` (DIRE
+before RADIANT at the same frame). Each object has exactly the following ten
+fields. This excerpt shows the two stored POV rows around 38:30 from the
+canonical local POV CSV for `8960991322`:
+
+```json
+[
+  {
+    "actual_game_time_seconds": 2310.0334,
+    "replay_tick": 101535,
+    "pov_team": "DIRE",
+    "visible_enemy_count": 3,
+    "visible_enemy_with_position_count": 0,
+    "hidden_enemy_count": 2,
+    "own_team_spread": 1908.7880430130106,
+    "nearest_visible_enemy_distance": null,
+    "own_team_spread_status": "OK",
+    "nearest_visible_enemy_status": "NO_VISIBLE_ENEMY_POSITION"
+  },
+  {
+    "actual_game_time_seconds": 2310.0334,
+    "replay_tick": 101535,
+    "pov_team": "RADIANT",
+    "visible_enemy_count": 3,
+    "visible_enemy_with_position_count": 3,
+    "hidden_enemy_count": 2,
+    "own_team_spread": 5879.364732537277,
+    "nearest_visible_enemy_distance": 5397.91892634111,
+    "own_team_spread_status": "OK",
+    "nearest_visible_enemy_status": "OK"
+  }
+]
+```
+
+`actual_game_time_seconds` is the actual normalized game time in seconds, read
+without rounding to the nominal ten-second grid. `replay_tick` remains a separate
+integer source tick. `pov_team` is `RADIANT` or `DIRE`. Distances and spread retain
+their stored Source 2 coordinate units, without unit conversion.
+
+`visible_enemy_count` counts raw VISIBLE flags, which can persist after death;
+it is not a count of observed living opponents. The separate
+`visible_enemy_with_position_count` counts VISIBLE opponents with verified living
+positions. `hidden_enemy_count` counts HIDDEN flags; UNKNOWN is not classified as
+HIDDEN. Spread and nearest distance may be `null`; nulls are never replaced by
+zero. Their original statuses are returned unchanged:
+`own_team_spread_status` is `OK` or `INSUFFICIENT_OWN_POSITIONS`;
+`nearest_visible_enemy_status` is `OK`, `NO_OWN_POSITION` or
+`NO_VISIBLE_ENEMY_POSITION`. Missing distance does not prove that no opponents
+are nearby. Hidden coordinates, GLOBAL values and future targets are not exposed.
+
+For PostgreSQL, an unknown catalog pair returns HTTP `404` with
+`{"detail": "Historical match not found."}`. An existing match without POV rows
+returns HTTP `200` and `[]`. Database connection/query and response validation
+errors produce HTTP `500`, including a missing POV table; no SQLite fallback or
+empty successful result masks them.
+
+SQLite does not support this capability, regardless of whether the match exists.
+Requests return HTTP `501`:
+
+```json
+{"detail": "Historical match POV is not supported by this database backend."}
+```
+
 ## Database selection and errors
 
 Start the server from the repository root:

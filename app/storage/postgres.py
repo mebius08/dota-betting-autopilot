@@ -88,3 +88,18 @@ class PostgresMatchRepository:
                 "ORDER BY actual_game_time_seconds, replay_tick",
                 (source, source_match_id),
             ).fetchall()
+
+    def list_historical_match_pov(
+        self, source: str, source_match_id: str
+    ) -> list[dict[str, int | float | str | None]]:
+        with self._connect() as connection:
+            return connection.execute(
+                "SELECT actual_game_time_seconds, replay_tick, pov_team, "
+                "visible_enemy_count, visible_enemy_with_position_count, "
+                "hidden_enemy_count, own_team_spread, nearest_visible_enemy_distance, "
+                "own_team_spread_status, nearest_visible_enemy_status "
+                "FROM historical_match_pov_snapshots "
+                "WHERE source = %s AND source_match_id = %s "
+                "ORDER BY actual_game_time_seconds, replay_tick, pov_team",
+                (source, source_match_id),
+            ).fetchall()

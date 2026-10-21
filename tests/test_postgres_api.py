@@ -344,3 +344,136 @@ def test_economy_repository_filters_exact_identity_and_orders_in_sql(postgres):
         assert repository.list_historical_match_economy(
             "replay_clarity", "missing' OR '1'='1"
         ) == []
+
+
+def pov_snapshot(team, time=2310.0334, tick=101535):
+    return {
+        "actual_game_time_seconds": time,
+        "replay_tick": tick,
+        "pov_team": team,
+        "visible_enemy_count": 3,
+        "visible_enemy_with_position_count": 0 if team == "DIRE" else 3,
+        "hidden_enemy_count": 2,
+        "own_team_spread": None if team == "DIRE" else 5879.364732537277,
+        "nearest_visible_enemy_distance": None if team == "DIRE" else 5397.91892634111,
+        "own_team_spread_status": "INSUFFICIENT_OWN_POSITIONS" if team == "DIRE" else "OK",
+        "nearest_visible_enemy_status": "NO_VISIBLE_ENEMY_POSITION" if team == "DIRE" else "OK",
+    }
+
+
+@pytest.mark.parametrize("has_snapshots", [False, True])
+def test_postgres_pov_preserves_team_pair_exact_times_nulls_and_statuses(
+    postgres, has_snapshots
+):
+    connection, _, sqlite, _ = postgres
+    connection.execute.return_value.fetchone.return_value = asdict(
+        replace(
+            make_historical_match("catalog-id", source_match_id="8960991322"),
+            source="replay_clarity",
+        )
+    )
+    snapshots = [pov_snapshot(team) for team in ("DIRE", "RADIANT")] if has_snapshots else []
+    connection.execute.return_value.fetchall.return_value = snapshots
+    application = api.create_app()
+    connection.execute.reset_mock()
+
+    response = get_matches(application, "/api/matches/replay_clarity/8960991322/pov")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/json"
+    assert response.json() == snapshots
+    if has_snapshots:
+        assert [row["pov_team"] for row in response.json()] == ["DIRE", "RADIANT"]
+        assert set(response.json()[0]) == set(pov_snapshot("DIRE"))
+        assert response.json()[0]["visible_enemy_count"] == 3
+        assert response.json()[0]["visible_enemy_with_position_count"] == 0
+        assert response.json()[0]["nearest_visible_enemy_distance"] is None
+        assert response.json()[0]["own_team_spread"] is None
+    assert connection.execute.call_count == 2
+    query, parameters = connection.execute.call_args.args
+    assert "FROM historical_match_pov_snapshots" in query
+    assert "ORDER BY actual_game_time_seconds, replay_tick, pov_team" in query
+    assert parameters == ("replay_clarity", "8960991322")
+    sqlite.assert_not_called()
+
+
+@pytest.mark.parametrize("source", ["replay_clarity", "unknown_provider"])
+def test_postgres_missing_pov_match_is_404_without_reading_history(postgres, source):
+    connection, _, sqlite, _ = postgres
+    connection.execute.return_value.fetchone.return_value = None
+    application = api.create_app()
+    connection.execute.reset_mock()
+
+    response = get_matches(application, f"/api/matches/{source}/missing/pov")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Historical match not found."}
+    connection.execute.assert_called_once_with(
+        "SELECT * FROM historical_matches WHERE source = %s AND source_match_id = %s",
+        (source, "missing"),
+    )
+    sqlite.assert_not_called()
+
+
+@pytest.mark.parametrize("failure_at", ["connect", "catalog", "pov"])
+def test_postgres_pov_database_error_is_not_empty_history_or_404(postgres, failure_at):
+    connection, connect, sqlite, _ = postgres
+    application = api.create_app()
+    if failure_at == "connect":
+        connect.side_effect = psycopg.OperationalError("database unavailable")
+    elif failure_at == "catalog":
+        connection.execute.side_effect = psycopg.ProgrammingError("catalog query failed")
+    else:
+        catalog_result = MagicMock()
+        catalog_result.fetchone.return_value = asdict(make_historical_match("stored"))
+        connection.execute.side_effect = [
+            catalog_result, psycopg.ProgrammingError("POV table unavailable")
+        ]
+
+    response = get_matches(application, "/api/matches/replay_clarity/8960991322/pov")
+
+    assert response.status_code == 500
+    assert response.text != "[]"
+    sqlite.assert_not_called()
+
+
+def test_pov_repository_filters_identity_and_sorts_actual_frames_and_teams(postgres):
+    """Run the SELECT against temporary SQL data, not a live PostgreSQL database."""
+    connection, _, _, _ = postgres
+    repository = PostgresMatchRepository({})
+    earlier = [pov_snapshot(team) for team in ("DIRE", "RADIANT")]
+    later = [pov_snapshot(team, 2320.0001, 101834) for team in ("DIRE", "RADIANT")]
+    schema = Path("app/storage/postgres_pov_schema.sql").read_text(encoding="utf-8")
+    with closing(sqlite3.connect(":memory:")) as database:
+        database.row_factory = lambda cursor, values: dict(
+            zip((column[0] for column in cursor.description), values)
+        )
+        database.execute(schema)
+        for source, match_id, frame in [
+            ("replay_clarity", "8960991322", later[1]),
+            ("other_provider", "8960991322", earlier[0]),
+            ("replay_clarity", "other_match", earlier[0]),
+            ("replay_clarity", "8960991322", earlier[1]),
+            ("replay_clarity", "8960991322", later[0]),
+            ("replay_clarity", "8960991322", earlier[0]),
+        ]:
+            row = dict(source=source, source_match_id=match_id, replay_sha256="a" * 64)
+            row.update(frame)
+            database.execute(
+                f"INSERT INTO historical_match_pov_snapshots ({', '.join(row)}) "
+                f"VALUES ({', '.join('?' for _ in row)})",
+                tuple(row.values()),
+            )
+
+        def execute_read(query, parameters):
+            assert query.startswith("SELECT ")
+            assert "ORDER BY actual_game_time_seconds, replay_tick, pov_team" in query
+            return database.execute(query.replace("%s", "?"), parameters)
+
+        connection.execute.side_effect = execute_read
+        assert repository.list_historical_match_pov(
+            "replay_clarity", "8960991322"
+        ) == earlier + later
+        assert repository.list_historical_match_pov(
+            "replay_clarity", "missing' OR '1'='1"
+        ) == []
