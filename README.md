@@ -211,6 +211,47 @@ source, inserted and skipped counts; errors return exit code 1. An empty source
 does not open a PostgreSQL connection, including with `--apply`. Other tables,
 source data and the existing API are unchanged.
 
+### Import historical replay economy
+
+Validate the four canonical compact files without connecting to PostgreSQL:
+
+```bash
+python -m tools.import_compact_economy
+```
+
+The importer uses `load_replay_trajectory`: clocks must be `PROVEN`, team totals
+must agree with player totals, and required economic values cannot be missing.
+One row per snapshot stores both teams' net worth, current gold and total XP,
+plus replay SHA-256, replay tick and actual callback time taken directly from
+`source_game_time_seconds`. Nominal `game_time_seconds` is not used as the stored
+timestamp. Compact callbacks can be synthetic; this import does not claim that
+they are real network frames or that full economy is available from a LIVE feed.
+The data is historical oracle context for future charts.
+
+After the four historical catalog entries have been imported, rebuild the web
+image to include the separate economy schema. With Compose's database running,
+apply explicitly using its existing connection settings:
+
+```bash
+docker compose build web
+docker compose run --rm --no-deps \
+  --volume "$PWD/tools:/srv/app/tools:ro" \
+  web python -m tools.import_compact_economy --apply
+```
+
+Omit `--apply` to dry-run inside that same container. A PostgreSQL instance
+reachable from the host can also use the local command with `--apply` and the
+existing five `POSTGRES_*` environment variables.
+
+`historical_match_economy_snapshots` has a foreign key to
+`historical_matches(source, source_match_id)`, with unique replay ticks and actual
+times per match. The importer creates only the new table, inside the same
+transaction as all snapshot inserts; it never creates or updates catalog records.
+An identical repeated import skips existing snapshots. Conflicting values, replay
+hashes or frame sets fail instead of overwriting data. Any write/validation error
+rolls back the batch; failures return exit code 1. Dry-run checks local inputs
+only and does not check existing PostgreSQL parents or snapshots.
+
 ## Legacy paper research pipeline
 
 1. Load `config.example.yaml`.
