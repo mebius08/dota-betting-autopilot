@@ -193,3 +193,27 @@ def test_sqlite_detail_database_error_is_not_a_404(tmp_path, monkeypatch):
         )
     )
     assert response.status_code == 500
+
+
+@pytest.mark.parametrize("has_match", [False, True])
+def test_sqlite_economy_is_explicitly_unsupported(tmp_path, monkeypatch, has_match):
+    monkeypatch.setenv("DOTA_ANALYTICS_DB_BACKEND", "sqlite")
+    application = create_app(tmp_path / "economy.sqlite3")
+    match = replace(
+        make_historical_match("catalog-id", source_match_id="8960991322"),
+        source="replay_clarity",
+    )
+    if has_match:
+        application.state.repository.save_historical_match(match)
+
+    response = asyncio.run(
+        _get_matches(application, "/api/matches/replay_clarity/8960991322/economy")
+    )
+
+    assert response.status_code == 501
+    assert response.json() == {
+        "detail": "Historical match economy is not supported by this database backend."
+    }
+    assert application.state.repository.list_historical_matches() == (
+        [match] if has_match else []
+    )

@@ -81,6 +81,63 @@ An unknown pair returns HTTP `404`:
 Database connection, query and decoding errors produce HTTP `500`, not `404`
 or an empty successful response. Both backends use parameterized queries.
 
+## GET /api/matches/{source}/{source_match_id}/economy
+
+Returns the stored economic history of one historical match from PostgreSQL.
+The data is **HISTORICAL_ORACLE** context from replay callbacks; it is not
+guaranteed to be available in LIVE. This endpoint only reads existing data and
+does not import snapshots or create the economy table.
+
+**Path parameters:** `source` and `source_match_id` are strings identifying the
+exact catalog pair, as in the match detail endpoint. There are no query
+parameters or request body.
+
+Example request:
+
+```bash
+curl http://127.0.0.1:8000/api/matches/replay_clarity/8960991322/economy
+```
+
+**Response:** HTTP `200`, `Content-Type: application/json`, a JSON array ordered
+by `actual_game_time_seconds`, then `replay_tick`, both ascending. Each object
+has exactly these eight fields. This excerpt shows one snapshot from the
+canonical compact file for `8960991322`:
+
+```json
+[
+  {
+    "actual_game_time_seconds": 60.000004,
+    "replay_tick": 34034,
+    "radiant_net_worth": 3894,
+    "dire_net_worth": 3839,
+    "radiant_current_gold": 669,
+    "dire_current_gold": 1099,
+    "radiant_total_xp": 533,
+    "dire_total_xp": 599
+  }
+]
+```
+
+`actual_game_time_seconds` is the normalized game time in seconds at the actual
+callback, read without rounding from the stored floating-point value. It is not
+the nominal minute grid time. `replay_tick` is the separate integer replay tick;
+the API does not convert it to time. Net worth and current gold are team totals
+in gold units; total XP is accumulated team experience in XP units. All six
+economic totals are stored integers. Compact callbacks may be synthetic, so this
+contract does not imply a real network observation at every minute.
+
+For PostgreSQL, an unknown catalog pair returns HTTP `404` with
+`{"detail": "Historical match not found."}`. An existing match without snapshots
+returns HTTP `200` and `[]`. Connection, query and decoding errors, including a
+missing economy table, produce HTTP `500`; they are not empty successful results.
+
+For the SQLite backend, this capability is unsupported, regardless of whether
+the match exists. Requests return HTTP `501`:
+
+```json
+{"detail": "Historical match economy is not supported by this database backend."}
+```
+
 ## Database selection and errors
 
 Start the server from the repository root:

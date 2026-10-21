@@ -1,6 +1,8 @@
 import asyncio
+from contextlib import closing
 from dataclasses import asdict, replace
 from pathlib import Path
+import sqlite3
 from unittest.mock import MagicMock
 
 import httpx
@@ -215,3 +217,130 @@ def test_postgres_detail_database_error_is_not_a_404(postgres, failure_at):
     response = get_matches(application, "/api/matches/replay_clarity/8960991322")
     assert response.status_code == 500
     sqlite.assert_not_called()
+
+
+def economy_snapshot(time=60.0002, tick=34034):
+    return {
+        "actual_game_time_seconds": time,
+        "replay_tick": tick,
+        "radiant_net_worth": 15001,
+        "dire_net_worth": 14800,
+        "radiant_current_gold": 1301,
+        "dire_current_gold": 0,
+        "radiant_total_xp": 12001,
+        "dire_total_xp": 12500,
+    }
+
+
+@pytest.mark.parametrize("has_snapshots", [False, True])
+def test_postgres_economy_preserves_actual_time_and_exact_contract(
+    postgres, has_snapshots
+):
+    connection, _, sqlite, _ = postgres
+    connection.execute.return_value.fetchone.return_value = asdict(
+        make_historical_match("catalog-id", source_match_id="8960991322")
+    )
+    snapshots = [economy_snapshot()] if has_snapshots else []
+    connection.execute.return_value.fetchall.return_value = snapshots
+    application = api.create_app()
+    connection.execute.reset_mock()
+
+    response = get_matches(
+        application, "/api/matches/replay_clarity/8960991322/economy"
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/json"
+    assert response.json() == snapshots
+    assert connection.execute.call_count == 2
+    query, parameters = connection.execute.call_args.args
+    assert "FROM historical_match_economy_snapshots" in query
+    assert "ORDER BY actual_game_time_seconds, replay_tick" in query
+    assert parameters == ("replay_clarity", "8960991322")
+    sqlite.assert_not_called()
+
+
+@pytest.mark.parametrize("source", ["replay_clarity", "unknown_provider"])
+def test_postgres_economy_missing_match_is_404_without_reading_snapshots(
+    postgres, source
+):
+    connection, _, sqlite, _ = postgres
+    connection.execute.return_value.fetchone.return_value = None
+    application = api.create_app()
+    connection.execute.reset_mock()
+
+    response = get_matches(application, f"/api/matches/{source}/missing/economy")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Historical match not found."}
+    connection.execute.assert_called_once_with(
+        "SELECT * FROM historical_matches WHERE source = %s AND source_match_id = %s",
+        (source, "missing"),
+    )
+    sqlite.assert_not_called()
+
+
+@pytest.mark.parametrize("failure_at", ["connect", "catalog", "economy"])
+def test_postgres_economy_database_errors_are_not_empty_history_or_404(
+    postgres, failure_at
+):
+    connection, connect, sqlite, _ = postgres
+    application = api.create_app()
+    error = psycopg.OperationalError("database unavailable")
+    if failure_at == "connect":
+        connect.side_effect = error
+    elif failure_at == "catalog":
+        connection.execute.side_effect = error
+    else:
+        catalog_result = MagicMock()
+        catalog_result.fetchone.return_value = asdict(make_historical_match("stored"))
+        connection.execute.side_effect = [catalog_result, error]
+
+    response = get_matches(
+        application, "/api/matches/replay_clarity/8960991322/economy"
+    )
+
+    assert response.status_code == 500
+    assert response.text != "[]"
+    sqlite.assert_not_called()
+
+
+def test_economy_repository_filters_exact_identity_and_orders_in_sql(postgres):
+    """Execute the read SQL against a temporary SQL double, without PostgreSQL I/O."""
+    connection, _, _, _ = postgres
+    repository = PostgresMatchRepository({})
+    later = economy_snapshot()
+    earlier = economy_snapshot(time=0.0002, tick=32234)
+    schema = Path("app/storage/postgres_economy_schema.sql").read_text(encoding="utf-8")
+    with closing(sqlite3.connect(":memory:")) as database:
+        database.row_factory = lambda cursor, values: dict(
+            zip((column[0] for column in cursor.description), values)
+        )
+        database.execute(schema)
+        # Insert unsorted frames plus rows from a different source and match.
+        for source, match_id, frame in [
+            ("replay_clarity", "8960991322", later),
+            ("other_provider", "8960991322", earlier),
+            ("replay_clarity", "other_match", earlier),
+            ("replay_clarity", "8960991322", earlier),
+        ]:
+            row = dict(source=source, source_match_id=match_id, replay_sha256="a" * 64)
+            row.update(frame)
+            database.execute(
+                f"INSERT INTO historical_match_economy_snapshots ({', '.join(row)}) "
+                f"VALUES ({', '.join('?' for _ in row)})",
+                tuple(row.values()),
+            )
+
+        def execute_read(query, parameters):
+            assert query.startswith("SELECT ")
+            assert "ORDER BY actual_game_time_seconds, replay_tick" in query
+            return database.execute(query.replace("%s", "?"), parameters)
+
+        connection.execute.side_effect = execute_read
+        assert repository.list_historical_match_economy(
+            "replay_clarity", "8960991322"
+        ) == [earlier, later]
+        assert repository.list_historical_match_economy(
+            "replay_clarity", "missing' OR '1'='1"
+        ) == []

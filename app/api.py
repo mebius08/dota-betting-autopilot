@@ -2,10 +2,11 @@
 
 import os
 from pathlib import Path
-from typing import Annotated, Protocol, cast
+from typing import Annotated, Protocol, cast, runtime_checkable
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 
 from app.history.domain import HistoricalMatch
 from app.storage import SQLiteRepository
@@ -21,6 +22,24 @@ class MatchRepository(Protocol):
     def get_historical_match_by_source(
         self, source: str, source_match_id: str
     ) -> HistoricalMatch | None: ...
+
+
+@runtime_checkable
+class MatchEconomyRepository(Protocol):
+    def list_historical_match_economy(
+        self, source: str, source_match_id: str
+    ) -> list[dict[str, int | float]]: ...
+
+
+class HistoricalEconomySnapshot(BaseModel):
+    actual_game_time_seconds: float
+    replay_tick: int
+    radiant_net_worth: int
+    dire_net_worth: int
+    radiant_current_gold: int
+    dire_current_gold: int
+    radiant_total_xp: int
+    dire_total_xp: int
 
 
 def get_repository(request: Request) -> MatchRepository:
@@ -44,6 +63,24 @@ def get_match(
     if match is None:
         raise HTTPException(status_code=404, detail="Historical match not found.")
     return match
+
+
+@router.get(
+    "/matches/{source}/{source_match_id}/economy",
+    response_model=list[HistoricalEconomySnapshot],
+)
+def get_match_economy(
+    source: str,
+    source_match_id: str,
+    repository: Annotated[MatchRepository, Depends(get_repository)],
+) -> list[dict[str, int | float]]:
+    if not isinstance(repository, MatchEconomyRepository):
+        raise HTTPException(
+            status_code=501,
+            detail="Historical match economy is not supported by this database backend.",
+        )
+    get_match(source, source_match_id, repository)
+    return repository.list_historical_match_economy(source, source_match_id)
 
 
 def create_app(db_path: str | Path | None = None) -> FastAPI:

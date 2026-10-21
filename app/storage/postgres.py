@@ -73,3 +73,18 @@ class PostgresMatchRepository:
         if row is None:
             return None
         return _match_from_row(row)
+
+    def list_historical_match_economy(
+        self, source: str, source_match_id: str
+    ) -> list[dict[str, int | float]]:
+        with self._connect() as connection:
+            return connection.execute(
+                "SELECT actual_game_time_seconds, replay_tick, "
+                "radiant_net_worth, dire_net_worth, "
+                "radiant_current_gold, dire_current_gold, "
+                "radiant_total_xp, dire_total_xp "
+                "FROM historical_match_economy_snapshots "
+                "WHERE source = %s AND source_match_id = %s "
+                "ORDER BY actual_game_time_seconds, replay_tick",
+                (source, source_match_id),
+            ).fetchall()
