@@ -252,6 +252,59 @@ hashes or frame sets fail instead of overwriting data. Any write/validation erro
 rolls back the batch; failures return exit code 1. Dry-run checks local inputs
 only and does not check existing PostgreSQL parents or snapshots.
 
+### Import historical team POV features
+
+Validate the existing four-match POV CSV without contacting PostgreSQL:
+
+```bash
+python -m tools.import_pov_features
+```
+
+The default input is
+`tools/replay_probe/output/global-pov-oracle-four-matches/pov-features.csv`;
+`--csv-path PATH` selects an explicit copy. The importer requires the existing
+16-column team POV schema and all 2242 rows: 774 for `8960991322`, 532 for
+`8960882635`, 524 for `8958734008`, and 412 for `8957013760`. It validates replay
+SHA consistency, unique match/tick/team keys, exact Radiant/Dire pairing, increasing
+actual times/ticks, counts, feature availability and original status codes.
+
+The separate `historical_match_pov_snapshots` table references the existing
+catalog through `(source, source_match_id)`, using source `replay_clarity`.
+It stores replay SHA, actual time, tick, POV team, the three requested enemy
+counts, nearest visible enemy distance, own team spread and both feature status
+fields. Missing distances/spread remain SQL NULL, never zero. Zero is preserved
+when it is an actual supplied value. `visible_enemy_count` counts raw visibility
+flags, which may persist after death; `visible_enemy_with_position_count` counts
+VISIBLE enemies with verified living positions. Neither field establishes the
+total number of living enemies.
+
+CSV `game_time_seconds` is already the actual source frame time from the
+validated spatial/visibility export. It is stored as
+`actual_game_time_seconds`, without rounding or substituting the nominal grid.
+The importer copies the requested feature subset at that same time and tick;
+it performs no frame joins, replay processing or feature recomputation. Extra
+CSV columns are rejected; GLOBAL coordinates, future labels and last-seen
+positions are not imported. Raw clock/visibility guarantees remain those of the
+upstream extractor; CSV validation does not independently re-prove them. These
+are historical team POV observations, not a confirmed available LIVE feed.
+
+After the catalog parents exist, rebuild the web image to include the new SQL
+file. With Compose's PostgreSQL running, apply only when explicitly intended:
+
+```bash
+docker compose build web
+docker compose run --rm --no-deps \
+  --volume "$PWD/tools:/srv/app/tools:ro" \
+  web python -m tools.import_pov_features --apply
+```
+
+For PostgreSQL reachable from the host, use `python -m tools.import_pov_features
+--apply` with the existing five `POSTGRES_*` variables exported. Dry-run is the
+default and does not need those settings. Table creation and all inserts share
+one transaction. Identical repeated imports skip existing rows; conflicting
+values, statuses, SHA or frame sets fail and roll back rather than overwrite.
+Other tables and source files are not modified. Errors return exit code 1.
+
 ## Legacy paper research pipeline
 
 1. Load `config.example.yaml`.
