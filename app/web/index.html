@@ -255,7 +255,7 @@
         <div class="panel-heading">
           <div>
             <h2 id="economy-title">Экономика матча</h2>
-            <p class="economy-note">Исторические данные реплея, не LIVE.</p>
+            <p class="economy-note">HISTORICAL_ORACLE · Исторические данные реплея, не LIVE.</p>
           </div>
         </div>
         <div class="state" id="economy-state" data-state="loading" role="status" aria-live="polite">
@@ -277,7 +277,7 @@
             <input id="economy-point" type="range" min="0" max="0" step="1" value="0">
             <div aria-live="polite" aria-atomic="true">
               <p class="economy-time" id="economy-time"></p>
-              <dl class="economy-values">
+              <dl class="economy-values" id="economy-selected-values">
                 <div><dt id="economy-radiant-value-name"></dt><dd id="economy-radiant-value"></dd></div>
                 <div><dt id="economy-dire-value-name"></dt><dd id="economy-dire-value"></dd></div>
               </dl>
@@ -309,7 +309,7 @@
             <label for="pov-point">Выбрать POV-кадр</label>
             <input id="pov-point" type="range" min="0" max="0" step="1" value="0">
             <p class="economy-time" id="pov-time" role="status" aria-live="polite"></p>
-            <div class="pov-details">
+            <div class="pov-details" id="pov-details">
               <section class="pov-card" aria-labelledby="pov-radiant-title">
                 <h3 id="pov-radiant-title">Radiant POV</h3>
                 <dl class="pov-fields" id="pov-radiant-fields"></dl>
@@ -370,10 +370,12 @@
     const numberFormat = new Intl.NumberFormat("ru-RU");
     const axisFormat = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 });
     const worthAxisFormat = new Intl.NumberFormat("ru-RU", { notation: "compact", maximumFractionDigits: 1 });
+    const ageFormat = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 6 });
     let economyHistory = [];
     let economyGeometry = null;
     let povFrames = [];
     let povGeometry = null;
+    let selectedGameTime = null;
     let activeRequest = null;
 
     const stageNames = {
@@ -432,6 +434,7 @@
 
     function beginRequest() {
       if (activeRequest) activeRequest.abort();
+      selectedGameTime = null;
       activeRequest = new AbortController();
       return activeRequest;
     }
@@ -584,12 +587,44 @@
       return element;
     }
 
-    function selectEconomyPoint(index) {
+    function asOfIndex(history, time) {
+      if (!Number.isFinite(time)) return -1;
+      let left = 0, right = history.length;
+      while (left < right) {
+        const middle = Math.floor((left + right) / 2);
+        if (history[middle].actual_game_time_seconds <= time) left = middle + 1;
+        else right = middle;
+      }
+      return left - 1;
+    }
+
+    function selectGameTime(time) {
+      if (!Number.isFinite(time)) return;
+      selectedGameTime = time;
+      renderEconomyPoint(asOfIndex(economyHistory, time));
+      renderPovPoint(asOfIndex(povFrames, time));
+    }
+
+    function renderEconomyPoint(index) {
+      if (!economyGeometry || economyContent.hidden || selectedGameTime === null) return;
       const snapshot = economyHistory[index];
-      if (!snapshot || !economyGeometry) return;
-      economyPoint.value = String(index);
-      const { x, y, top, bottom } = economyGeometry;
       const selection = document.getElementById("economy-marker");
+      document.getElementById("economy-selected-values").hidden = !snapshot;
+      // -1 is an explicit empty selection; ArrowRight can then select the first real snapshot.
+      economyPoint.min = snapshot ? "0" : "-1";
+      economyPoint.disabled = Boolean(snapshot) && economyHistory.length === 1;
+      economyPoint.value = String(index);
+      if (!snapshot) {
+        selection.replaceChildren();
+        document.getElementById("economy-time").textContent = `Выбранный момент: ${selectedGameTime} с. Нет предшествующего снимка.`;
+        document.getElementById("economy-lead").textContent = "Нет предшествующего снимка";
+        document.getElementById("economy-latest").textContent = "На выбранный момент экономические данные ещё отсутствуют.";
+        document.getElementById("economy-radiant-value").textContent = "Нет данных";
+        document.getElementById("economy-dire-value").textContent = "Нет данных";
+        economyPoint.setAttribute("aria-valuetext", "Нет предшествующего снимка");
+        return;
+      }
+      const { x, y, top, bottom } = economyGeometry;
       selection.replaceChildren(
         svgElement("line", { x1: x(snapshot), x2: x(snapshot), y1: top, y2: bottom, stroke: "#64746e", "stroke-dasharray": "3 3" }),
         svgElement("circle", { cx: x(snapshot), cy: y(snapshot.radiant_net_worth), r: 4, fill: "#176753", stroke: "white", "stroke-width": 1.5 }),
@@ -597,9 +632,14 @@
       );
       // Only labels are formatted; plotting and selection retain the original timestamps.
       const moment = `${axisFormat.format(snapshot.actual_game_time_seconds / 60)} мин · ${snapshot.actual_game_time_seconds} с`;
-      document.getElementById("economy-time").textContent = `Игровое время: ${moment}`;
+      document.getElementById("economy-time").textContent = `Выбранный момент: ${selectedGameTime} с. Экономический снимок: ${moment}. Давность: ${ageFormat.format(selectedGameTime - snapshot.actual_game_time_seconds)} с.`;
       document.getElementById("economy-radiant-value").textContent = `${numberFormat.format(snapshot.radiant_net_worth)} золота`;
       document.getElementById("economy-dire-value").textContent = `${numberFormat.format(snapshot.dire_net_worth)} золота`;
+      const lead = snapshot.radiant_net_worth - snapshot.dire_net_worth;
+      const leader = document.getElementById(lead > 0 ? "economy-radiant-name" : "economy-dire-name").textContent;
+      document.getElementById("economy-lead").textContent = lead === 0 ? "Net worth равен у обеих команд"
+        : `Лидирует ${leader}: +${numberFormat.format(Math.abs(lead))} золота`;
+      document.getElementById("economy-latest").textContent = `Последний снимок не позже выбранного момента: ${snapshot.actual_game_time_seconds} игровых секунд.`;
       economyPoint.setAttribute("aria-valuetext", moment);
     }
 
@@ -642,7 +682,7 @@
       }
       drawing.append(svgElement("g", { id: "economy-marker" }));
       economyChart.replaceChildren(drawing);
-      selectEconomyPoint(Number(economyPoint.value));
+      renderEconomyPoint(asOfIndex(economyHistory, selectedGameTime));
     }
 
     function validEconomy(history) {
@@ -688,13 +728,8 @@
           document.getElementById(`economy-${side}-name`).textContent = name;
           document.getElementById(`economy-${side}-value-name`).textContent = name;
         }
-        const latest = history.at(-1);
-        const lead = latest.radiant_net_worth - latest.dire_net_worth;
-        document.getElementById("economy-lead").textContent = lead === 0 ? "Net worth равен у обеих команд"
-          : `Лидирует ${lead > 0 ? radiant : dire}: +${numberFormat.format(Math.abs(lead))} золота`;
-        document.getElementById("economy-latest").textContent = `Последний доступный снимок: ${latest.actual_game_time_seconds} игровых секунд.`;
+        if (selectedGameTime === null) selectedGameTime = history[0].actual_game_time_seconds;
         economyPoint.max = String(history.length - 1);
-        economyPoint.value = economyPoint.max;
         economyPoint.disabled = history.length === 1;
         economyState.hidden = true;
         economyContent.hidden = false;
@@ -754,10 +789,21 @@
       return result;
     }
 
-    function selectPovPoint(index) {
+    function renderPovPoint(index) {
+      if (!povGeometry || povContent.hidden || selectedGameTime === null) return;
       const frame = povFrames[index];
-      if (!frame || !povGeometry) return;
+      document.getElementById("pov-details").hidden = !frame;
+      povPoint.min = frame ? "0" : "-1";
+      povPoint.disabled = Boolean(frame) && povFrames.length === 1;
       povPoint.value = String(index);
+      if (!frame) {
+        document.getElementById("pov-marker").replaceChildren();
+        document.getElementById("pov-time").textContent = `Выбранный момент: ${selectedGameTime} с. Нет предшествующего снимка.`;
+        document.getElementById("pov-radiant-fields").replaceChildren();
+        document.getElementById("pov-dire-fields").replaceChildren();
+        povPoint.setAttribute("aria-valuetext", "Нет предшествующего снимка");
+        return;
+      }
       const { x, y, top, bottom } = povGeometry;
       document.getElementById("pov-marker").replaceChildren(
         svgElement("line", { x1: x(frame), x2: x(frame), y1: top, y2: bottom, stroke: "#64746e", "stroke-dasharray": "3 3" }),
@@ -765,7 +811,7 @@
         svgElement("circle", { cx: x(frame), cy: y(frame.DIRE.visible_enemy_count), r: 4, fill: "#aa5b21", stroke: "white", "stroke-width": 1.5 })
       );
       const moment = `${axisFormat.format(frame.actual_game_time_seconds / 60)} мин · ${frame.actual_game_time_seconds} с · tick ${frame.replay_tick}`;
-      document.getElementById("pov-time").textContent = `Выбранный кадр: ${moment}`;
+      document.getElementById("pov-time").textContent = `Выбранный момент: ${selectedGameTime} с. POV-кадр: ${moment}. Давность: ${ageFormat.format(selectedGameTime - frame.actual_game_time_seconds)} с.`;
       povPoint.setAttribute("aria-valuetext", moment);
       for (const team of ["RADIANT", "DIRE"]) {
         renderFields(`pov-${team.toLowerCase()}-fields`, frame[team], [
@@ -819,7 +865,7 @@
       }
       drawing.append(svgElement("g", { id: "pov-marker" }));
       povChart.replaceChildren(drawing);
-      selectPovPoint(Number(povPoint.value));
+      renderPovPoint(asOfIndex(povFrames, selectedGameTime));
     }
 
     async function loadPov(match, request) {
@@ -854,8 +900,8 @@
           return;
         }
         povFrames = frames;
+        if (selectedGameTime === null) selectedGameTime = frames[0].actual_game_time_seconds;
         povPoint.max = String(frames.length - 1);
-        povPoint.value = "0";
         povPoint.disabled = frames.length === 1;
         povState.hidden = true;
         povContent.hidden = false;
@@ -929,6 +975,7 @@
         } else {
           if (activeRequest) activeRequest.abort();
           activeRequest = null;
+          selectedGameTime = null;
           economyPanel.hidden = true;
           economyHistory = [];
           economyGeometry = null;
@@ -958,7 +1005,10 @@
         navigate(listUrl());
       });
     });
-    economyPoint.addEventListener("input", () => selectEconomyPoint(Number(economyPoint.value)));
+    economyPoint.addEventListener("input", () => {
+      const snapshot = economyHistory[Number(economyPoint.value)];
+      if (snapshot) selectGameTime(snapshot.actual_game_time_seconds);
+    });
     economyChart.addEventListener("click", event => {
       if (!economyGeometry || !economyHistory.length) return;
       const bounds = economyChart.getBoundingClientRect();
@@ -970,10 +1020,13 @@
         if (Math.abs(economyHistory[candidate].actual_game_time_seconds - time)
           < Math.abs(economyHistory[index].actual_game_time_seconds - time)) index = candidate;
       }
-      selectEconomyPoint(index);
+      selectGameTime(economyHistory[index].actual_game_time_seconds);
     });
     new ResizeObserver(drawEconomyChart).observe(economyChart);
-    povPoint.addEventListener("input", () => selectPovPoint(Number(povPoint.value)));
+    povPoint.addEventListener("input", () => {
+      const frame = povFrames[Number(povPoint.value)];
+      if (frame) selectGameTime(frame.actual_game_time_seconds);
+    });
     povChart.addEventListener("click", event => {
       if (!povGeometry || !povFrames.length) return;
       const bounds = povChart.getBoundingClientRect();
@@ -985,7 +1038,7 @@
         if (Math.abs(povFrames[candidate].actual_game_time_seconds - time)
           < Math.abs(povFrames[index].actual_game_time_seconds - time)) index = candidate;
       }
-      selectPovPoint(index);
+      selectGameTime(povFrames[index].actual_game_time_seconds);
     });
     new ResizeObserver(drawPovChart).observe(povChart);
     detailRefresh.addEventListener("click", () => renderRoute());
