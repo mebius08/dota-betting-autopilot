@@ -325,6 +325,43 @@ one transaction. Identical repeated imports skip existing rows; conflicting
 values, statuses, SHA or frame sets fail and roll back rather than overwrite.
 Other tables and source files are not modified. Errors return exit code 1.
 
+### Import experimental historical OOF death predictions
+
+Validate the existing 2206-row export without contacting PostgreSQL:
+
+```bash
+python -m tools.import_death_predictions
+```
+
+The default source is `tools/replay_probe/output/pov-deaths-oof-four-matches.csv`;
+use `--csv-path PATH` for an explicit copy. Validation requires the exact eight
+CSV columns, unique match/tick/team/horizon keys, paired Radiant/Dire frames,
+consistent increasing actual times/ticks, horizon 30, finite probabilities in
+`[0, 1]` and targets exactly `0` or `1`. Source files are read-only.
+
+With the existing five `POSTGRES_*` variables exported for a reachable database,
+apply explicitly:
+
+```bash
+python -m tools.import_death_predictions --apply
+```
+
+The new `historical_match_death_predictions` table references the existing
+catalog through `(source, source_match_id)` with source `replay_clarity`.
+`game_time_seconds` is stored as NUMERIC from Decimal, without rounding or POV
+joins; float64 probabilities retain the exported model values. Every row stores
+`prediction_origin=HISTORICAL_OUT_OF_FOLD`. The target is a future outcome for
+retrospective evaluation only, never a predictor. This provenance refers to the
+already validated OOF export; the importer neither retrains nor independently
+re-proves held-out training or LIVE availability.
+
+Table creation and inserts share one transaction. Identical repeats are skipped;
+conflicting values or frame sets fail with rollback, without overwriting existing
+predictions. Missing catalog parents fail the foreign key. Dry-run checks local
+CSV data only, not database parents. Failures return exit code 1. No existing
+tables, API or ML components are changed. For Compose, use the existing mounted
+tools procedure above and rebuild the image to include the new SQL file first.
+
 ## Legacy paper research pipeline
 
 1. Load `config.example.yaml`.
