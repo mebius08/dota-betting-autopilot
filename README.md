@@ -120,6 +120,26 @@ To use an existing SQLite directory, replace the volume mount with
 UID/GID `10001:10001`; the mounted directory and database must be writable by
 that user. Server logs are available with `docker logs dota-analytics`.
 
+### Web image in GitHub Container Registry
+
+After a push to `university`, the `University web CI` workflow publishes
+`ghcr.io/mebius08/dota-analytics-web` only after the existing lint, focused tests,
+Docker build and container HTTP checks pass. Pull requests run CI without
+publishing. A separate publication job builds the checked commit when its SHA
+tag does not yet exist, without repeating the tests. It uses only the built-in
+`GITHUB_TOKEN` with `contents: read` and `packages: write`.
+
+The moving tag `:university` identifies the most recently published build; a
+full `:<commit-sha>` tag identifies its source revision. The workflow preserves
+an existing SHA tag on reruns and serializes publication of the same commit;
+registry access errors fail publication instead of being treated as a missing
+tag. After pushing, check the
+`web` and `publish` jobs in Actions, then open the
+[GHCR package](https://github.com/users/mebius08/packages/container/package/dota-analytics-web)
+to inspect versions and package access settings. Publishing the image does not
+deploy a public website: running the application and PostgreSQL still requires
+separate hosting, configuration and persistent storage.
+
 ### PostgreSQL with Docker Compose
 
 Copy the environment template without overwriting an existing local file:

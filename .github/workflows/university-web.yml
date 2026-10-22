@@ -74,3 +74,73 @@ jobs:
       - name: Remove test container and temporary SQLite volume
         if: always()
         run: docker rm --force --volumes dota-analytics-ci || true
+
+  publish:
+    needs: web
+    if: >-
+      github.event_name == 'push' && github.ref == 'refs/heads/university' &&
+      needs.web.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: university-web-ghcr-${{ github.sha }}
+      cancel-in-progress: false
+    env:
+      IMAGE_NAME: ghcr.io/mebius08/dota-analytics-web
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Sign in to GHCR with the workflow token
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Publish commit and university tags without overwriting a commit image
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          registry_token="$(curl --fail --silent --show-error --max-time 30 --get \
+            --user "${GITHUB_ACTOR}:${GHCR_TOKEN}" \
+            --data-urlencode 'service=ghcr.io' \
+            --data-urlencode "scope=repository:${IMAGE_NAME#ghcr.io/}:pull,push" \
+            https://ghcr.io/token \
+            | python3 -c 'import json, sys; print(json.load(sys.stdin)["token"])')"
+          echo "::add-mask::${registry_token}"
+          manifest_status="$(curl --silent --show-error --max-time 30 \
+            --head --output /dev/null --write-out '%{http_code}' \
+            --header "Authorization: Bearer ${registry_token}" \
+            --header 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
+            "https://ghcr.io/v2/${IMAGE_NAME#ghcr.io/}/manifests/${GITHUB_SHA}")"
+          case "$manifest_status" in
+            200)
+              echo "Commit image already exists; preserving its SHA tag."
+              docker pull "${IMAGE_NAME}:${GITHUB_SHA}"
+              docker tag "${IMAGE_NAME}:${GITHUB_SHA}" "${IMAGE_NAME}:university"
+              ;;
+            404)
+              docker build \
+                --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+                --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+                --tag "${IMAGE_NAME}:university" \
+                --tag "${IMAGE_NAME}:${GITHUB_SHA}" .
+              docker push "${IMAGE_NAME}:${GITHUB_SHA}"
+              ;;
+            *)
+              echo "Cannot verify commit image: GHCR returned HTTP ${manifest_status}."
+              exit 1
+              ;;
+          esac
+          docker push "${IMAGE_NAME}:university"
+
+      - name: Sign out of GHCR
+        if: always()
+        run: docker logout ghcr.io
