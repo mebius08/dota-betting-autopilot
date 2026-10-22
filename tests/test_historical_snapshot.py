@@ -418,3 +418,252 @@ def test_real_compact_heroes_at_2280_if_local_artifact_exists():
         for player in selected["players"]
     ]
     assert len(observation.values["players"]) == 10
+
+
+def spatial(time, tick, **updates):
+    return dict(
+        match_id=8960991322, replay_sha256="a" * 64,
+        source_game_time_seconds=time, replay_tick=tick,
+        game_time_seconds=0, target_game_time_seconds=0,
+        players=[dict(
+            player_slot=slot, team="RADIANT" if slot < 5 else "DIRE", hero_id=slot + 1,
+            selected_hero_handle=1000 + slot, hero_entity_handle=1000 + slot,
+            hero_entity_class=f"hero_{slot}", life_state=0, position_status="OBSERVED",
+            x=Decimal("12889.00000000000000000000000000000001"), y=Decimal("16191.78125"),
+        ) for slot in range(10)],
+    ) | updates
+
+
+@pytest.mark.parametrize(("t", "expected"), [
+    (Decimal("-1"), None),
+    (Decimal("0"), None),
+    (Decimal("2270.0333999999999999999999999999999999"), None),
+    (Decimal("2270.0334"), Decimal("2270.0334")),
+    (Decimal("2280.0002"), Decimal("2270.0334")),
+    (Decimal("2280.0333999999999999999999999999999999"), Decimal("2270.0334")),
+    (Decimal("2280.0334"), Decimal("2280.0334")),
+])
+def test_spatial_as_of_never_uses_nominal_grid_or_a_future_frame(t, expected):
+    observation = build_historical_snapshot(MATCH, t, [], [], spatial_records=[
+        spatial(Decimal("2280.0334"), 100635), spatial(Decimal("2270.0334"), 100335),
+    ]).observations["spatial_global"]
+    assert observation.origin == "HISTORICAL_ORACLE"
+    assert observation.actual_game_time_seconds == expected
+    if expected is None:
+        assert observation.status == "NO_PRECEDING_SNAPSHOT"
+        assert observation.replay_tick is observation.age_seconds is observation.values is None
+    else:
+        assert observation.status == "AVAILABLE"
+        with localcontext() as context:
+            context.prec = 60
+            assert observation.age_seconds == t - expected
+
+
+@pytest.mark.parametrize(("t", "requested_tick", "expected_tick"), [
+    (Decimal("2280.0002"), 100635, 100335),  # Tick permission cannot admit future game time.
+    (Decimal("2280.0334"), 100634, 100335),
+    (Decimal("2280.0334"), 100635, 100635),
+    (Decimal("2280.0334"), 100000, None),
+])
+def test_spatial_requires_both_time_and_optional_tick_upper_bounds(t, requested_tick, expected_tick):
+    observation = build_historical_snapshot(MATCH, t, [], [], spatial_records=[
+        spatial(Decimal("2270.0334"), 100335), spatial(Decimal("2280.0334"), 100635),
+    ], requested_replay_tick=requested_tick).observations["spatial_global"]
+    assert observation.replay_tick == expected_tick
+    if expected_tick is not None:
+        assert observation.actual_game_time_seconds <= t
+        assert observation.replay_tick <= requested_tick
+    else:
+        assert observation.status == "NO_PRECEDING_SNAPSHOT"
+
+
+@pytest.mark.parametrize("tick", [True, -1, 10.5, "100335", Decimal("100335")])
+def test_requested_spatial_tick_must_be_a_nonnegative_integer(tick):
+    with pytest.raises(ValueError, match="Requested replay tick"):
+        build_historical_snapshot(MATCH, 10, [], [], spatial_records=[], requested_replay_tick=tick)
+
+
+def test_spatial_equal_game_times_and_pauses_do_not_turn_tick_gaps_into_age():
+    frames = [spatial(10, 100), spatial(10, 10000)]
+    bounded = build_historical_snapshot(
+        MATCH, 11, [], [], spatial_records=frames, requested_replay_tick=9999,
+    ).observations["spatial_global"]
+    unbounded = build_historical_snapshot(MATCH, 11, [], [], spatial_records=frames).observations["spatial_global"]
+    assert bounded.replay_tick == 100 and unbounded.replay_tick == 10000
+    assert bounded.age_seconds == unbounded.age_seconds == Decimal("1")
+    assert build_historical_snapshot(
+        MATCH, 0, [], [], spatial_records=[],
+    ).observations["spatial_global"].status == "NO_PRECEDING_SNAPSHOT"
+
+
+def test_spatial_preserves_exact_positions_dead_nulls_and_source_statuses():
+    frame = spatial(10, 100, target=1)
+    frame["players"][0].update(target=1, visibility="HIDDEN", future_x=99999)
+    for slot, life in ((1, 1), (2, 2)):
+        frame["players"][slot].update(x=None, y=None, life_state=life, position_status="HERO_NOT_ALIVE")
+    frame["players"][3].update(x=None, y=None, life_state=None, position_status="HERO_ENTITY_MISSING")
+    before = deepcopy(frame)
+    observation = build_historical_snapshot(MATCH, 10, [], [], spatial_records=[frame]).observations["spatial_global"]
+    players = observation.values["players"]
+    assert len(players) == len({p["player_slot"] for p in players}) == len({p["hero_id"] for p in players}) == 10
+    assert [sum(p["team"] == team for p in players) for team in ("RADIANT", "DIRE")] == [5, 5]
+    for actual, original in zip(players, frame["players"], strict=True):
+        assert actual == dict(
+            source=MATCH.source, source_match_id=MATCH.source_match_id,
+            **{k: v for k, v in original.items() if k not in ("target", "visibility", "future_x")},
+        )
+    for slot, life in ((1, 1), (2, 2)):
+        assert players[slot]["x"] is players[slot]["y"] is None
+        assert players[slot]["life_state"] == life and players[slot]["position_status"] == "HERO_NOT_ALIVE"
+    assert players[3]["life_state"] is None and players[3]["position_status"] == "HERO_ENTITY_MISSING"
+    assert observation.values["replay_sha256"] == "a" * 64
+    players[0]["x"] = Decimal("0")
+    assert frame == before
+
+
+@pytest.mark.parametrize("problem", [
+    "partial_roster", "duplicate_slot", "duplicate_hero", "six_radiant", "wrong_team",
+    "bad_tick", "nominal_only", "nonfinite_time", "frame_time", "player_tick", "source_tick",
+    "player_time", "partial_coordinates", "nonfinite_coordinate", "missing_coordinate",
+    "observed_null", "dead_observed", "false_death_status", "bad_life_state", "wrong_selected_hero",
+])
+def test_invalid_spatial_frames_fail_instead_of_silently_falling_back(problem):
+    frame = spatial(20, 200)
+    player = frame["players"][0]
+    if problem == "partial_roster":
+        frame["players"].pop()
+    elif problem == "duplicate_slot":
+        frame["players"][1]["player_slot"] = player["player_slot"]
+    elif problem == "duplicate_hero":
+        frame["players"][1]["hero_id"] = player["hero_id"]
+    elif problem == "six_radiant":
+        frame["players"][5]["team"] = "RADIANT"
+    elif problem == "wrong_team":
+        player["team"] = "GLOBAL"
+    elif problem == "bad_tick":
+        frame["replay_tick"] = -1
+    elif problem == "nominal_only":
+        del frame["source_game_time_seconds"]
+    elif problem == "nonfinite_time":
+        frame["source_game_time_seconds"] = Decimal("NaN")
+    elif problem == "frame_time":
+        frame["actual_game_time_seconds"] = Decimal("20.00000000000000000001")
+    elif problem == "player_tick":
+        player["replay_tick"] = 201
+    elif problem == "source_tick":
+        frame["source_replay_tick"] = 201
+    elif problem == "player_time":
+        player["source_game_time_seconds"] = Decimal("20.00000000000000000001")
+    elif problem == "partial_coordinates":
+        player["x"] = None
+    elif problem == "nonfinite_coordinate":
+        player["y"] = float("inf")
+    elif problem == "missing_coordinate":
+        del player["x"]
+    elif problem == "observed_null":
+        player.update(x=None, y=None)
+    elif problem == "dead_observed":
+        player["life_state"] = 2
+    elif problem == "false_death_status":
+        player.update(position_status="HERO_NOT_ALIVE", x=None, y=None)
+    elif problem == "bad_life_state":
+        player["life_state"] = True
+    else:
+        player["hero_entity_handle"] = 99999
+    with pytest.raises(ValueError):
+        build_historical_snapshot(MATCH, 10, [], [], spatial_records=[spatial(0, 1), frame])
+
+
+@pytest.mark.parametrize("metadata", [
+    {"match_id": "another-match"},
+    {"source": "other", "source_match_id": MATCH.source_match_id},
+    {"source": MATCH.source, "source_match_id": "another-match"},
+    {"source": MATCH.source},
+    {"replay_sha256": "b" * 64},
+    {"replay_sha256": "not-a-sha"},
+])
+@pytest.mark.parametrize("scope", ["frame", "player"])
+def test_spatial_match_and_replay_lineage_must_agree(metadata, scope):
+    frame = spatial(10, 100)
+    (frame if scope == "frame" else frame["players"][0]).update(metadata)
+    with pytest.raises(ValueError):
+        build_historical_snapshot(
+            MATCH, 10, [], [], spatial_records=[frame], replay_sha256="a" * 64,
+        )
+
+
+def test_spatial_checks_cross_frame_sha_and_duplicate_ticks_without_a_reference_sha():
+    with pytest.raises(ValueError, match="SHA-256"):
+        build_historical_snapshot(MATCH, 10, [], [], spatial_records=[
+            spatial(0, 1), spatial(10, 100, replay_sha256="b" * 64),
+        ])
+    with pytest.raises(ValueError, match="Duplicate spatial replay tick"):
+        build_historical_snapshot(MATCH, 10, [], [], spatial_records=[spatial(0, 1), spatial(10, 1)])
+    with pytest.raises(ValueError, match="SHA-256"):
+        build_historical_snapshot(MATCH, 10, [], [], spatial_records=[], replay_sha256="bad")
+    with pytest.raises(ValueError, match="monotonic"):
+        build_historical_snapshot(MATCH, 20, [], [], spatial_records=[spatial(20, 1), spatial(10, 100)])
+
+
+def test_spatial_global_is_optional_independent_of_pov_and_has_no_future_leakage():
+    args = (MATCH, 2280.0002, [economy(2280.0002, 100634)], pair(2270.0334, 100335))
+    original = build_historical_snapshot(*args, hero_records=[heroes(2280.0002, 100634)])
+    frames = [spatial(2270.0334, 100335)]
+    combined = build_historical_snapshot(
+        *args, hero_records=[heroes(2280.0002, 100634)], spatial_records=frames,
+        requested_replay_tick=100634,
+    )
+    assert "spatial_global" not in original.observations
+    for channel, observation in original.observations.items():
+        assert combined.observations[channel] == observation
+    assert combined.observations["spatial_global"].origin == "HISTORICAL_ORACLE"
+    assert combined.observations["pov"].origin == "HISTORICAL_TEAM_POV"
+    assert combined.observations["pov"].values["RADIANT"]["nearest_visible_enemy_distance"] is None
+    frames.append(spatial(2280.0334, 100635))
+    assert combined == build_historical_snapshot(
+        *args, hero_records=[heroes(2280.0002, 100634)], spatial_records=frames,
+        requested_replay_tick=100634,
+    )
+    frames[0]["players"][5]["x"] = Decimal("999999")
+    assert build_historical_snapshot(*args, spatial_records=frames).observations["pov"] == original.observations["pov"]
+
+
+def test_spatial_decimal_time_age_and_coordinates_survive_low_context_precision():
+    observed = Decimal("1.0000000000000000000000000000000000000001")
+    requested = Decimal("1.0000000000000000000000000000000000000002")
+    with localcontext() as context:
+        context.prec = 6
+        observation = build_historical_snapshot(
+            MATCH, requested, [], [], spatial_records=[spatial(observed, 100)],
+        ).observations["spatial_global"]
+        assert context.prec == 6
+    assert observation.actual_game_time_seconds == observed
+    assert observation.age_seconds == Decimal("1e-40")
+    assert observation.values["players"][0]["x"] == Decimal("12889.00000000000000000000000000000001")
+
+
+def test_real_spatial_snapshot_at_2280_and_dead_nulls_if_local_artifact_exists():
+    path = Path(__file__).resolve().parents[1] / "tools/replay_probe/output/visibility-check/8960991322.compact.spatial.json"
+    if not path.is_file():
+        pytest.skip("Optional gitignored spatial artifact is not installed.")
+    sidecar = json.loads(path.read_text(encoding="utf-8"), parse_float=Decimal)
+    records = [dict(frame, match_id=sidecar["match_id"], replay_sha256=sidecar["replay_sha256"])
+               for frame in sidecar["snapshots"]]
+    observation = build_historical_snapshot(
+        MATCH, Decimal("2280.0002"), [], [], spatial_records=records,
+        requested_replay_tick=100634, replay_sha256=sidecar["replay_sha256"],
+    ).observations["spatial_global"]
+    assert observation.status == "AVAILABLE" and observation.origin == "HISTORICAL_ORACLE"
+    assert observation.actual_game_time_seconds == Decimal("2270.0334")
+    assert observation.replay_tick == 100335 and observation.age_seconds == Decimal("9.9668")
+    players = observation.values["players"]
+    assert len(players) == sum(p["x"] is not None and p["y"] is not None for p in players) == 10
+    assert players[0]["hero_entity_class"] == "CDOTA_Unit_Hero_Juggernaut"
+    assert players[0]["x"] == Decimal("12889.0") and players[0]["y"] == Decimal("16191.78125")
+    dead_frame = build_historical_snapshot(
+        MATCH, Decimal("2310.0334"), [], [], spatial_records=records,
+    ).observations["spatial_global"]
+    missing = [p for p in dead_frame.values["players"] if p["x"] is None]
+    assert len(missing) == 3
+    assert all(p["y"] is None and p["position_status"] == "HERO_NOT_ALIVE" and p["life_state"] in (1, 2)
+               for p in missing)

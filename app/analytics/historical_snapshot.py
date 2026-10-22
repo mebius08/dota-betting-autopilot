@@ -17,6 +17,13 @@ outside the selected time. Bare compact frames must be scoped by the caller.
 Hero inventory entries describe observed possession, never purchase events or
 ability readiness. Economy and heroes remain historical oracle observations,
 separate from team POV and never evidence of LIVE availability.
+
+Spatial frames are a separate historical oracle channel, never team knowledge.
+They require complete selected-hero rosters; corrupt frames fail explicitly.
+An optional requested replay tick additionally bounds spatial selection, without
+converting ticks to elapsed seconds. Optional replay_sha256 is a reference for
+checking record hashes; provided hashes must also agree across spatial records.
+As with bare identity, absent hash metadata cannot prove replay lineage.
 """
 
 from collections.abc import Mapping, Sequence
@@ -113,8 +120,9 @@ def _values(row: Mapping, fields: tuple[str, ...]) -> dict:
 
 
 def _as_of(candidates: Sequence[tuple[Decimal, int, dict]], time: Decimal,
-           origin: str) -> HistoricalObservation:
-    selected = max((item for item in candidates if item[0] <= time),
+           origin: str, max_tick: int | None = None) -> HistoricalObservation:
+    selected = max((item for item in candidates
+                    if item[0] <= time and (max_tick is None or item[1] <= max_tick)),
                    key=lambda item: (item[0], item[1]), default=None)
     if selected is None:
         return HistoricalObservation(origin, "NO_PRECEDING_SNAPSHOT", None, None, None, None)
@@ -203,6 +211,110 @@ def _hero_candidates(records: Sequence[Mapping], match: MatchIdentity) -> list:
     return candidates
 
 
+def _sha256(value: object) -> str:
+    if not isinstance(value, str) or len(value) != 64 or any(
+        char not in "0123456789abcdefABCDEF" for char in value
+    ):
+        raise ValueError("Replay SHA-256 must contain 64 hexadecimal characters.")
+    return value.lower()
+
+
+def _spatial_candidates(records: Sequence[Mapping], match: MatchIdentity,
+                        replay_sha256: str | None) -> list:
+    expected_sha = _sha256(replay_sha256) if replay_sha256 is not None else None
+    candidates, ticks = [], set()
+    for frame in records:
+        if not isinstance(frame, Mapping) or "source_game_time_seconds" not in frame:
+            raise ValueError("Spatial frames require actual source_game_time_seconds, not grid time.")
+        time, tick = _row_time_tick(
+            dict(frame, actual_game_time_seconds=frame["source_game_time_seconds"]), match,
+        )
+        if tick in ticks:
+            raise ValueError("Duplicate spatial replay tick.")
+        ticks.add(tick)
+        players = frame.get("players")
+        if not isinstance(players, (list, tuple)) or len(players) != 10:
+            raise ValueError("Spatial frames require exactly ten main heroes.")
+        for record in (frame, *players):
+            if not isinstance(record, Mapping):
+                raise ValueError("Spatial records must be mappings.")
+            record_time, record_tick = _row_time_tick(
+                {"actual_game_time_seconds": time, "replay_tick": tick} | dict(record), match,
+            )
+            if (record_time, record_tick) != (time, tick):
+                raise ValueError("Spatial record belongs to a different frame.")
+            if "source_game_time_seconds" in record and _seconds(record["source_game_time_seconds"]) != time:
+                raise ValueError("Spatial record has inconsistent actual frame times.")
+            if "source_replay_tick" in record:
+                _, source_tick = _row_time_tick(dict(record, actual_game_time_seconds=time,
+                                                     replay_tick=record["source_replay_tick"]), match)
+                if source_tick != tick:
+                    raise ValueError("Spatial record has inconsistent replay ticks.")
+            if "match_id" in record and str(record["match_id"]) != match.source_match_id:
+                raise ValueError("Spatial match identity does not match the selected match.")
+            if "replay_sha256" in record:
+                sha = _sha256(record["replay_sha256"])
+                if expected_sha is not None and sha != expected_sha:
+                    raise ValueError("Spatial replay SHA-256 does not match.")
+                expected_sha = sha
+        heroes, slots, hero_ids = [], set(), set()
+        for player in players:
+            required = ("player_slot", "team", "hero_id", "x", "y", "position_status", "life_state")
+            if any(field not in player for field in required):
+                raise ValueError("Missing spatial fields; use explicit None for unknown positions.")
+            slot, team, hero_id = player["player_slot"], player["team"], player["hero_id"]
+            if isinstance(slot, bool) or not isinstance(slot, int) or slot < 0 or slot in slots:
+                raise ValueError("Spatial player slots must be unique nonnegative integers.")
+            if (isinstance(hero_id, bool) or not isinstance(hero_id, int) or hero_id <= 0
+                    or hero_id in hero_ids or team not in TEAMS):
+                raise ValueError("Spatial frames require unique hero IDs and RADIANT/DIRE teams.")
+            slots.add(slot)
+            hero_ids.add(hero_id)
+            x, y, status, life = (player[field] for field in ("x", "y", "position_status", "life_state"))
+            if not isinstance(status, str) or not status:
+                raise ValueError("Spatial position_status must preserve a nonempty source status.")
+            if life is not None and (isinstance(life, bool) or not isinstance(life, int) or life < 0):
+                raise ValueError("Spatial life_state must be a nonnegative integer or None.")
+            if (x is None) != (y is None):
+                raise ValueError("Spatial coordinates must be a pair or both None.")
+            if x is not None:
+                _seconds(x)
+                _seconds(y)
+            if (status == "OBSERVED") != (x is not None) or (x is not None and life != 0):
+                raise ValueError("Spatial position status, life state and coordinates contradict.")
+            if status == "HERO_NOT_ALIVE" and life in (None, 0):
+                raise ValueError("HERO_NOT_ALIVE requires a nonzero life_state.")
+            identity = {}
+            if "hero_entity_class" in player:
+                name = player["hero_entity_class"]
+                if name is not None and not isinstance(name, str):
+                    raise ValueError("Hero entity class must be a string or None.")
+                identity["hero_entity_class"] = name
+            if "selected_hero_handle" in player or "hero_entity_handle" in player:
+                for field in ("selected_hero_handle", "hero_entity_handle"):
+                    handle = player.get(field)
+                    if isinstance(handle, bool) or not isinstance(handle, int) or handle < 0:
+                        raise ValueError("Spatial selected-hero handles must be nonnegative integers.")
+                    identity[field] = handle
+                if identity["selected_hero_handle"] != identity["hero_entity_handle"]:
+                    raise ValueError("Spatial entity is not the selected main hero.")
+            heroes.append({
+                "source": match.source, "source_match_id": match.source_match_id,
+                "player_slot": slot, "team": team, "hero_id": hero_id, **identity,
+                "x": x, "y": y, "position_status": status, "life_state": life,
+            })
+        if any(sum(hero["team"] == team for hero in heroes) != 5 for team in TEAMS):
+            raise ValueError("Spatial frames must contain five RADIANT and five DIRE heroes.")
+        values = {"players": heroes}
+        if "replay_sha256" in frame:
+            values["replay_sha256"] = frame["replay_sha256"]
+        candidates.append((time, tick, values))
+    ordered = sorted(candidates, key=lambda item: item[1])
+    if any(previous[0] > current[0] for previous, current in zip(ordered, ordered[1:])):
+        raise ValueError("Spatial game time must be monotonic with replay ticks; equal times are allowed.")
+    return candidates
+
+
 def build_historical_snapshot(
     match: MatchIdentity,
     t: Time,
@@ -210,6 +322,9 @@ def build_historical_snapshot(
     pov_records: Sequence[Mapping],
     *,
     hero_records: Sequence[Mapping] | None = None,
+    spatial_records: Sequence[Mapping] | None = None,
+    requested_replay_tick: int | None = None,
+    replay_sha256: str | None = None,
 ) -> HistoricalSnapshot:
     """Return only whitelisted observations at or before t; never future targets.
 
@@ -222,11 +337,22 @@ def build_historical_snapshot(
     omitting it preserves the original two-channel result. Partial rosters are
     skipped without merging frames. Invalid/contradictory records raise ValueError
     rather than silently producing a partial state or hiding corrupt input.
+
+    spatial_records accepts already-loaded sidecar snapshots. Spatial selection
+    uses source_game_time_seconds and, if supplied, requested_replay_tick as a
+    second upper bound. Other channels retain their existing independent as-of
+    selection. Frame/player identity and SHA metadata, when present, are checked;
+    replay_sha256 can supply an expected hash without changing MatchIdentity.
     """
     if not isinstance(match, MatchIdentity):
         raise ValueError("Pass a MatchIdentity, not a complete match/result record.")
     match = MatchIdentity(match.source, match.source_match_id)
     requested_time = _seconds(t)
+    if requested_replay_tick is not None and (
+        isinstance(requested_replay_tick, bool) or not isinstance(requested_replay_tick, int)
+        or requested_replay_tick < 0
+    ):
+        raise ValueError("Requested replay tick must be a nonnegative integer or None.")
     economy, economic_ticks = [], set()
     for row in economy_records:
         time, tick = _row_time_tick(row, match)
@@ -253,5 +379,10 @@ def build_historical_snapshot(
     if hero_records is not None:
         observations["heroes"] = _as_of(
             _hero_candidates(hero_records, match), requested_time, "HISTORICAL_ORACLE",
+        )
+    if spatial_records is not None:
+        observations["spatial_global"] = _as_of(
+            _spatial_candidates(spatial_records, match, replay_sha256), requested_time,
+            "HISTORICAL_ORACLE", requested_replay_tick,
         )
     return HistoricalSnapshot(match, requested_time, observations)
