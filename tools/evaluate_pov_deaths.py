@@ -6,8 +6,10 @@ from collections.abc import Sequence
 import csv
 from dataclasses import dataclass
 from decimal import Decimal
+import os
 from pathlib import Path
 import sys
+import tempfile
 import warnings
 
 import numpy as np
@@ -31,6 +33,10 @@ FEATURES = (
     "own_team_spread", "nearest_visible_enemy_distance",
 )
 RANDOM_STATE = 42
+OOF_COLUMNS = (
+    "match_id", "replay_tick", "game_time_seconds", "pov_team", "horizon_seconds",
+    "constant_probability", "logistic_probability", "target",
+)
 LIMITATION = (
     "Four matches, paired team views and overlapping 30-second windows do not "
     "provide a reliable estimate of generalization. Pooled OOF metrics are row-weighted, "
@@ -146,8 +152,10 @@ def evaluate(observations: Sequence[Observation]) -> dict:
             diagnostics[f"{notice.category.__name__}: {notice.message}"] += 1
         prior = float(y[train].mean())
         constant_oof[test] = prior
-        if not np.isfinite(logistic_oof[test]).all():
-            raise ValueError(f"Nonfinite model probabilities for {held_out}.")
+        if not np.isfinite(logistic_oof[test]).all() or np.any(
+            (logistic_oof[test] < 0) | (logistic_oof[test] > 1)
+        ):
+            raise ValueError(f"Invalid OOF model probabilities for {held_out}.")
         seen[test] += 1
         statuses = Counter(row.status for row in observations if row.match_id == held_out)
         folds.append({
@@ -163,6 +171,26 @@ def evaluate(observations: Sequence[Observation]) -> dict:
         })
     if not np.all(seen == 1) or not np.isfinite(logistic_oof).all():
         raise ValueError("Incomplete or invalid out-of-fold predictions.")
+    for probabilities in (constant_oof, logistic_oof):
+        if not np.isfinite(probabilities).all() or np.any((probabilities < 0) | (probabilities > 1)):
+            raise ValueError("OOF probabilities must be finite and within [0, 1].")
+    ordered = sorted(range(len(valid)), key=lambda index: (
+        valid[index].match_id, valid[index].actual_time, valid[index].replay_tick,
+        TEAMS.index(valid[index].pov_team),
+    ))
+    oof_rows, identities = [], set()
+    for index in ordered:
+        row = valid[index]
+        identity = (row.match_id, row.replay_tick, row.pov_team)
+        if identity in identities:
+            raise ValueError("Duplicate OOF match/tick/team identity.")
+        identities.add(identity)
+        oof_rows.append(dict(
+            match_id=row.match_id, replay_tick=row.replay_tick,
+            game_time_seconds=str(row.actual_time), pov_team=row.pov_team,
+            horizon_seconds=30, constant_probability=float(constant_oof[index]),
+            logistic_probability=float(logistic_oof[index]), target=int(y[index]),
+        ))
     return {
         "folds": folds, "valid_rows": len(valid), "positive_rate": float(y.mean()),
         "excluded": dict(Counter(row.status for row in observations if row.status != "VALID")),
@@ -170,16 +198,45 @@ def evaluate(observations: Sequence[Observation]) -> dict:
         "diagnostics": dict(diagnostics),
         "missing_values": {name: int(np.isnan(x[:, index]).sum())
                            for index, name in enumerate(FEATURES)},
+        "oof_rows": oof_rows,
     }
+
+
+def write_oof(path: Path, rows: Sequence[dict]) -> None:
+    """Replace the explicit destination only after a complete, durable CSV write."""
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", newline="", dir=path.parent,
+            prefix=f".{path.name}.", suffix=".tmp", delete=False,
+        ) as stream:
+            temporary = Path(stream.name)
+            writer = csv.DictWriter(stream, fieldnames=OOF_COLUMNS, lineterminator="\n")
+            writer.writeheader()
+            writer.writerows(rows)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--csv-path", type=Path, default=DEFAULT_INPUT)
+    parser.add_argument(
+        "--out-oof", type=Path,
+        help="Write OOF CSV atomically to this explicit path; parent must exist.",
+    )
     args = parser.parse_args(argv)
     try:
+        if args.out_oof is not None and args.out_oof.resolve() == args.csv_path.resolve():
+            raise ValueError("OOF output must not overwrite the source corpus.")
         observations = load_observations(args.csv_path)
         report = evaluate(observations)
+        if args.out_oof is not None:
+            write_oof(args.out_oof, report["oof_rows"])
         print(f"Source: {args.csv_path}; rows={len(observations)}; matches=4.")
         print("Target: own_deaths_next_30s > 0 in (t, t+30s], not shared any_death_next_30s.")
         print("Features: " + ", ".join(FEATURES) + "; plus one missing indicator per feature.")
@@ -201,7 +258,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         if report["diagnostics"]:
             print(f"WARNING: estimator diagnostics: {report['diagnostics']}.")
         print("WARNING: " + LIMITATION)
-        print("No model or dataset artifacts were saved.")
+        if args.out_oof is None:
+            print("No model or dataset artifacts were saved.")
+        else:
+            print(f"OOF CSV: {args.out_oof}; rows={len(report['oof_rows'])}.")
+            print("game_time_seconds is actual source time; target = own_deaths_next_30s > 0, for evaluation only.")
+            print("No model artifacts were saved.")
         return 0
     except (OSError, ValueError, csv.Error) as exc:
         print(f"Offline baseline failed: {exc}", file=sys.stderr)
