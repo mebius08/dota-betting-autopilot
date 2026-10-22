@@ -113,6 +113,12 @@
     .economy-values { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 0; }
     .economy-values dt { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
     .economy-values dd { margin: 4px 0 0; font-weight: 650; font-variant-numeric: tabular-nums; }
+    .pov-details { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    .pov-card { min-width: 0; padding: 18px; border: 1px solid var(--line); border-radius: 8px; }
+    .pov-card h3 { margin: 0 0 18px; font-size: 15px; }
+    .pov-fields { display: grid; gap: 14px; margin: 0; }
+    .pov-fields dt { font-size: 12px; color: var(--muted); }
+    .pov-fields dd { margin: 3px 0 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
     .state { padding: 64px 24px 70px; text-align: center; }
     .state-symbol { margin: 0 auto 18px; width: 42px; height: 42px; display: grid; place-items: center; background: #eef3ed; color: var(--accent); border-radius: 50%; font-size: 23px; }
     .state h3 { margin: 0 0 8px; font-size: 18px; font-weight: 650; }
@@ -159,6 +165,7 @@
       .detail-fields, .detail-extra { padding: 22px 18px; }
       .detail-grid { grid-template-columns: 1fr; gap: 20px; }
       .economy-body { padding: 18px 12px; }
+      .pov-details { grid-template-columns: 1fr; }
     }
     @media (prefers-reduced-motion: reduce) {
       html { scroll-behavior: auto; }
@@ -278,6 +285,43 @@
           </div>
         </div>
       </section>
+      <section class="matches-panel economy-panel" id="pov-panel" aria-labelledby="pov-title" aria-busy="false" hidden>
+        <div class="panel-heading">
+          <div>
+            <h2 id="pov-title">Обзор команд</h2>
+            <p class="economy-note">HISTORICAL_TEAM_POV · Исторические наблюдения. Доступность такого потока в LIVE не доказана.</p>
+          </div>
+        </div>
+        <div class="state" id="pov-state" data-state="loading" role="status" aria-live="polite">
+          <div class="state-symbol" id="pov-symbol" aria-hidden="true">↻</div>
+          <h3 id="pov-state-title">Загружаем обзор команд</h3>
+          <p id="pov-state-description">Получаем сохранённые POV-снимки матча.</p>
+        </div>
+        <div class="economy-body" id="pov-content" hidden>
+          <p class="economy-help">График показывает сырые VISIBLE-флаги, которые могут сохраняться после смерти героя. Пригодные живые позиции учитываются отдельно в деталях кадра.</p>
+          <ul class="economy-legend" aria-label="Командные POV на графике">
+            <li><span class="economy-swatch" aria-hidden="true"></span>Radiant POV</li>
+            <li><span class="economy-swatch dire" aria-hidden="true"></span>Dire POV</li>
+          </ul>
+          <svg class="economy-plot" id="pov-chart" role="img" aria-labelledby="pov-title pov-chart-description"></svg>
+          <p class="economy-help" id="pov-chart-description">Количество противников с сырым visibility flag. Показаны только сохранённые кадры; между ними видимость могла меняться. Выберите кадр на графике или ползунком; доступны клавиши со стрелками.</p>
+          <div class="economy-selection">
+            <label for="pov-point">Выбрать POV-кадр</label>
+            <input id="pov-point" type="range" min="0" max="0" step="1" value="0">
+            <p class="economy-time" id="pov-time" role="status" aria-live="polite"></p>
+            <div class="pov-details">
+              <section class="pov-card" aria-labelledby="pov-radiant-title">
+                <h3 id="pov-radiant-title">Radiant POV</h3>
+                <dl class="pov-fields" id="pov-radiant-fields"></dl>
+              </section>
+              <section class="pov-card" aria-labelledby="pov-dire-title">
+                <h3 id="pov-dire-title">Dire POV</h3>
+                <dl class="pov-fields" id="pov-dire-fields"></dl>
+              </section>
+            </div>
+          </div>
+        </div>
+      </section>
     </section>
     <section class="data-note" id="data" aria-labelledby="data-title">
       <h2 id="data-title">Об этих данных</h2>
@@ -318,11 +362,18 @@
     const economyContent = document.getElementById("economy-content");
     const economyChart = document.getElementById("economy-chart");
     const economyPoint = document.getElementById("economy-point");
+    const povPanel = document.getElementById("pov-panel");
+    const povState = document.getElementById("pov-state");
+    const povContent = document.getElementById("pov-content");
+    const povChart = document.getElementById("pov-chart");
+    const povPoint = document.getElementById("pov-point");
     const numberFormat = new Intl.NumberFormat("ru-RU");
     const axisFormat = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 });
     const worthAxisFormat = new Intl.NumberFormat("ru-RU", { notation: "compact", maximumFractionDigits: 1 });
     let economyHistory = [];
     let economyGeometry = null;
+    let povFrames = [];
+    let povGeometry = null;
     let activeRequest = null;
 
     const stageNames = {
@@ -656,6 +707,167 @@
       }
     }
 
+    function showPovState(kind, title, description, symbol) {
+      povState.dataset.state = kind;
+      document.getElementById("pov-state-title").textContent = title;
+      document.getElementById("pov-state-description").textContent = description;
+      document.getElementById("pov-symbol").textContent = symbol;
+      povState.hidden = false;
+      povContent.hidden = true;
+    }
+
+    function pairPovFrames(history) {
+      if (!Array.isArray(history)) throw new Error("Expected a POV array");
+      const frames = new Map(); // This map belongs only to the selected match response.
+      for (const row of history) {
+        if (row === null || typeof row !== "object" || Array.isArray(row)
+          || !["RADIANT", "DIRE"].includes(row.pov_team)
+          || !Number.isSafeInteger(row.replay_tick) || row.replay_tick < 0
+          || !Number.isFinite(row.actual_game_time_seconds) || row.actual_game_time_seconds < 0
+          || !["visible_enemy_count", "visible_enemy_with_position_count", "hidden_enemy_count"].every(
+            field => Number.isInteger(row[field]) && row[field] >= 0 && row[field] <= 5)
+          || row.visible_enemy_with_position_count > row.visible_enemy_count
+          || row.visible_enemy_count + row.hidden_enemy_count > 5) throw new Error("Invalid POV row");
+        for (const [field, status, allowed] of [
+          ["own_team_spread", "own_team_spread_status", ["OK", "INSUFFICIENT_OWN_POSITIONS"]],
+          ["nearest_visible_enemy_distance", "nearest_visible_enemy_status", ["OK", "NO_OWN_POSITION", "NO_VISIBLE_ENEMY_POSITION"]]
+        ]) {
+          if (!allowed.includes(row[status])
+            || (row[field] !== null && (!Number.isFinite(row[field]) || row[field] < 0))
+            || (row[field] !== null) !== (row[status] === "OK")) throw new Error("Invalid POV value/status");
+        }
+        let frame = frames.get(row.replay_tick);
+        if (!frame) {
+          frame = { replay_tick: row.replay_tick, actual_game_time_seconds: row.actual_game_time_seconds };
+          frames.set(row.replay_tick, frame);
+        }
+        if (Object.hasOwn(frame, row.pov_team) || frame.actual_game_time_seconds !== row.actual_game_time_seconds) {
+          throw new Error("Duplicate POV team or disagreeing actual frame time");
+        }
+        frame[row.pov_team] = row;
+      }
+      const result = [...frames.values()].sort((a, b) => a.replay_tick - b.replay_tick);
+      if (result.some((frame, index) => !frame.RADIANT || !frame.DIRE
+        || (index > 0 && frame.actual_game_time_seconds <= result[index - 1].actual_game_time_seconds))) {
+        throw new Error("Unpaired or nonmonotonic POV frames");
+      }
+      return result;
+    }
+
+    function selectPovPoint(index) {
+      const frame = povFrames[index];
+      if (!frame || !povGeometry) return;
+      povPoint.value = String(index);
+      const { x, y, top, bottom } = povGeometry;
+      document.getElementById("pov-marker").replaceChildren(
+        svgElement("line", { x1: x(frame), x2: x(frame), y1: top, y2: bottom, stroke: "#64746e", "stroke-dasharray": "3 3" }),
+        svgElement("circle", { cx: x(frame), cy: y(frame.RADIANT.visible_enemy_count), r: 4, fill: "#176753", stroke: "white", "stroke-width": 1.5 }),
+        svgElement("circle", { cx: x(frame), cy: y(frame.DIRE.visible_enemy_count), r: 4, fill: "#aa5b21", stroke: "white", "stroke-width": 1.5 })
+      );
+      const moment = `${axisFormat.format(frame.actual_game_time_seconds / 60)} мин · ${frame.actual_game_time_seconds} с · tick ${frame.replay_tick}`;
+      document.getElementById("pov-time").textContent = `Выбранный кадр: ${moment}`;
+      povPoint.setAttribute("aria-valuetext", moment);
+      for (const team of ["RADIANT", "DIRE"]) {
+        renderFields(`pov-${team.toLowerCase()}-fields`, frame[team], [
+          ["Фактическое игровое время, с", "actual_game_time_seconds"],
+          ["Replay tick", "replay_tick"],
+          ["VISIBLE-флаги (сырые)", "visible_enemy_count"],
+          ["Противники с пригодной живой позицией", "visible_enemy_with_position_count"],
+          ["HIDDEN-флаги", "hidden_enemy_count"],
+          ["Расстояние до ближайшего видимого противника", "nearest_visible_enemy_distance"],
+          ["Статус расстояния", "nearest_visible_enemy_status"],
+          ["Spread своей команды", "own_team_spread"],
+          ["Статус spread", "own_team_spread_status"]
+        ]);
+      }
+    }
+
+    function drawPovChart() {
+      if (povContent.hidden || detailView.hidden || !povFrames.length) return;
+      const width = povChart.getBoundingClientRect().width;
+      if (!width) return;
+      const height = width < 480 ? 250 : 300;
+      const left = 36, right = width - 14, top = 28, bottom = height - 44;
+      const start = povFrames[0].actual_game_time_seconds;
+      const end = Math.max(start + 1, povFrames.at(-1).actual_game_time_seconds);
+      const x = frame => left + (frame.actual_game_time_seconds - start) / (end - start) * (right - left);
+      const y = count => bottom - count / 5 * (bottom - top);
+      povGeometry = { x, y, width, left, right, top, bottom, start, end };
+      povChart.setAttribute("viewBox", `0 0 ${width} ${height}`);
+      const drawing = document.createDocumentFragment();
+      for (let count = 0; count <= 5; count++) {
+        drawing.append(
+          svgElement("line", { x1: left, x2: right, y1: y(count), y2: y(count), stroke: "#dce4de" }),
+          svgElement("text", { x: left - 8, y: y(count) + 4, "text-anchor": "end", fill: "#64746e", "font-size": 11 }, count)
+        );
+      }
+      for (let index = 0; index <= 4; index++) {
+        const time = start + (end - start) * index / 4;
+        drawing.append(svgElement("text", {
+          x: x({ actual_game_time_seconds: time }), y: bottom + 19,
+          "text-anchor": index === 0 ? "start" : index === 4 ? "end" : "middle",
+          fill: "#64746e", "font-size": 11
+        }, axisFormat.format(time / 60)));
+      }
+      drawing.append(
+        svgElement("text", { x: left, y: 14, fill: "#64746e", "font-size": 11 }, "Сырые VISIBLE-флаги"),
+        svgElement("text", { x: right, y: height - 4, "text-anchor": "end", fill: "#64746e", "font-size": 11 }, "Игровое время, мин")
+      );
+      for (const [team, color, dash] of [["RADIANT", "#176753", "none"], ["DIRE", "#aa5b21", "6 4"]]) {
+        const path = povFrames.map((frame, index) => `${index === 0 ? "M" : "L"}${x(frame)},${y(frame[team].visible_enemy_count)}`).join(" ");
+        drawing.append(svgElement("path", { d: path, fill: "none", stroke: color, "stroke-width": 2.5, "stroke-dasharray": dash }));
+      }
+      drawing.append(svgElement("g", { id: "pov-marker" }));
+      povChart.replaceChildren(drawing);
+      selectPovPoint(Number(povPoint.value));
+    }
+
+    async function loadPov(match, request) {
+      povPanel.hidden = false;
+      povPanel.setAttribute("aria-busy", "true");
+      try {
+        const response = await fetch(`/api/matches/${encodeURIComponent(match.source)}/${encodeURIComponent(match.source_match_id)}/pov`, {
+          headers: { Accept: "application/json" }, cache: "no-store", signal: request.signal
+        });
+        if (activeRequest !== request || request.signal.aborted) return;
+        const errors = {
+          404: ["Матч не найден", "Для этого источника и ID нет записи матча."],
+          501: ["Обзор команд недоступен", "Хранилище сервера не поддерживает POV-историю."],
+          500: ["Не удалось загрузить обзор", "Ошибка сервера (HTTP 500). Попробуйте обновить данные позже."]
+        };
+        if (Object.hasOwn(errors, response.status)) {
+          showPovState("error", ...errors[response.status], "!");
+          return;
+        }
+        if (!response.ok) throw new Error("POV API request failed");
+        const history = await response.json();
+        if (activeRequest !== request || request.signal.aborted) return;
+        let frames;
+        try {
+          frames = pairPovFrames(history);
+        } catch {
+          showPovState("error", "Некорректная POV-история", "Не удалось подтвердить парность команд, точные time/tick или значения признаков. Приблизительное сопоставление не выполняется.", "!");
+          return;
+        }
+        if (!frames.length) {
+          showPovState("empty", "Нет POV-снимков", "Матч есть в каталоге, но история командного обзора ещё не сохранена.", "∅");
+          return;
+        }
+        povFrames = frames;
+        povPoint.max = String(frames.length - 1);
+        povPoint.value = "0";
+        povPoint.disabled = frames.length === 1;
+        povState.hidden = true;
+        povContent.hidden = false;
+        drawPovChart();
+      } catch {
+        if (activeRequest !== request || request.signal.aborted) return;
+        showPovState("error", "Не удалось загрузить обзор", "Проверьте соединение и попробуйте обновить данные. Ответ сервера также может быть некорректным.", "!");
+      } finally {
+        if (activeRequest === request) povPanel.setAttribute("aria-busy", "false");
+      }
+    }
+
     async function loadMatch(source, sourceMatchId) {
       const request = beginRequest();
       economyPanel.hidden = true;
@@ -663,6 +875,11 @@
       economyGeometry = null;
       economyChart.replaceChildren();
       showEconomyState("loading", "Загружаем экономику", "Получаем сохранённые снимки матча.", "↻");
+      povPanel.hidden = true;
+      povFrames = [];
+      povGeometry = null;
+      povChart.replaceChildren();
+      showPovState("loading", "Загружаем обзор команд", "Получаем сохранённые POV-снимки матча.", "↻");
       detailRefresh.disabled = true;
       detailPanel.setAttribute("aria-busy", "true");
       document.getElementById("detail-title").textContent = "Подробности матча";
@@ -686,7 +903,7 @@
           throw new Error("Invalid match response");
         }
         renderMatch(match);
-        await loadEconomy(match, request);
+        await Promise.all([loadEconomy(match, request), loadPov(match, request)]);
       } catch {
         if (request.signal.aborted || activeRequest !== request) return;
         showDetailState("error", "Не удалось загрузить матч", "Проверьте соединение и попробуйте обновить данные. Сервис также может быть временно недоступен.", "!");
@@ -715,6 +932,9 @@
           economyPanel.hidden = true;
           economyHistory = [];
           economyGeometry = null;
+          povPanel.hidden = true;
+          povFrames = [];
+          povGeometry = null;
           document.getElementById("detail-title").textContent = "Подробности матча";
           document.title = "Неполная ссылка · Dota 2 Analytics";
           detailRefresh.disabled = false;
@@ -753,6 +973,21 @@
       selectEconomyPoint(index);
     });
     new ResizeObserver(drawEconomyChart).observe(economyChart);
+    povPoint.addEventListener("input", () => selectPovPoint(Number(povPoint.value)));
+    povChart.addEventListener("click", event => {
+      if (!povGeometry || !povFrames.length) return;
+      const bounds = povChart.getBoundingClientRect();
+      const { left, right, width, start, end } = povGeometry;
+      const position = (event.clientX - bounds.left) / bounds.width * width;
+      const time = start + Math.max(0, Math.min(1, (position - left) / (right - left))) * (end - start);
+      let index = 0;
+      for (let candidate = 1; candidate < povFrames.length; candidate++) {
+        if (Math.abs(povFrames[candidate].actual_game_time_seconds - time)
+          < Math.abs(povFrames[index].actual_game_time_seconds - time)) index = candidate;
+      }
+      selectPovPoint(index);
+    });
+    new ResizeObserver(drawPovChart).observe(povChart);
     detailRefresh.addEventListener("click", () => renderRoute());
     window.addEventListener("popstate", () => renderRoute(true));
     refresh.addEventListener("click", loadMatches);
