@@ -1,4 +1,5 @@
 import csv
+from dataclasses import asdict
 from decimal import Decimal, localcontext
 import json
 
@@ -261,3 +262,107 @@ def test_sources_from_another_confirmed_match_cannot_be_mixed(sources, capsys, c
     captured = capsys.readouterr()
     assert captured.out == ""
     assert match_id in captured.err and "match" in captured.err
+
+
+def test_default_and_explicit_global_preserve_legacy_json_and_delegate_tick(sources, capsys, monkeypatch):
+    original = cli.project_snapshot
+    calls = []
+
+    def project(snapshot, view, **kwargs):
+        calls.append((snapshot, view, kwargs))
+        return original(snapshot, view, **kwargs)
+
+    monkeypatch.setattr(cli, "project_snapshot", project)
+    assert cli.main(arguments()) == 0
+    implicit = json.loads(capsys.readouterr().out)
+    assert cli.main([*arguments(), "--view", "HISTORICAL_GLOBAL"]) == 0
+    explicit = json.loads(capsys.readouterr().out)
+    legacy = asdict(calls[0][0]) | {"requested_replay_tick": 200, "replay_sha256": SHA}
+    assert implicit == explicit == json.loads(json.dumps(legacy, default=cli._json_decimal))
+    assert len(calls) == 2
+    assert all(view == "HISTORICAL_GLOBAL" and kwargs == {"requested_replay_tick": 200}
+               for _, view, kwargs in calls)
+
+
+@pytest.mark.parametrize(("view", "team"), [
+    ("HISTORICAL_RADIANT_POV", "RADIANT"), ("HISTORICAL_DIRE_POV", "DIRE"),
+])
+def test_cli_team_views_are_isolated_and_preserve_last_seen_nulls_and_metadata(sources, capsys, monkeypatch, view, team):
+    path = sources / cli.ENEMY_PATH
+    with path.open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    slot = "5" if team == "RADIANT" else "0"
+    for row in rows:
+        if row["game_time_seconds"] == "0.0334" and row["pov_team"] == team and row["enemy_player_slot"] == slot:
+            row.update(last_seen_status="LAST_SEEN", last_seen_game_time_seconds="0.0",
+                       last_seen_age_seconds="0.0334", last_seen_x=SPREAD, last_seen_y="456.125")
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=cli.ENEMY_OBSERVATION_FIELDS)
+        writer.writeheader()
+        writer.writerows(rows)
+    original = cli.project_snapshot
+    calls = []
+
+    def project(snapshot, selected_view, **kwargs):
+        calls.append((selected_view, kwargs))
+        return original(snapshot, selected_view, **kwargs)
+
+    monkeypatch.setattr(cli, "project_snapshot", project)
+    assert cli.main([*arguments(), "--view", view]) == 0
+    captured = capsys.readouterr()
+    assert captured.err == "" and calls == [(view, {"requested_replay_tick": 200})]
+    payload = json.loads(captured.out)
+    assert payload["view"] == view
+    assert payload["match"] == {"source": "replay_clarity", "source_match_id": cli.MATCH_ID}
+    assert payload["requested_game_time_seconds"] == "10.0002" and payload["requested_replay_tick"] == 200
+    assert payload["replay_sha256"] == SHA
+    observations = payload["observations"]
+    assert set(observations) == {"pov", "pov_enemy_positions"}
+    for observation in observations.values():
+        assert observation["origin"] == "HISTORICAL_TEAM_POV" and observation["status"] == "AVAILABLE"
+        assert observation["actual_game_time_seconds"] == "0.0334" and observation["replay_tick"] == 101
+        assert observation["age_seconds"] == "9.9668" and set(observation["values"]) == {team}
+    features = observations["pov"]["values"][team]
+    assert features["nearest_visible_enemy_distance"] is None
+    assert features["nearest_visible_enemy_status"] == "NO_VISIBLE_ENEMY_POSITION"
+    assert features["own_team_spread"] == SPREAD
+    enemies = observations["pov_enemy_positions"]["values"][team]
+    assert len(enemies) == 5
+    assert all(row["pov_team"] == team and row["enemy_team"] != team for row in enemies)
+    assert all(row["visibility_state"] == "HIDDEN" and row["current_x"] is row["current_y"] is None for row in enemies)
+    remembered = enemies[0]
+    assert remembered["last_seen_x"] == SPREAD and remembered["last_seen_y"] == "456.125"
+    assert remembered["last_seen_game_time_seconds"] == "0.0"
+    assert remembered["last_seen_age_seconds"] == "0.0334"
+    assert remembered["last_seen_age_at_requested_time_seconds"] == "10.0002"
+    assert not {"economy", "heroes", "spatial_global", "net_worth", "current_gold", "life_state",
+                "target", "winner", "own_deaths_next_30s", "logistic_probability"} & set(nested_keys(payload))
+
+
+@pytest.mark.parametrize("view", ["HISTORICAL_RADIANT_POV", "HISTORICAL_DIRE_POV"])
+def test_cli_team_view_keeps_exact_decimal_request_and_missing_source_status(sources, capsys, view):
+    requested = "10.0002000000000000000000000000000000000001"
+    with localcontext() as context:
+        context.prec = 6
+        assert cli.main([*arguments(time=requested), "--view", view]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["requested_game_time_seconds"] == requested
+    team = "RADIANT" if view == "HISTORICAL_RADIANT_POV" else "DIRE"
+    assert payload["observations"]["pov"]["values"][team]["own_team_spread"] == SPREAD
+    with localcontext() as context:
+        context.prec = 80
+        assert Decimal(payload["observations"]["pov"]["age_seconds"]) == Decimal(requested) - Decimal("0.0334")
+    assert cli.main([*arguments(time="-1", tick="0"), "--view", view]) == 0
+    missing = json.loads(capsys.readouterr().out)["observations"]
+    assert set(missing) == {"pov", "pov_enemy_positions"}
+    assert all(observation["status"] == "NO_PRECEDING_SNAPSHOT" and observation["values"] is None
+               for observation in missing.values())
+
+
+def test_unknown_view_fails_before_loading_sources(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "ROOT", tmp_path)
+    with pytest.raises(SystemExit) as error:
+        cli.main([*arguments(), "--view", "LIVE_RADIANT_POV"])
+    assert error.value.code == 2
+    captured = capsys.readouterr()
+    assert captured.out == "" and "invalid choice" in captured.err

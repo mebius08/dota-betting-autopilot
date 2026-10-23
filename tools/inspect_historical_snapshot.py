@@ -7,7 +7,6 @@ This adapter loads observations only; selection belongs to HistoricalSnapshot.
 import argparse
 from collections.abc import Sequence
 import csv
-from dataclasses import asdict
 from decimal import Decimal, InvalidOperation
 import json
 from pathlib import Path
@@ -17,12 +16,14 @@ from app.analytics.historical_snapshot import (
     ENEMY_OBSERVATION_FIELDS, POV_FIELDS, TEAMS, MatchIdentity,
     build_historical_snapshot,
 )
+from app.analytics.snapshot_views import VIEWS, project_snapshot
 from app.replay_pov_features import TEAM_COLUMNS
 
 
 ROOT = Path(__file__).resolve().parents[1]
 MATCH_ID = "8960991322"
 SOURCE = "replay_clarity"
+DEFAULT_VIEW = "HISTORICAL_GLOBAL"
 COMPACT_PATH = Path("tools/replay_probe/output/8960991322.compact.json")
 SPATIAL_PATH = Path("tools/replay_probe/output/visibility-check/8960991322.compact.spatial.json")
 POV_PATH = Path("tools/replay_probe/output/pov-lifecycle-check/team_pov_features.csv")
@@ -117,8 +118,9 @@ def _pov_rows(rows: list[dict], match_id: str) -> list[dict]:
     return result
 
 
-def inspect_snapshot(match_id: str, at_seconds: Decimal, at_tick: int) -> dict:
-    """Load a confirmed match's explicit sources and build five channels once."""
+def inspect_snapshot(match_id: str, at_seconds: Decimal, at_tick: int, *,
+                     view: str = DEFAULT_VIEW) -> dict:
+    """Build five channels once, then delegate information scope to the projector."""
     if match_id not in MATCH_SOURCES:
         raise ValueError(f"Unsupported match ID {match_id}; supported: {', '.join(MATCH_SOURCES)}.")
     paths = MATCH_SOURCES[match_id]
@@ -141,7 +143,10 @@ def inspect_snapshot(match_id: str, at_seconds: Decimal, at_tick: int) -> dict:
         spatial_records=[lineage | frame for frame in spatial["snapshots"]],
         enemy_records=enemies, requested_replay_tick=at_tick, replay_sha256=sha,
     )
-    return asdict(snapshot) | {"requested_replay_tick": at_tick, "replay_sha256": sha}
+    payload = project_snapshot(snapshot, view, requested_replay_tick=at_tick)
+    if view == DEFAULT_VIEW:
+        payload.pop("view")  # Preserve the existing GLOBAL top-level JSON contract.
+    return payload | {"replay_sha256": sha}
 
 
 def _time_argument(value: str) -> Decimal:
@@ -165,11 +170,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--match-id", required=True, choices=tuple(MATCH_SOURCES))
     parser.add_argument("--at-seconds", required=True, type=_time_argument)
     parser.add_argument("--at-tick", required=True, type=int)
+    parser.add_argument("--view", choices=tuple(VIEWS), default=DEFAULT_VIEW)
     args = parser.parse_args(argv)
     if args.at_tick < 0:
         parser.error("--at-tick must be a nonnegative replay tick.")
     try:
-        payload = inspect_snapshot(args.match_id, args.at_seconds, args.at_tick)
+        payload = inspect_snapshot(args.match_id, args.at_seconds, args.at_tick, view=args.view)
         output = json.dumps(payload, default=_json_decimal, ensure_ascii=False, allow_nan=False, indent=2)
     except (OSError, ValueError, TypeError, KeyError, InvalidOperation) as error:
         print(f"Historical snapshot error: match {args.match_id}: {error}", file=sys.stderr)
