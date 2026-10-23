@@ -24,11 +24,17 @@ An optional requested replay tick additionally bounds spatial selection, without
 converting ticks to elapsed seconds. Optional replay_sha256 is a reference for
 checking record hashes; provided hashes must also agree across spatial records.
 As with bare identity, absent hash metadata cannot prove replay lineage.
+
+Enemy observations use the existing enemy_observations.csv column names. Its
+game_time_seconds is actual source frame time, verified by the POV extractor.
+CSV numeric strings are decoded without rounding; blanks become None. Last-seen
+source age remains relative to that frame, with a separate exact age at request
+time. No GLOBAL positions or lifecycle state are consulted for enemy knowledge.
 """
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from decimal import Decimal, localcontext
+from decimal import Decimal, InvalidOperation, localcontext
 from typing import Literal
 
 
@@ -45,6 +51,12 @@ POV_FIELDS = (
 HERO_METRICS = (
     "level", "net_worth", "current_gold", "total_xp", "kills", "deaths",
     "assists", "last_hits", "denies",
+)
+ENEMY_OBSERVATION_FIELDS = (
+    "match_id", "replay_sha256", "game_time_seconds", "replay_tick", "pov_team",
+    "enemy_player_slot", "enemy_hero_id", "enemy_team", "visibility_state",
+    "current_position_status", "current_x", "current_y", "last_seen_status",
+    "last_seen_game_time_seconds", "last_seen_age_seconds", "last_seen_x", "last_seen_y",
 )
 TEAMS = ("RADIANT", "DIRE")
 
@@ -119,6 +131,15 @@ def _values(row: Mapping, fields: tuple[str, ...]) -> dict:
     return result
 
 
+def _elapsed_seconds(time: Decimal, observed_time: Decimal) -> Decimal:
+    # Exact age, including Decimal timestamps finer than the default context.
+    with localcontext() as context:
+        context.prec = max(time.adjusted(), observed_time.adjusted()) - min(
+            time.as_tuple().exponent, observed_time.as_tuple().exponent
+        ) + 2
+        return time - observed_time
+
+
 def _as_of(candidates: Sequence[tuple[Decimal, int, dict]], time: Decimal,
            origin: str, max_tick: int | None = None) -> HistoricalObservation:
     selected = max((item for item in candidates
@@ -127,13 +148,8 @@ def _as_of(candidates: Sequence[tuple[Decimal, int, dict]], time: Decimal,
     if selected is None:
         return HistoricalObservation(origin, "NO_PRECEDING_SNAPSHOT", None, None, None, None)
     observed_time, tick, values = selected
-    # Exact age, including Decimal timestamps finer than the default context.
-    with localcontext() as context:
-        context.prec = max(time.adjusted(), observed_time.adjusted()) - min(
-            time.as_tuple().exponent, observed_time.as_tuple().exponent
-        ) + 2
-        age = time - observed_time
-    return HistoricalObservation(origin, "AVAILABLE", observed_time, tick, age, values)
+    return HistoricalObservation(origin, "AVAILABLE", observed_time, tick,
+                                 _elapsed_seconds(time, observed_time), values)
 
 
 def _hero_candidates(records: Sequence[Mapping], match: MatchIdentity) -> list:
@@ -315,6 +331,133 @@ def _spatial_candidates(records: Sequence[Mapping], match: MatchIdentity,
     return candidates
 
 
+def _enemy_decimal(value: object, *, nullable: bool = False) -> Decimal | None:
+    if nullable and (value is None or value == ""):
+        return None
+    if isinstance(value, str):
+        try:
+            value = Decimal(value)
+        except InvalidOperation as error:
+            raise ValueError("Enemy observation numeric fields must be finite numbers or blanks.") from error
+    return _seconds(value)
+
+
+def _enemy_integer(value: object, *, minimum: int = 0) -> int:
+    if isinstance(value, str) and value.isascii() and value.isdecimal():
+        value = int(value)
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise ValueError("Enemy observation identity/tick must be a valid integer.")
+    return value
+
+
+def _enemy_positions(row: Mapping, time: Decimal) -> dict:
+    values = {field: _enemy_decimal(row[field], nullable=True) for field in (
+        "current_x", "current_y", "last_seen_game_time_seconds", "last_seen_age_seconds",
+        "last_seen_x", "last_seen_y",
+    )}
+    state, current, historical = (row[field] for field in (
+        "visibility_state", "current_position_status", "last_seen_status",
+    ))
+    if state not in ("VISIBLE", "HIDDEN", "UNKNOWN"):
+        raise ValueError("Enemy visibility must be VISIBLE, HIDDEN or UNKNOWN.")
+    x, y = values["current_x"], values["current_y"]
+    if (x is None) != (y is None) or (state != "VISIBLE" and x is not None):
+        raise ValueError("Hidden/unknown enemies cannot have current coordinates; positions must be paired.")
+    expected = ("OBSERVED" if x is not None else "VISIBLE_POSITION_UNAVAILABLE") if state == "VISIBLE" else state
+    if current != expected:
+        raise ValueError("Enemy visibility, position status and current coordinates contradict.")
+    seen = values["last_seen_game_time_seconds"]
+    age = values["last_seen_age_seconds"]
+    last_fields = (seen, age, values["last_seen_x"], values["last_seen_y"])
+    if historical == "NEVER_SEEN":
+        if any(value is not None for value in last_fields) or x is not None:
+            raise ValueError("NEVER_SEEN must not contain an observed current or historical position.")
+    elif historical in ("LAST_SEEN", "OBSERVED_NOW"):
+        if any(value is None for value in last_fields) or seen > time or age < 0:
+            raise ValueError("Last-seen observations require complete data and cannot be from the future.")
+        exact_age = _elapsed_seconds(time, seen)
+        # The existing CSV computes source age with binary64 subtraction. Allow
+        # only its roundoff bound, never a tolerance on causal timestamp checks.
+        with localcontext() as context:
+            context.prec = 60
+            roundoff = (time.copy_abs() + seen.copy_abs() + age.copy_abs()) * (Decimal(2) ** -52)
+            if _elapsed_seconds(exact_age, age).copy_abs() > roundoff:
+                raise ValueError("Source last-seen age contradicts its timestamps.")
+        if historical == "OBSERVED_NOW" and (
+            x is None or seen != time or age != 0
+            or values["last_seen_x"] != x or values["last_seen_y"] != y
+        ):
+            raise ValueError("OBSERVED_NOW must describe the current visible position.")
+        if historical == "LAST_SEEN" and x is not None:
+            raise ValueError("A current observed position must use OBSERVED_NOW.")
+    else:
+        raise ValueError("Invalid last-seen status.")
+    return {
+        "visibility_state": state, "current_position_status": current,
+        "last_seen_status": historical, **values,
+    }
+
+
+def _enemy_candidates(records: Sequence[Mapping], match: MatchIdentity,
+                      replay_sha256: str | None) -> list:
+    expected_sha = _sha256(replay_sha256) if replay_sha256 is not None else None
+    frames = {}
+    for row in records:
+        if not isinstance(row, Mapping) or any(field not in row for field in ENEMY_OBSERVATION_FIELDS):
+            raise ValueError("Enemy observation records require the existing CSV columns.")
+        if str(row["match_id"]) != match.source_match_id:
+            raise ValueError("Enemy observation match identity does not match.")
+        time = _enemy_decimal(row["game_time_seconds"])
+        tick = _enemy_integer(row["replay_tick"])
+        # Check optional lineage aliases rather than silently replacing them.
+        _row_time_tick(dict(row, actual_game_time_seconds=time, replay_tick=tick), match)
+        for field in ("actual_game_time_seconds", "source_game_time_seconds"):
+            if field in row and _enemy_decimal(row[field]) != time:
+                raise ValueError("Enemy observation has inconsistent actual frame times.")
+        if "source_replay_tick" in row and _enemy_integer(row["source_replay_tick"]) != tick:
+            raise ValueError("Enemy observation has inconsistent replay ticks.")
+        sha = _sha256(row["replay_sha256"])
+        if expected_sha is not None and sha != expected_sha:
+            raise ValueError("Enemy observation replay SHA-256 does not match.")
+        expected_sha = sha
+        team, enemy_team = row["pov_team"], row["enemy_team"]
+        if team not in TEAMS or enemy_team not in TEAMS or team == enemy_team:
+            raise ValueError("Enemy observations require opposing observer/enemy teams.")
+        slot = _enemy_integer(row["enemy_player_slot"])
+        hero_id = _enemy_integer(row["enemy_hero_id"], minimum=1)
+        positions = _enemy_positions(row, time)
+        frame_time, teams = frames.setdefault(tick, (time, {observer: {} for observer in TEAMS}))
+        if frame_time != time:
+            raise ValueError("Enemy observation tick has inconsistent actual times.")
+        enemies = teams[team]
+        if slot in enemies or any(enemy["enemy_hero_id"] == hero_id for enemy in enemies.values()):
+            raise ValueError("Duplicate enemy identity within an observer frame.")
+        enemies[slot] = {
+            "source": match.source, "source_match_id": match.source_match_id,
+            "match_id": row["match_id"], "replay_sha256": row["replay_sha256"],
+            "game_time_seconds": time, "replay_tick": tick, "pov_team": team,
+            "enemy_player_slot": slot, "enemy_hero_id": hero_id, "enemy_team": enemy_team,
+            **positions,
+        }
+        if len(enemies) > 5:
+            raise ValueError("An observer frame cannot contain more than five enemies.")
+    candidates = []
+    ordered = sorted(frames.items())
+    for index, (tick, (time, teams)) in enumerate(ordered):
+        if index and ordered[index - 1][1][0] > time:
+            raise ValueError("Enemy observation game time must be monotonic with replay ticks.")
+        enemies = [enemy for team in TEAMS for enemy in teams[team].values()]
+        if (len({enemy["enemy_player_slot"] for enemy in enemies}) != len(enemies)
+                or len({enemy["enemy_hero_id"] for enemy in enemies}) != len(enemies)):
+            raise ValueError("Paired observer frames must describe ten distinct main heroes.")
+        if any(len(teams[team]) != 5 for team in TEAMS):
+            continue  # Never merge different ticks to manufacture a complete pair.
+        candidates.append((time, tick, {
+            team: [teams[team][slot] for slot in sorted(teams[team])] for team in TEAMS
+        }))
+    return candidates
+
+
 def build_historical_snapshot(
     match: MatchIdentity,
     t: Time,
@@ -325,6 +468,7 @@ def build_historical_snapshot(
     spatial_records: Sequence[Mapping] | None = None,
     requested_replay_tick: int | None = None,
     replay_sha256: str | None = None,
+    enemy_records: Sequence[Mapping] | None = None,
 ) -> HistoricalSnapshot:
     """Return only whitelisted observations at or before t; never future targets.
 
@@ -343,6 +487,12 @@ def build_historical_snapshot(
     second upper bound. Other channels retain their existing independent as-of
     selection. Frame/player identity and SHA metadata, when present, are checked;
     replay_sha256 can supply an expected hash without changing MatchIdentity.
+
+    enemy_records accepts the existing enemy_observations.csv rows (typed values
+    or numeric strings). Only complete paired observer frames can be selected,
+    with the same optional tick bound as spatial. Raw last_seen_age_seconds is
+    source-frame metadata; last_seen_age_at_requested_time_seconds is calculated
+    separately from the original last-seen timestamp, without float arithmetic.
     """
     if not isinstance(match, MatchIdentity):
         raise ValueError("Pass a MatchIdentity, not a complete match/result record.")
@@ -385,4 +535,17 @@ def build_historical_snapshot(
             _spatial_candidates(spatial_records, match, replay_sha256), requested_time,
             "HISTORICAL_ORACLE", requested_replay_tick,
         )
+    if enemy_records is not None:
+        observation = _as_of(
+            _enemy_candidates(enemy_records, match, replay_sha256), requested_time,
+            "HISTORICAL_TEAM_POV", requested_replay_tick,
+        )
+        if observation.values is not None:
+            for enemies in observation.values.values():
+                for enemy in enemies:
+                    seen = enemy["last_seen_game_time_seconds"]
+                    enemy["last_seen_age_at_requested_time_seconds"] = (
+                        _elapsed_seconds(requested_time, seen) if seen is not None else None
+                    )
+        observations["pov_enemy_positions"] = observation
     return HistoricalSnapshot(match, requested_time, observations)

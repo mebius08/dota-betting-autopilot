@@ -1,3 +1,4 @@
+import csv
 import json
 from copy import deepcopy
 from dataclasses import asdict, dataclass
@@ -667,3 +668,265 @@ def test_real_spatial_snapshot_at_2280_and_dead_nulls_if_local_artifact_exists()
     assert len(missing) == 3
     assert all(p["y"] is None and p["position_status"] == "HERO_NOT_ALIVE" and p["life_state"] in (1, 2)
                for p in missing)
+
+
+def enemy_pair(time, tick):
+    return [dict(
+        match_id=MATCH.source_match_id, replay_sha256="a" * 64,
+        game_time_seconds=time, replay_tick=tick, pov_team=team,
+        enemy_player_slot=slot, enemy_hero_id=slot + 1,
+        enemy_team="DIRE" if team == "RADIANT" else "RADIANT",
+        visibility_state="HIDDEN", current_position_status="HIDDEN",
+        current_x=None, current_y=None, last_seen_status="NEVER_SEEN",
+        last_seen_game_time_seconds=None, last_seen_age_seconds=None,
+        last_seen_x=None, last_seen_y=None,
+    ) for team in ("RADIANT", "DIRE") for slot in (range(5, 10) if team == "RADIANT" else range(5))]
+
+
+def remember_enemy(row, time=5, age=5):
+    row.update(
+        last_seen_status="LAST_SEEN", last_seen_game_time_seconds=time,
+        last_seen_age_seconds=age, last_seen_x=Decimal("123.456789012345678901234567890123456789"),
+        last_seen_y=Decimal("456.125"),
+    )
+
+
+@pytest.mark.parametrize(("t", "max_tick", "expected_tick"), [
+    (Decimal("-1"), None, None),
+    (Decimal("2270.0333999999999999999999999999999999"), None, None),
+    (Decimal("2270.0334"), None, 100335),
+    (Decimal("2280.0002"), None, 100335),
+    (Decimal("2280.0333999999999999999999999999999999"), None, 100335),
+    (Decimal("2280.0334"), None, 100635),
+    (Decimal("2280.0002"), 100635, 100335),
+    (Decimal("2280.0334"), 100634, 100335),
+    (Decimal("2280.0334"), 100635, 100635),
+    (Decimal("2280.0334"), 100334, None),
+])
+def test_enemy_as_of_requires_actual_time_and_optional_tick(t, max_tick, expected_tick):
+    observation = build_historical_snapshot(MATCH, t, [], [], enemy_records=[
+        *enemy_pair(Decimal("2280.0334"), 100635), *enemy_pair(Decimal("2270.0334"), 100335),
+    ], requested_replay_tick=max_tick).observations["pov_enemy_positions"]
+    assert observation.origin == "HISTORICAL_TEAM_POV"
+    assert observation.replay_tick == expected_tick
+    if expected_tick is None:
+        assert observation.status == "NO_PRECEDING_SNAPSHOT"
+        assert observation.values is observation.age_seconds is observation.actual_game_time_seconds is None
+    else:
+        assert observation.status == "AVAILABLE" and observation.actual_game_time_seconds <= t
+        if max_tick is not None:
+            assert observation.replay_tick <= max_tick
+        assert set(observation.values) == {"RADIANT", "DIRE"}
+        assert all(len(enemies) == 5 for enemies in observation.values.values())
+        assert all(enemy["replay_tick"] == expected_tick and enemy["game_time_seconds"] == observation.actual_game_time_seconds
+                   for enemies in observation.values.values() for enemy in enemies)
+
+
+def test_enemy_partial_frames_are_not_merged_or_returned_as_complete():
+    partial = enemy_pair(20, 200)[:5] + enemy_pair(20, 201)[5:]
+    observation = build_historical_snapshot(
+        MATCH, 20, [], [], enemy_records=[*enemy_pair(10, 100), *partial],
+    ).observations["pov_enemy_positions"]
+    assert observation.replay_tick == 100 and observation.age_seconds == 10
+    for rows in ([], partial, enemy_pair(10, 100)[:-1]):
+        missing = build_historical_snapshot(MATCH, 20, [], [], enemy_records=rows).observations["pov_enemy_positions"]
+        assert missing.status == "NO_PRECEDING_SNAPSHOT" and missing.values is None
+
+
+def test_enemy_team_knowledge_and_last_seen_are_separate_and_copied():
+    rows = enemy_pair(10, 100)
+    remember_enemy(rows[0])
+    remember_enemy(rows[1])
+    rows[1].update(visibility_state="VISIBLE", current_position_status="VISIBLE_POSITION_UNAVAILABLE")
+    rows[2].update(visibility_state="UNKNOWN", current_position_status="UNKNOWN")
+    rows[5].update(
+        visibility_state="VISIBLE", current_position_status="OBSERVED", current_x=Decimal("0"), current_y=Decimal("0.000"),
+        last_seen_status="OBSERVED_NOW", last_seen_game_time_seconds=10, last_seen_age_seconds=0,
+        last_seen_x=Decimal("0"), last_seen_y=Decimal("0.000"),
+    )
+    rows[0].update(target=1, global_enemy_x=999999, life_state=2)
+    before = deepcopy(rows)
+    observation = build_historical_snapshot(MATCH, 12, [], [], enemy_records=rows).observations["pov_enemy_positions"]
+    radiant, dire = observation.values["RADIANT"], observation.values["DIRE"]
+    assert all(enemy["pov_team"] == "RADIANT" and enemy["enemy_team"] == "DIRE" for enemy in radiant)
+    assert all(enemy["pov_team"] == "DIRE" and enemy["enemy_team"] == "RADIANT" for enemy in dire)
+    hidden = radiant[0]
+    assert hidden["visibility_state"] == "HIDDEN" and hidden["current_x"] is hidden["current_y"] is None
+    assert hidden["last_seen_game_time_seconds"] == Decimal("5")
+    assert hidden["last_seen_age_seconds"] == Decimal("5")
+    assert hidden["last_seen_age_at_requested_time_seconds"] == Decimal("7")
+    assert hidden["last_seen_x"] == rows[0]["last_seen_x"]
+    assert not {"target", "global_enemy_x", "life_state"} & hidden.keys()
+    assert radiant[1]["visibility_state"] == "VISIBLE" and radiant[1]["current_x"] is None
+    assert radiant[1]["current_position_status"] == "VISIBLE_POSITION_UNAVAILABLE"
+    assert radiant[2]["last_seen_age_at_requested_time_seconds"] is None
+    assert dire[0]["current_x"] == 0 and str(dire[0]["current_y"]) == "0.000"
+    assert dire[0]["last_seen_age_at_requested_time_seconds"] == Decimal("2")
+    for enemy in (*radiant, *dire):
+        assert enemy["source"] == MATCH.source and enemy["source_match_id"] == MATCH.source_match_id
+    radiant[0]["last_seen_x"] = Decimal("0")
+    assert rows == before
+
+
+def test_enemy_csv_numeric_strings_blanks_and_decimal_precision():
+    observed = Decimal("1.0000000000000000000000000000000000000001")
+    requested = Decimal("1.0000000000000000000000000000000000000002")
+    seen = Decimal("1.0000000000000000000000000000000000000000")
+    rows = enemy_pair(observed, 100)
+    remember_enemy(rows[0], seen, Decimal("1e-40"))
+    raw = [{key: str(value) if value is not None else "" for key, value in row.items()} for row in rows]
+    with localcontext() as context:
+        context.prec = 6
+        observation = build_historical_snapshot(MATCH, requested, [], [], enemy_records=raw).observations["pov_enemy_positions"]
+        assert context.prec == 6
+    hidden = observation.values["RADIANT"][0]
+    assert observation.actual_game_time_seconds == observed and observation.age_seconds == Decimal("1e-40")
+    assert hidden["game_time_seconds"] == observed and hidden["replay_tick"] == 100
+    assert hidden["last_seen_game_time_seconds"] == seen
+    assert hidden["last_seen_age_seconds"] == Decimal("1e-40")
+    assert hidden["last_seen_age_at_requested_time_seconds"] == Decimal("2e-40")
+    assert hidden["last_seen_x"] == Decimal("123.456789012345678901234567890123456789")
+    assert hidden["current_x"] is hidden["current_y"] is None
+
+
+def test_enemy_source_float_age_is_preserved_without_weakening_timestamp_causality():
+    rows = enemy_pair(Decimal("2270.0334"), 100335)
+    remember_enemy(rows[0], Decimal("1990.0001"), Decimal("280.0332999999998"))
+    enemy = build_historical_snapshot(
+        MATCH, Decimal("2280.0002"), [], [], enemy_records=rows,
+    ).observations["pov_enemy_positions"].values["RADIANT"][0]
+    assert enemy["last_seen_age_seconds"] == Decimal("280.0332999999998")
+    assert enemy["last_seen_age_at_requested_time_seconds"] == Decimal("290.0001")
+    rows = enemy_pair(Decimal("1"), 100)
+    remember_enemy(rows[0], Decimal("1.0000000000000000000000000000000000000001"), 0)
+    with pytest.raises(ValueError, match="future"):
+        build_historical_snapshot(MATCH, 2, [], [], enemy_records=rows)
+
+
+@pytest.mark.parametrize("problem", [
+    "match", "sha", "observer", "enemy_team", "tick", "source_tick", "time", "mixed_time",
+    "missing_column", "duplicate_slot", "duplicate_hero", "cross_team_hero", "too_many_enemies",
+    "hidden_coordinates", "partial_coordinates", "nonfinite_coordinate", "wrong_current_status",
+    "future_last_seen", "negative_age", "inconsistent_age", "never_seen_with_data", "false_observed_now",
+])
+def test_invalid_enemy_records_fail_explicitly(problem):
+    rows = enemy_pair(10, 100)
+    row = rows[0]
+    remember_enemy(row)
+    if problem == "match":
+        row["match_id"] = "another-match"
+    elif problem == "sha":
+        row["replay_sha256"] = "b" * 64
+    elif problem == "observer":
+        row["pov_team"] = "GLOBAL"
+    elif problem == "enemy_team":
+        row["enemy_team"] = "RADIANT"
+    elif problem == "tick":
+        row["replay_tick"] = "100.0"
+    elif problem == "source_tick":
+        row["source_replay_tick"] = 101
+    elif problem == "time":
+        row["game_time_seconds"] = "NaN"
+    elif problem == "mixed_time":
+        rows[1]["game_time_seconds"] = Decimal("10.000000000000000001")
+    elif problem == "missing_column":
+        del row["last_seen_y"]
+    elif problem == "duplicate_slot":
+        rows.append(row.copy())
+    elif problem == "duplicate_hero":
+        rows[1]["enemy_hero_id"] = row["enemy_hero_id"]
+    elif problem == "cross_team_hero":
+        rows[5]["enemy_hero_id"] = row["enemy_hero_id"]
+    elif problem == "too_many_enemies":
+        rows.append(dict(row, enemy_player_slot=10, enemy_hero_id=11))
+    elif problem == "hidden_coordinates":
+        row.update(current_x=0, current_y=0)
+    elif problem == "partial_coordinates":
+        row["current_x"] = 0
+    elif problem == "nonfinite_coordinate":
+        row["last_seen_x"] = "Infinity"
+    elif problem == "wrong_current_status":
+        row["current_position_status"] = "OBSERVED"
+    elif problem == "future_last_seen":
+        row.update(last_seen_game_time_seconds=15, last_seen_age_seconds=0)
+    elif problem == "negative_age":
+        row["last_seen_age_seconds"] = -1
+    elif problem == "inconsistent_age":
+        row["last_seen_age_seconds"] = 500
+    elif problem == "never_seen_with_data":
+        row["last_seen_status"] = "NEVER_SEEN"
+    else:
+        row["last_seen_status"] = "OBSERVED_NOW"
+    with pytest.raises(ValueError):
+        build_historical_snapshot(MATCH, 20, [], [], enemy_records=rows, replay_sha256="a" * 64)
+
+
+def test_enemy_incomplete_corrupt_frames_and_optional_lineage_are_validated():
+    with pytest.raises(ValueError, match="distinct"):
+        build_historical_snapshot(MATCH, 10, [], [], enemy_records=[
+            enemy_pair(10, 100)[0], dict(enemy_pair(10, 100)[5], enemy_player_slot=5),
+        ])
+    rows = enemy_pair(10, 100)
+    rows[0].update(source=MATCH.source, source_match_id="other")
+    with pytest.raises(ValueError, match="identity"):
+        build_historical_snapshot(MATCH, 10, [], [], enemy_records=rows)
+    rows = enemy_pair(10, 100)
+    rows[0]["actual_game_time_seconds"] = Decimal("10.000000000000000000001")
+    with pytest.raises(ValueError, match="actual frame times"):
+        build_historical_snapshot(MATCH, 10, [], [], enemy_records=rows)
+    with pytest.raises(ValueError, match="monotonic"):
+        build_historical_snapshot(MATCH, 20, [], [], enemy_records=[*enemy_pair(20, 100), *enemy_pair(10, 200)])
+
+
+def test_enemy_channel_preserves_previous_four_channels_and_future_independence():
+    args = (MATCH, 2280.0002, [economy(2280.0002, 100634)], pair(2270.0334, 100335))
+    sources = dict(hero_records=[heroes(2280.0002, 100634)], spatial_records=[spatial(2270.0334, 100335)],
+                   requested_replay_tick=100634)
+    original = build_historical_snapshot(*args, **sources)
+    rows = enemy_pair(2270.0334, 100335)
+    combined = build_historical_snapshot(*args, **sources, enemy_records=rows)
+    assert set(original.observations) == {"economy", "pov", "heroes", "spatial_global"}
+    for channel, observation in original.observations.items():
+        assert combined.observations[channel] == observation
+    assert combined.observations["pov_enemy_positions"].origin == "HISTORICAL_TEAM_POV"
+    assert combined == build_historical_snapshot(
+        *args, **sources, enemy_records=[*rows, *enemy_pair(2280.0334, 100635)],
+    )
+    sources["spatial_records"][0]["players"][5]["x"] = Decimal("999999")
+    assert build_historical_snapshot(*args, **sources, enemy_records=rows).observations["pov_enemy_positions"] == combined.observations["pov_enemy_positions"]
+    equal_time_rows = [*enemy_pair(10, 100), *enemy_pair(10, 10000)]
+    paused = build_historical_snapshot(
+        MATCH, 11, [], [], enemy_records=equal_time_rows, requested_replay_tick=9999,
+    ).observations["pov_enemy_positions"]
+    assert paused.replay_tick == 100 and paused.age_seconds == 1
+
+
+def test_real_enemy_fragment_preserves_team_knowledge_and_last_seen_if_available():
+    path = Path(__file__).resolve().parents[1] / "tools/replay_probe/output/pov-lifecycle-check/enemy_observations.csv"
+    if not path.is_file():
+        pytest.skip("Optional gitignored enemy observation artifact is not installed.")
+    with path.open(encoding="utf-8", newline="") as handle:
+        rows = [row for row in csv.DictReader(handle) if row["match_id"] == MATCH.source_match_id
+                and Decimal("2250") <= Decimal(row["game_time_seconds"]) <= Decimal("2311")]
+    observation = build_historical_snapshot(
+        MATCH, Decimal("2280.0002"), [], [], enemy_records=rows, requested_replay_tick=100634,
+    ).observations["pov_enemy_positions"]
+    assert observation.actual_game_time_seconds == Decimal("2270.0334")
+    assert observation.replay_tick == 100335 and observation.age_seconds == Decimal("9.9668")
+    radiant, dire = observation.values["RADIANT"], observation.values["DIRE"]
+    assert len(radiant) == len(dire) == 5
+    assert all(enemy["visibility_state"] == "HIDDEN" and enemy["current_x"] is enemy["current_y"] is None
+               for enemy in (*radiant, *dire))
+    assert radiant[0]["enemy_hero_id"] == 3 and radiant[0]["enemy_player_slot"] == 5
+    assert radiant[0]["last_seen_game_time_seconds"] == Decimal("2110.0334")
+    assert radiant[0]["last_seen_x"] == 21984 and radiant[0]["last_seen_y"] == 16672
+    assert radiant[0]["last_seen_age_at_requested_time_seconds"] == Decimal("169.9668")
+    assert dire[0]["enemy_hero_id"] == 8 and dire[0]["last_seen_age_at_requested_time_seconds"] == Decimal("219.9668")
+    later = build_historical_snapshot(
+        MATCH, Decimal("2310.0334"), [], [], enemy_records=rows,
+    ).observations["pov_enemy_positions"].values["DIRE"]
+    juggernaut = next(enemy for enemy in later if enemy["enemy_hero_id"] == 8)
+    assert juggernaut["visibility_state"] == "VISIBLE"
+    assert juggernaut["current_position_status"] == "VISIBLE_POSITION_UNAVAILABLE"
+    assert juggernaut["current_x"] is juggernaut["current_y"] is None
+    assert juggernaut["last_seen_game_time_seconds"] == Decimal("2290.0334")
