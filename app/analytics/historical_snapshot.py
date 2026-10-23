@@ -20,7 +20,7 @@ separate from team POV and never evidence of LIVE availability.
 
 Spatial frames are a separate historical oracle channel, never team knowledge.
 They require complete selected-hero rosters; corrupt frames fail explicitly.
-An optional requested replay tick additionally bounds spatial selection, without
+An optional requested replay tick additionally bounds every channel, without
 converting ticks to elapsed seconds. Optional replay_sha256 is a reference for
 checking record hashes; provided hashes must also agree across spatial records.
 As with bare identity, absent hash metadata cannot prove replay lineage.
@@ -484,8 +484,8 @@ def build_historical_snapshot(
 
     spatial_records accepts already-loaded sidecar snapshots. Spatial selection
     uses source_game_time_seconds and, if supplied, requested_replay_tick as a
-    second upper bound. Other channels retain their existing independent as-of
-    selection. Frame/player identity and SHA metadata, when present, are checked;
+    second upper bound, applied to all channels independently of their sampling
+    cadence. Frame/player identity and SHA metadata, when present, are checked;
     replay_sha256 can supply an expected hash without changing MatchIdentity.
 
     enemy_records accepts the existing enemy_observations.csv rows (typed values
@@ -523,12 +523,13 @@ def build_historical_snapshot(
     pov = [(time, tick, {team: teams[team] for team in TEAMS})
            for tick, (time, teams) in frames.items() if set(teams) == set(TEAMS)]
     observations = {
-        "economy": _as_of(economy, requested_time, "HISTORICAL_ORACLE"),
-        "pov": _as_of(pov, requested_time, "HISTORICAL_TEAM_POV"),
+        "economy": _as_of(economy, requested_time, "HISTORICAL_ORACLE", requested_replay_tick),
+        "pov": _as_of(pov, requested_time, "HISTORICAL_TEAM_POV", requested_replay_tick),
     }
     if hero_records is not None:
         observations["heroes"] = _as_of(
             _hero_candidates(hero_records, match), requested_time, "HISTORICAL_ORACLE",
+            requested_replay_tick,
         )
     if spatial_records is not None:
         observations["spatial_global"] = _as_of(
