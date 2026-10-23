@@ -366,3 +366,182 @@ def test_unknown_view_fails_before_loading_sources(tmp_path, monkeypatch, capsys
     assert error.value.code == 2
     captured = capsys.readouterr()
     assert captured.out == "" and "invalid choice" in captured.err
+
+
+def rewrite_csv(root, path, columns, transform):
+    with (root / path).open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    updated = transform(rows)
+    with (root / path).open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=columns)
+        writer.writeheader()
+        writer.writerows(rows if updated is None else updated)
+
+
+@pytest.mark.parametrize(("current_nw", "expected_nw"), [((145, 190), ("45", "-10", "55")), ((80, 250), ("-20", "50", "-70"))])
+def test_lookback_global_deltas_and_gap_use_conservative_confirmed_baseline(sources, capsys, current_nw, expected_nw):
+    path = sources / cli.COMPACT_PATH
+    data = json.loads(path.read_text(encoding="utf-8"))
+    for frame, nw, xp in zip(data["snapshots"], ((100, 200), (99999, 99999), current_nw), ((1000, 900), (99999, 99999), (900, 1100)), strict=True):
+        for index, team in enumerate(frame["teams"]):
+            team.update(net_worth=nw[index], total_xp=xp[index])
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert cli.main([*arguments(time="20.0002", tick="300"), "--lookback-seconds", "10"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    changes = payload["changes"]
+    group = changes["groups"]["economy"]
+    assert changes["status"] == group["status"] == "AVAILABLE"
+    assert changes["requested_baseline_time_seconds"] == "10.0002"
+    assert changes["baseline_tick_boundary"] == {"actual_game_time_seconds": "0.0334", "replay_tick": 101, "age_seconds": "9.9668"}
+    assert group["current_observation"]["actual_game_time_seconds"] == "20.0002"
+    assert group["current_observation"]["replay_tick"] == 300
+    assert group["baseline_observation"]["actual_game_time_seconds"] == "0"
+    assert group["baseline_observation"]["replay_tick"] == 100
+    assert group["elapsed_game_time_seconds"] == "20.0002"  # Not the requested 10 seconds.
+    assert group["deltas"] == dict(
+        radiant_net_worth=expected_nw[0], dire_net_worth=expected_nw[1],
+        radiant_minus_dire_net_worth=expected_nw[2], radiant_total_xp="-100", dire_total_xp="200",
+    )
+    assert all(status == "AVAILABLE" for status in group["field_statuses"].values())
+    assert not {"target", "winner", "outcomes", "logistic_probability"} & set(nested_keys(payload))
+
+
+@pytest.mark.parametrize(("view", "team", "expected"), [
+    ("HISTORICAL_RADIANT_POV", "RADIANT", (Decimal(2), Decimal("-20.0249"), Decimal("-50.023"))),
+    ("HISTORICAL_DIRE_POV", "DIRE", (Decimal(-3), Decimal("5.125"), Decimal("20.25"))),
+])
+def test_lookback_team_changes_use_only_own_projected_features(sources, view, team, expected):
+    def edit(rows):
+        for row in rows:
+            current = row["game_time_seconds"] == "10.0334"
+            if row["pov_team"] == team:
+                values = ((3, "80.1001", "250.1") if current else (1, "100.125", "300.123")) if team == "RADIANT" else (
+                    (1, "105.125", "220.25") if current else (4, "100", "200")
+                )
+            else:
+                values = (5 if current else 0, "999999999", "999999999")
+            row.update(visible_enemy_count=str(values[0]), own_team_spread=values[1],
+                       nearest_visible_enemy_distance=values[2], nearest_visible_enemy_status="OK")
+    rewrite_csv(sources, cli.POV_PATH, cli.TEAM_COLUMNS, edit)
+    result = cli.inspect_snapshot(cli.MATCH_ID, Decimal("20.0002"), 300, view=view, lookback_seconds=Decimal(10))
+    group = result["changes"]["groups"]["pov"]
+    assert set(result["changes"]["groups"]) == {"pov"}
+    assert group["pov_team"] == team and group["status"] == "AVAILABLE"
+    assert tuple(group["deltas"].values()) == expected
+    assert all(isinstance(value, Decimal) for value in group["deltas"].values())
+    assert group["elapsed_game_time_seconds"] == Decimal(10)
+    assert group["current_observation"]["replay_tick"] == 201
+    assert group["baseline_observation"]["replay_tick"] == 101
+    assert not {"economy", "radiant_net_worth", "dire_net_worth", "heroes", "spatial_global", "target"} & set(nested_keys(result))
+
+
+@pytest.mark.parametrize(("side", "expected_status"), [
+    ("both", "MISSING_BOTH_VALUES"), ("current", "MISSING_CURRENT_VALUE"), ("baseline", "MISSING_BASELINE_VALUE"),
+])
+def test_lookback_preserves_null_distances_and_explains_missing_values(sources, side, expected_status):
+    def edit(rows):
+        for row in rows:
+            current = row["game_time_seconds"] == "10.0334"
+            known = side != "both" and ((side == "baseline" and current) or (side == "current" and not current))
+            if known:
+                row.update(nearest_visible_enemy_distance="123.125", nearest_visible_enemy_status="OK")
+    rewrite_csv(sources, cli.POV_PATH, cli.TEAM_COLUMNS, edit)
+    result = cli.inspect_snapshot(cli.MATCH_ID, Decimal("20.0002"), 300,
+                                  view="HISTORICAL_RADIANT_POV", lookback_seconds=Decimal(10))
+    group = result["changes"]["groups"]["pov"]
+    assert group["status"] == "PARTIAL"
+    assert group["deltas"]["nearest_visible_enemy_distance"] is None
+    assert group["field_statuses"]["nearest_visible_enemy_distance"] == expected_status
+    assert "nearest_visible_enemy_status" in group["current_feature_statuses"]
+
+
+def test_lookback_null_economy_does_not_create_zero_or_a_partial_gap(sources):
+    path = sources / cli.COMPACT_PATH
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["snapshots"][2]["teams"][0]["net_worth"] = None
+    path.write_text(json.dumps(data), encoding="utf-8")
+    result = cli.inspect_snapshot(cli.MATCH_ID, Decimal("20.0002"), 300, lookback_seconds=Decimal(10))
+    group = result["changes"]["groups"]["economy"]
+    assert group["status"] == "PARTIAL"
+    assert group["deltas"]["radiant_net_worth"] is group["deltas"]["radiant_minus_dire_net_worth"] is None
+    assert group["field_statuses"]["radiant_net_worth"] == "MISSING_CURRENT_VALUE"
+
+
+@pytest.mark.parametrize("view", ["HISTORICAL_GLOBAL", "HISTORICAL_RADIANT_POV"])
+def test_lookback_same_source_frame_is_not_reported_as_zero_dynamics(sources, view):
+    result = cli.inspect_snapshot(cli.MATCH_ID, Decimal("9.9"), 199, view=view, lookback_seconds=Decimal(1))
+    group = next(iter(result["changes"]["groups"].values()))
+    assert group["status"] == result["changes"]["status"] == "NO_NEW_OBSERVATION"
+    assert group["elapsed_game_time_seconds"] == 0
+    assert group["current_observation"]["replay_tick"] == group["baseline_observation"]["replay_tick"]
+    assert all(value is None for value in group["deltas"].values())
+
+
+@pytest.mark.parametrize("reason", ["BASELINE_BEFORE_GAME_START", "NO_PRECEDING_BASELINE_FRAME"])
+def test_lookback_without_a_confirmed_baseline_has_explicit_status(sources, reason):
+    if reason == "NO_PRECEDING_BASELINE_FRAME":
+        # Keep an incomplete first POV frame; the next complete pair is in the future.
+        rewrite_csv(sources, cli.POV_PATH, cli.TEAM_COLUMNS,
+                    lambda rows: [row for row in rows if not (row["game_time_seconds"] == "0.0334" and row["pov_team"] == "DIRE")])
+    result = cli.inspect_snapshot(cli.MATCH_ID, Decimal("20.0002"), 300,
+                                  lookback_seconds=Decimal(60 if reason == "BASELINE_BEFORE_GAME_START" else 10))
+    changes = result["changes"]
+    group = changes["groups"]["economy"]
+    assert changes["status"] == group["status"] == reason
+    assert changes["baseline_tick_boundary"] is group["baseline_observation"] is None
+    assert group["elapsed_game_time_seconds"] is None
+    assert all(value is None for value in group["deltas"].values())
+
+
+def test_lookback_tick_boundary_comes_from_actual_paired_frames_despite_pause_sized_gaps(sources, monkeypatch):
+    ticks = {100: 100, 101: 137, 200: 500000, 201: 500123, 300: 9000000, 301: 9000033}
+    for relative in (cli.COMPACT_PATH, cli.SPATIAL_PATH):
+        path = sources / relative
+        data = json.loads(path.read_text(encoding="utf-8"))
+        for frame in data["snapshots"]:
+            frame["replay_tick"] = ticks[frame["replay_tick"]]
+        path.write_text(json.dumps(data), encoding="utf-8")
+    def edit(rows):
+        for row in rows:
+            row["replay_tick"] = str(ticks[int(row["replay_tick"])])
+    rewrite_csv(sources, cli.POV_PATH, cli.TEAM_COLUMNS, edit)
+    rewrite_csv(sources, cli.ENEMY_PATH, cli.ENEMY_OBSERVATION_FIELDS, edit)
+    original = cli.project_snapshot
+    calls = []
+    def project(snapshot, view, **kwargs):
+        calls.append((snapshot.requested_game_time_seconds, kwargs["requested_replay_tick"]))
+        return original(snapshot, view, **kwargs)
+    monkeypatch.setattr(cli, "project_snapshot", project)
+    result = cli.inspect_snapshot(cli.MATCH_ID, Decimal("20.0002"), 9000000, lookback_seconds=Decimal(10))
+    assert calls == [(Decimal("20.0002"), 9000000), (Decimal("10.0002"), 137)]
+    assert result["changes"]["baseline_tick_boundary"]["replay_tick"] == 137
+    assert result["changes"]["groups"]["economy"]["baseline_observation"]["replay_tick"] == 100
+
+
+def test_lookback_decimal_math_does_not_round_large_values_or_timestamps(sources, capsys):
+    path = sources / cli.COMPACT_PATH
+    data = json.loads(path.read_text(encoding="utf-8"))
+    big = 10 ** 60
+    for index, team in enumerate(data["snapshots"][0]["teams"]):
+        team["net_worth"] = big
+    for index, team in enumerate(data["snapshots"][2]["teams"]):
+        team["net_worth"] = big + (3 if index == 0 else 1)
+    path.write_text(json.dumps(data), encoding="utf-8")
+    requested = "20.0002000000000000000000000000000000000001"
+    with localcontext() as context:
+        context.prec = 6
+        assert cli.main([*arguments(time=requested, tick="300"), "--lookback-seconds", "10"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    changes = result["changes"]
+    assert changes["requested_baseline_time_seconds"] == "10.0002000000000000000000000000000000000001"
+    assert changes["groups"]["economy"]["deltas"]["radiant_net_worth"] == "3"
+    assert changes["groups"]["economy"]["deltas"]["dire_net_worth"] == "1"
+    assert changes["groups"]["economy"]["deltas"]["radiant_minus_dire_net_worth"] == "2"
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "NaN", "Infinity", "invalid"])
+def test_invalid_lookback_is_rejected_before_reading_sources(tmp_path, monkeypatch, capsys, value):
+    monkeypatch.setattr(cli, "ROOT", tmp_path)
+    with pytest.raises(SystemExit) as error:
+        cli.main([*arguments(), "--lookback-seconds", value])
+    assert error.value.code == 2 and capsys.readouterr().out == ""

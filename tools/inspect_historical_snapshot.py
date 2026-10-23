@@ -14,7 +14,7 @@ import sys
 
 from app.analytics.historical_snapshot import (
     ENEMY_OBSERVATION_FIELDS, POV_FIELDS, TEAMS, MatchIdentity,
-    build_historical_snapshot,
+    _elapsed_seconds, _seconds, build_historical_snapshot,
 )
 from app.analytics.snapshot_views import VIEWS, project_snapshot
 from app.replay_pov_features import TEAM_COLUMNS
@@ -118,9 +118,118 @@ def _pov_rows(rows: list[dict], match_id: str) -> list[dict]:
     return result
 
 
+def _observation_metadata(observation: dict | None) -> dict | None:
+    return None if observation is None else {key: observation[key] for key in (
+        "origin", "status", "actual_game_time_seconds", "replay_tick", "age_seconds",
+    )}
+
+
+def _change_group(current: dict, baseline: dict | None, baseline_time: Decimal,
+                  baseline_reason: str | None) -> tuple[str, dict]:
+    """Calculate only from already-projected observations; never raw sources."""
+    team = VIEWS.get(current.get("view", DEFAULT_VIEW))
+    channel = "pov" if team else "economy"
+    fields = (("visible_enemy_count", "own_team_spread", "nearest_visible_enemy_distance") if team else (
+        "radiant_net_worth", "dire_net_worth", "radiant_total_xp", "dire_total_xp",
+    ))
+    now = current["observations"].get(channel)
+    before = baseline["observations"].get(channel) if baseline is not None else None
+    status = baseline_reason
+    elapsed = None
+    if status is None:
+        if now is None or now["status"] != "AVAILABLE":
+            status = "NO_CURRENT_OBSERVATION"
+        elif before is None or before["status"] != "AVAILABLE":
+            status = "NO_BASELINE_OBSERVATION"
+        else:
+            elapsed = _elapsed_seconds(now["actual_game_time_seconds"], before["actual_game_time_seconds"])
+            if elapsed < 0:
+                raise ValueError("Baseline observation is later than the current observation.")
+            if (now["actual_game_time_seconds"], now["replay_tick"]) == (
+                before["actual_game_time_seconds"], before["replay_tick"],
+            ):
+                status = "NO_NEW_OBSERVATION"
+
+    def values(observation):
+        if observation is None or observation["status"] != "AVAILABLE":
+            return {}
+        return observation["values"][team] if team else observation["values"]
+
+    current_values, baseline_values = values(now), values(before)
+    deltas, field_statuses = {}, {}
+    for field in fields:
+        a, b = current_values.get(field), baseline_values.get(field)
+        field_status = status
+        if field_status is None and (a is None or b is None):
+            field_status = ("MISSING_BOTH_VALUES" if a is None and b is None else
+                            "MISSING_CURRENT_VALUE" if a is None else "MISSING_BASELINE_VALUE")
+        deltas[field] = _elapsed_seconds(_seconds(a), _seconds(b)) if field_status is None else None
+        field_statuses[field] = field_status or "AVAILABLE"
+    if team is None:
+        a, b = deltas["radiant_net_worth"], deltas["dire_net_worth"]
+        # Derived gap change = delta(Radiant NW) - delta(Dire NW).
+        field = "radiant_minus_dire_net_worth"
+        deltas[field] = _elapsed_seconds(a, b) if a is not None and b is not None else None
+        field_statuses[field] = "AVAILABLE" if deltas[field] is not None else status or "MISSING_NET_WORTH_COMPONENT"
+    if status is None:
+        available = sum(value == "AVAILABLE" for value in field_statuses.values())
+        status = "AVAILABLE" if available == len(field_statuses) else "PARTIAL" if available else "MISSING_VALUES"
+    group = {
+        "requested_current_time_seconds": current["requested_game_time_seconds"],
+        "requested_baseline_time_seconds": baseline_time,
+        "current_observation": _observation_metadata(now),
+        "baseline_observation": _observation_metadata(before),
+        "elapsed_game_time_seconds": elapsed, "status": status,
+        "deltas": deltas, "field_statuses": field_statuses,
+    }
+    if team:
+        group["pov_team"] = team
+        for label, features in (("current", current_values), ("baseline", baseline_values)):
+            group[f"{label}_feature_statuses"] = {field: features.get(field) for field in (
+                "own_team_spread_status", "nearest_visible_enemy_status",
+            )}
+    return channel, group
+
+
+def _lookback_changes(current: dict, lookback: Decimal, match: MatchIdentity,
+                      economy: list[dict], pov: list[dict], sources: dict) -> dict:
+    baseline_time = _elapsed_seconds(current["requested_game_time_seconds"], lookback)
+    baseline, boundary, reason = None, None, None
+    if baseline_time < 0:
+        reason = "BASELINE_BEFORE_GAME_START"
+    else:
+        # Probe ONLY the paired POV timeline through the existing selector.
+        # The current tick is a ceiling, not an inferred tick at baseline_time.
+        probe = build_historical_snapshot(
+            match, baseline_time, [], pov, requested_replay_tick=current["requested_replay_tick"],
+        ).observations["pov"]
+        if probe.status != "AVAILABLE":
+            reason = "NO_PRECEDING_BASELINE_FRAME"
+        else:
+            boundary = {"actual_game_time_seconds": probe.actual_game_time_seconds,
+                        "replay_tick": probe.replay_tick, "age_seconds": probe.age_seconds}
+            snapshot = build_historical_snapshot(
+                match, baseline_time, economy, pov, requested_replay_tick=probe.replay_tick, **sources,
+            )
+            baseline = project_snapshot(snapshot, current.get("view", DEFAULT_VIEW),
+                                        requested_replay_tick=probe.replay_tick)
+    channel, group = _change_group(current, baseline, baseline_time, reason)
+    return {
+        "lookback_seconds": lookback,
+        "requested_current_time_seconds": current["requested_game_time_seconds"],
+        "requested_baseline_time_seconds": baseline_time,
+        "requested_current_replay_tick": current["requested_replay_tick"],
+        "baseline_tick_boundary": boundary, "status": group["status"], "groups": {channel: group},
+    }
+
+
 def inspect_snapshot(match_id: str, at_seconds: Decimal, at_tick: int, *,
-                     view: str = DEFAULT_VIEW) -> dict:
-    """Build five channels once, then delegate information scope to the projector."""
+                     view: str = DEFAULT_VIEW, lookback_seconds: Decimal | None = None) -> dict:
+    """Project current observations, optionally comparing with a confirmed past state."""
+    if lookback_seconds is not None:
+        lookback_seconds = _seconds(lookback_seconds)
+        if lookback_seconds <= 0:
+            raise ValueError("Lookback seconds must be positive.")
     if match_id not in MATCH_SOURCES:
         raise ValueError(f"Unsupported match ID {match_id}; supported: {', '.join(MATCH_SOURCES)}.")
     paths = MATCH_SOURCES[match_id]
@@ -136,14 +245,19 @@ def inspect_snapshot(match_id: str, at_seconds: Decimal, at_tick: int, *,
     pov = _csv_source(ROOT / pov_path, TEAM_COLUMNS, match_id, sha)
     enemies = _csv_source(ROOT / enemy_path, ENEMY_OBSERVATION_FIELDS, match_id, sha)
     lineage = dict(source=SOURCE, source_match_id=match_id, match_id=match_id, replay_sha256=sha)
-    snapshot = build_historical_snapshot(
-        MatchIdentity(SOURCE, match_id), at_seconds,
-        _economy_rows(compact["snapshots"], match_id), _pov_rows(pov, match_id),
+    match = MatchIdentity(SOURCE, match_id)
+    economy, pov = _economy_rows(compact["snapshots"], match_id), _pov_rows(pov, match_id)
+    sources = dict(
         hero_records=[lineage | frame for frame in compact["snapshots"]],
         spatial_records=[lineage | frame for frame in spatial["snapshots"]],
-        enemy_records=enemies, requested_replay_tick=at_tick, replay_sha256=sha,
+        enemy_records=enemies, replay_sha256=sha,
+    )
+    snapshot = build_historical_snapshot(
+        match, at_seconds, economy, pov, requested_replay_tick=at_tick, **sources,
     )
     payload = project_snapshot(snapshot, view, requested_replay_tick=at_tick)
+    if lookback_seconds is not None:
+        payload["changes"] = _lookback_changes(payload, lookback_seconds, match, economy, pov, sources)
     if view == DEFAULT_VIEW:
         payload.pop("view")  # Preserve the existing GLOBAL top-level JSON contract.
     return payload | {"replay_sha256": sha}
@@ -165,17 +279,26 @@ def _json_decimal(value: object) -> str:
     raise TypeError(f"Unsupported JSON value: {type(value).__name__}.")
 
 
+def _lookback_argument(value: str) -> Decimal:
+    time = _time_argument(value)
+    if time <= 0:
+        raise argparse.ArgumentTypeError("Lookback seconds must be positive.")
+    return time
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--match-id", required=True, choices=tuple(MATCH_SOURCES))
     parser.add_argument("--at-seconds", required=True, type=_time_argument)
     parser.add_argument("--at-tick", required=True, type=int)
     parser.add_argument("--view", choices=tuple(VIEWS), default=DEFAULT_VIEW)
+    parser.add_argument("--lookback-seconds", type=_lookback_argument)
     args = parser.parse_args(argv)
     if args.at_tick < 0:
         parser.error("--at-tick must be a nonnegative replay tick.")
     try:
-        payload = inspect_snapshot(args.match_id, args.at_seconds, args.at_tick, view=args.view)
+        payload = inspect_snapshot(args.match_id, args.at_seconds, args.at_tick,
+                                   view=args.view, lookback_seconds=args.lookback_seconds)
         output = json.dumps(payload, default=_json_decimal, ensure_ascii=False, allow_nan=False, indent=2)
     except (OSError, ValueError, TypeError, KeyError, InvalidOperation) as error:
         print(f"Historical snapshot error: match {args.match_id}: {error}", file=sys.stderr)
