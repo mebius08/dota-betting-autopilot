@@ -379,10 +379,10 @@ def rewrite_csv(root, path, columns, transform):
 
 
 @pytest.mark.parametrize(("current_nw", "expected_nw"), [((145, 190), ("45", "-10", "55")), ((80, 250), ("-20", "50", "-70"))])
-def test_lookback_global_deltas_and_gap_use_conservative_confirmed_baseline(sources, capsys, current_nw, expected_nw):
+def test_lookback_global_deltas_and_gap_use_exact_confirmed_compact_baseline(sources, capsys, current_nw, expected_nw):
     path = sources / cli.COMPACT_PATH
     data = json.loads(path.read_text(encoding="utf-8"))
-    for frame, nw, xp in zip(data["snapshots"], ((100, 200), (99999, 99999), current_nw), ((1000, 900), (99999, 99999), (900, 1100)), strict=True):
+    for frame, nw, xp in zip(data["snapshots"], ((99999, 99999), (100, 200), current_nw), ((99999, 99999), (1000, 900), (900, 1100)), strict=True):
         for index, team in enumerate(frame["teams"]):
             team.update(net_worth=nw[index], total_xp=xp[index])
     path.write_text(json.dumps(data), encoding="utf-8")
@@ -392,12 +392,12 @@ def test_lookback_global_deltas_and_gap_use_conservative_confirmed_baseline(sour
     group = changes["groups"]["economy"]
     assert changes["status"] == group["status"] == "AVAILABLE"
     assert changes["requested_baseline_time_seconds"] == "10.0002"
-    assert changes["baseline_tick_boundary"] == {"actual_game_time_seconds": "0.0334", "replay_tick": 101, "age_seconds": "9.9668"}
+    assert changes["baseline_tick_boundary"] == {"actual_game_time_seconds": "10.0002", "replay_tick": 200, "age_seconds": "0.0000"}
     assert group["current_observation"]["actual_game_time_seconds"] == "20.0002"
     assert group["current_observation"]["replay_tick"] == 300
-    assert group["baseline_observation"]["actual_game_time_seconds"] == "0"
-    assert group["baseline_observation"]["replay_tick"] == 100
-    assert group["elapsed_game_time_seconds"] == "20.0002"  # Not the requested 10 seconds.
+    assert group["baseline_observation"]["actual_game_time_seconds"] == "10.0002"
+    assert group["baseline_observation"]["replay_tick"] == 200
+    assert group["elapsed_game_time_seconds"] == "10.0000"
     assert group["deltas"] == dict(
         radiant_net_worth=expected_nw[0], dire_net_worth=expected_nw[1],
         radiant_minus_dire_net_worth=expected_nw[2], radiant_total_xp="-100", dire_total_xp="200",
@@ -480,11 +480,16 @@ def test_lookback_same_source_frame_is_not_reported_as_zero_dynamics(sources, vi
 @pytest.mark.parametrize("reason", ["BASELINE_BEFORE_GAME_START", "NO_PRECEDING_BASELINE_FRAME"])
 def test_lookback_without_a_confirmed_baseline_has_explicit_status(sources, reason):
     if reason == "NO_PRECEDING_BASELINE_FRAME":
-        # Keep an incomplete first POV frame; the next complete pair is in the future.
-        rewrite_csv(sources, cli.POV_PATH, cli.TEAM_COLUMNS,
-                    lambda rows: [row for row in rows if not (row["game_time_seconds"] == "0.0334" and row["pov_team"] == "DIRE")])
+        # No source has a witness before the requested baseline, not just POV.
+        for relative in (cli.COMPACT_PATH, cli.SPATIAL_PATH):
+            path = sources / relative
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data["snapshots"] = data["snapshots"][1:]
+            path.write_text(json.dumps(data), encoding="utf-8")
+        for path, columns in ((cli.POV_PATH, cli.TEAM_COLUMNS), (cli.ENEMY_PATH, cli.ENEMY_OBSERVATION_FIELDS)):
+            rewrite_csv(sources, path, columns, lambda rows: [row for row in rows if row["game_time_seconds"] != "0.0334"])
     result = cli.inspect_snapshot(cli.MATCH_ID, Decimal("20.0002"), 300,
-                                  lookback_seconds=Decimal(60 if reason == "BASELINE_BEFORE_GAME_START" else 10))
+                                  lookback_seconds=Decimal(60) if reason == "BASELINE_BEFORE_GAME_START" else Decimal("10.0001"))
     changes = result["changes"]
     group = changes["groups"]["economy"]
     assert changes["status"] == group["status"] == reason
@@ -493,7 +498,7 @@ def test_lookback_without_a_confirmed_baseline_has_explicit_status(sources, reas
     assert all(value is None for value in group["deltas"].values())
 
 
-def test_lookback_tick_boundary_comes_from_actual_paired_frames_despite_pause_sized_gaps(sources, monkeypatch):
+def test_lookback_tick_boundary_uses_actual_compact_evidence_despite_pause_sized_gaps(sources, monkeypatch):
     ticks = {100: 100, 101: 137, 200: 500000, 201: 500123, 300: 9000000, 301: 9000033}
     for relative in (cli.COMPACT_PATH, cli.SPATIAL_PATH):
         path = sources / relative
@@ -513,16 +518,16 @@ def test_lookback_tick_boundary_comes_from_actual_paired_frames_despite_pause_si
         return original(snapshot, view, **kwargs)
     monkeypatch.setattr(cli, "project_snapshot", project)
     result = cli.inspect_snapshot(cli.MATCH_ID, Decimal("20.0002"), 9000000, lookback_seconds=Decimal(10))
-    assert calls == [(Decimal("20.0002"), 9000000), (Decimal("10.0002"), 137)]
-    assert result["changes"]["baseline_tick_boundary"]["replay_tick"] == 137
-    assert result["changes"]["groups"]["economy"]["baseline_observation"]["replay_tick"] == 100
+    assert calls == [(Decimal("20.0002"), 9000000), (Decimal("10.0002"), 500000)]
+    assert result["changes"]["baseline_tick_boundary"]["replay_tick"] == 500000
+    assert result["changes"]["groups"]["economy"]["baseline_observation"]["replay_tick"] == 500000
 
 
 def test_lookback_decimal_math_does_not_round_large_values_or_timestamps(sources, capsys):
     path = sources / cli.COMPACT_PATH
     data = json.loads(path.read_text(encoding="utf-8"))
     big = 10 ** 60
-    for index, team in enumerate(data["snapshots"][0]["teams"]):
+    for index, team in enumerate(data["snapshots"][1]["teams"]):
         team["net_worth"] = big
     for index, team in enumerate(data["snapshots"][2]["teams"]):
         team["net_worth"] = big + (3 if index == 0 else 1)
@@ -545,3 +550,92 @@ def test_invalid_lookback_is_rejected_before_reading_sources(tmp_path, monkeypat
     with pytest.raises(SystemExit) as error:
         cli.main([*arguments(), "--lookback-seconds", value])
     assert error.value.code == 2 and capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize("view", ["HISTORICAL_GLOBAL", "HISTORICAL_RADIANT_POV", "HISTORICAL_DIRE_POV"])
+def test_exact_compact_boundary_preserves_all_views_and_older_pov_frames(sources, view):
+    result = cli.inspect_snapshot(cli.MATCH_ID, Decimal("20.0002"), 300, view=view, lookback_seconds=Decimal(10))
+    changes = result["changes"]
+    assert changes["baseline_tick_boundary"] == {
+        "actual_game_time_seconds": Decimal("10.0002"), "replay_tick": 200, "age_seconds": Decimal("0.0000"),
+    }
+    if view == "HISTORICAL_GLOBAL":
+        assert set(result["observations"]) == {"economy", "heroes", "spatial_global", "pov", "pov_enemy_positions"}
+        group = changes["groups"]["economy"]
+        assert group["baseline_observation"]["actual_game_time_seconds"] == Decimal("10.0002")
+        assert group["baseline_observation"]["replay_tick"] == 200
+    else:
+        team = "RADIANT" if view == "HISTORICAL_RADIANT_POV" else "DIRE"
+        assert set(result["observations"]) == {"pov", "pov_enemy_positions"}
+        assert all(set(observation["values"]) == {team} for observation in result["observations"].values())
+        group = changes["groups"]["pov"]
+        assert group["baseline_observation"]["actual_game_time_seconds"] == Decimal("0.0334")
+        assert group["baseline_observation"]["replay_tick"] == 101
+        assert group["current_observation"]["actual_game_time_seconds"] == Decimal("10.0334")
+    assert group["elapsed_game_time_seconds"] == Decimal(10)
+    assert not {"target", "winner", "outcomes"} & set(nested_keys(result))
+
+
+@pytest.mark.parametrize("view", ["HISTORICAL_GLOBAL", "HISTORICAL_RADIANT_POV", "HISTORICAL_DIRE_POV"])
+@pytest.mark.parametrize(("baseline_time", "expected_time", "expected_tick"), [
+    (Decimal("10.0003"), Decimal("10.0002"), 200),
+    (Decimal("11.0002"), Decimal("10.0334"), 201),
+])
+def test_no_exact_witness_uses_latest_confirmed_past_pair_without_future_frames(sources, view, baseline_time, expected_time, expected_tick):
+    current_time = Decimal("20.0002")
+    result = cli.inspect_snapshot(cli.MATCH_ID, current_time, 300, view=view,
+                                  lookback_seconds=cli._elapsed_seconds(current_time, baseline_time))
+    boundary = result["changes"]["baseline_tick_boundary"]
+    assert boundary["actual_game_time_seconds"] == expected_time <= baseline_time
+    assert boundary["replay_tick"] == expected_tick
+    assert boundary["age_seconds"] == cli._elapsed_seconds(baseline_time, expected_time)
+    for group in result["changes"]["groups"].values():
+        assert group["baseline_observation"]["actual_game_time_seconds"] <= baseline_time
+        assert group["baseline_observation"]["replay_tick"] <= expected_tick
+        assert group["elapsed_game_time_seconds"] == cli._elapsed_seconds(
+            group["current_observation"]["actual_game_time_seconds"],
+            group["baseline_observation"]["actual_game_time_seconds"],
+        )
+
+
+@pytest.mark.parametrize("conflict", ["same_tick", "same_time", "clock_order"])
+def test_conflicting_past_clock_witnesses_are_diagnostic_errors(sources, capsys, conflict):
+    if conflict == "clock_order":
+        path = sources / cli.COMPACT_PATH
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["snapshots"][1]["source_game_time_seconds"] = 0.02
+        path.write_text(json.dumps(data), encoding="utf-8")
+    else:
+        def edit(rows):
+            for row in rows:
+                if row["game_time_seconds"] == "0.0334":
+                    row["game_time_seconds"] = "0.0335" if conflict == "same_tick" else "10.0002"
+                    if conflict == "same_time":
+                        row["replay_tick"] = "150"
+        rewrite_csv(sources, cli.POV_PATH, cli.TEAM_COLUMNS, edit)
+    assert cli.main([*arguments(time="20.0002", tick="300"), "--lookback-seconds", "10"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == "" and "Conflicting baseline clock" in captured.err
+    assert cli.MATCH_ID in captured.err
+    assert ("ordering" in captured.err if conflict == "clock_order" else
+            "101" in captured.err if conflict == "same_tick" else "200" in captured.err and "150" in captured.err)
+
+
+def test_conflicting_clock_normalization_metadata_prevents_a_baseline(sources, capsys):
+    for relative, method in ((cli.COMPACT_PATH, "CLOCK_A"), (cli.SPATIAL_PATH, "CLOCK_B")):
+        path = sources / relative
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["clock_normalization_method"] = method
+        path.write_text(json.dumps(data), encoding="utf-8")
+    assert cli.main([*arguments(time="20.0002", tick="300"), "--lookback-seconds", "10"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == "" and "clock_normalization_method" in captured.err
+    assert "CLOCK_A" in captured.err and "CLOCK_B" in captured.err
+
+
+def test_baseline_witness_must_also_be_no_later_than_the_requested_current_tick(sources):
+    result = cli.inspect_snapshot(cli.MATCH_ID, Decimal("20.0002"), 199, lookback_seconds=Decimal(10))
+    changes = result["changes"]
+    assert changes["baseline_tick_boundary"]["replay_tick"] == 101  # Exact compact tick 200 is not yet allowed.
+    assert changes["status"] == "NO_NEW_OBSERVATION"
+    assert changes["groups"]["economy"]["baseline_observation"]["replay_tick"] == 100

@@ -191,6 +191,50 @@ def _change_group(current: dict, baseline: dict | None, baseline_time: Decimal,
     return channel, group
 
 
+def _resolve_baseline_boundary(time: Decimal, current_tick: int, economy: list[dict],
+                               pov: list[dict], sources: dict) -> dict | None:
+    """Resolve an actual past clock witness, with no interpolation or tick rate.
+
+    Inputs have already passed match/SHA/source validation. Only witnesses at or
+    before both bounds participate. Ambiguous pairs and clock inversions fail
+    explicitly rather than choosing one source over another.
+    """
+    streams = (
+        ("compact", ((row["actual_game_time_seconds"], row["replay_tick"]) for row in economy)),
+        ("spatial", ((row["source_game_time_seconds"], row["replay_tick"]) for row in sources["spatial_records"])),
+        ("pov", ((row["actual_game_time_seconds"], row["replay_tick"]) for row in pov)),
+        ("enemy_observations", ((row["game_time_seconds"], row["replay_tick"]) for row in sources["enemy_records"])),
+    )
+    by_tick, by_time = {}, {}
+    for source, pairs in streams:
+        for observed, tick in pairs:
+            observed = _seconds(Decimal(observed) if isinstance(observed, str) else observed)
+            tick = int(tick) if isinstance(tick, str) else tick
+            if isinstance(tick, bool) or not isinstance(tick, int) or tick < 0:
+                raise ValueError(f"Invalid baseline replay tick in {source}.")
+            if observed > time or tick > current_tick:
+                continue
+            if tick in by_tick and by_tick[tick][0] != observed:
+                previous_time, previous_source = by_tick[tick]
+                raise ValueError(f"Conflicting baseline clock at tick {tick}: "
+                                 f"{previous_source} time {previous_time}, {source} time {observed}.")
+            if observed in by_time and by_time[observed][0] != tick:
+                previous_tick, previous_source = by_time[observed]
+                raise ValueError(f"Conflicting baseline clock at time {observed}: "
+                                 f"{previous_source} tick {previous_tick}, {source} tick {tick}.")
+            by_tick.setdefault(tick, (observed, source))
+            by_time.setdefault(observed, (tick, source))
+    ordered = sorted(by_tick.items())
+    for previous, current in zip(ordered, ordered[1:]):
+        if previous[1][0] > current[1][0]:
+            raise ValueError(f"Conflicting baseline clock ordering: {previous} then {current}.")
+    if not ordered:
+        return None
+    tick, (observed, _) = max(ordered, key=lambda item: (item[1][0], item[0]))
+    return {"actual_game_time_seconds": observed, "replay_tick": tick,
+            "age_seconds": _elapsed_seconds(time, observed)}
+
+
 def _lookback_changes(current: dict, lookback: Decimal, match: MatchIdentity,
                       economy: list[dict], pov: list[dict], sources: dict) -> dict:
     baseline_time = _elapsed_seconds(current["requested_game_time_seconds"], lookback)
@@ -198,21 +242,17 @@ def _lookback_changes(current: dict, lookback: Decimal, match: MatchIdentity,
     if baseline_time < 0:
         reason = "BASELINE_BEFORE_GAME_START"
     else:
-        # Probe ONLY the paired POV timeline through the existing selector.
-        # The current tick is a ceiling, not an inferred tick at baseline_time.
-        probe = build_historical_snapshot(
-            match, baseline_time, [], pov, requested_replay_tick=current["requested_replay_tick"],
-        ).observations["pov"]
-        if probe.status != "AVAILABLE":
+        boundary = _resolve_baseline_boundary(
+            baseline_time, current["requested_replay_tick"], economy, pov, sources,
+        )
+        if boundary is None:
             reason = "NO_PRECEDING_BASELINE_FRAME"
         else:
-            boundary = {"actual_game_time_seconds": probe.actual_game_time_seconds,
-                        "replay_tick": probe.replay_tick, "age_seconds": probe.age_seconds}
             snapshot = build_historical_snapshot(
-                match, baseline_time, economy, pov, requested_replay_tick=probe.replay_tick, **sources,
+                match, baseline_time, economy, pov, requested_replay_tick=boundary["replay_tick"], **sources,
             )
             baseline = project_snapshot(snapshot, current.get("view", DEFAULT_VIEW),
-                                        requested_replay_tick=probe.replay_tick)
+                                        requested_replay_tick=boundary["replay_tick"])
     channel, group = _change_group(current, baseline, baseline_time, reason)
     return {
         "lookback_seconds": lookback,
@@ -242,6 +282,11 @@ def inspect_snapshot(match_id: str, at_seconds: Decimal, at_tick: int, *,
     sha = compact["replay_sha256"]
     if spatial["replay_sha256"] != sha or spatial.get("artifact_kind") != "replay_hero_positions":
         raise ValueError("Spatial source has a different replay SHA or artifact kind.")
+    if lookback_seconds is not None:
+        for field in ("clock_normalization_method", "zero_replay_tick", "pause_ticks", "pause_seconds", "pause_witnessed"):
+            if field in compact and field in spatial and compact[field] != spatial[field]:
+                raise ValueError(f"Conflicting replay clock metadata {field}: "
+                                 f"compact={compact[field]}, spatial={spatial[field]}.")
     pov = _csv_source(ROOT / pov_path, TEAM_COLUMNS, match_id, sha)
     enemies = _csv_source(ROOT / enemy_path, ENEMY_OBSERVATION_FIELDS, match_id, sha)
     lineage = dict(source=SOURCE, source_match_id=match_id, match_id=match_id, replay_sha256=sha)
