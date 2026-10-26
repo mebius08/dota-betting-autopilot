@@ -413,7 +413,8 @@ def process(entry, directory, fetcher, checkpoint, *, min_free_bytes=0):
         entry.update(status="DOWNLOAD_OK", download_status="DOWNLOAD_OK",
                      dem_path=str(dem.relative_to(ROOT)), dem_sha256=sha256(dem),
                      dem_bytes=dem.stat().st_size)
-        checkpoint()
+    # Also signal the verified DEM stage when resuming an existing download.
+    checkpoint()
     channels = parse_replay(directory, mid, league, entry["dem_sha256"], space_guard=guard)
     if guard:
         guard(0)
@@ -449,8 +450,27 @@ def pending_order(state):
     return sorted(fresh, key=priority) + sorted(deferred, key=priority)
 
 
+def parser_failure_reason(error, log_path):
+    """Use already captured output only; keep the full parser log untouched."""
+    stderr = error.stderr or ""
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", errors="replace")
+    try:
+        with log_path.open(encoding="utf-8", errors="replace") as stream:
+            text = stream.read(65536)
+    except OSError:
+        text = ""
+    lines = [line.strip() for line in (stderr[:65536] + "\n" + text).splitlines()]
+    causes = [line for line in lines if line.startswith("Caused by:")]
+    detail = causes[-1] if causes else next(
+        (line for line in lines if line.startswith("Exception in thread")), "",
+    )
+    detail = detail or next((line.strip() for line in stderr.splitlines() if line.strip()), "")
+    return f"Clarity exit {error.returncode}: {detail[:500]}" if detail else str(error)
+
+
 def execute_batch(state, path, fetcher, *, limit, min_free_bytes, max_errors=3):
-    attempts, consecutive_errors = 0, 0
+    attempts, download_errors, parser_errors = 0, 0, 0
     state["stop_reason"] = "RUNNING"
     state.pop("disk_space_diagnostic", None)
     for row in pending_order(state):
@@ -472,10 +492,22 @@ def execute_batch(state, path, fetcher, *, limit, min_free_bytes, max_errors=3):
         entry.pop("http_status", None)
         entry.pop("disk_space_diagnostic", None)
         save(path, state)
+        download_ready = False
+
+        def checkpoint():
+            # process calls this only after a downloaded/reused DEM is verified.
+            # A later parser failure must not undo this stage's success.
+            nonlocal download_ready, download_errors
+            download_ready, download_errors = True, 0
+            save(path, state)
+
         try:
-            process(entry, path.parent / key, fetcher, lambda: save(path, state),
+            process(entry, path.parent / key, fetcher, checkpoint,
                     min_free_bytes=min_free_bytes)
-            consecutive_errors = 0
+            if entry["status"] == "PARSE_OK":
+                download_errors = parser_errors = 0
+            elif entry["status"] == "REPLAY_UNAVAILABLE":
+                download_errors = 0  # No parser attempt, so do not reset its streak.
         except LowDiskSpace as exc:
             entry.update(status="RETRYABLE_ERROR", reason="low_disk_space",
                          disk_space_diagnostic=str(exc))
@@ -488,7 +520,7 @@ def execute_batch(state, path, fetcher, *, limit, min_free_bytes, max_errors=3):
             entry.update(status="REPLAY_UNAVAILABLE" if unavailable else
                          "INVALID_ARTIFACT" if invalid else "RETRYABLE_ERROR",
                          reason=str(exc), http_status=status)
-            consecutive_errors = 0 if unavailable else consecutive_errors + 1
+            download_errors = 0 if unavailable else download_errors + 1
             if status == 429:
                 # Stop rather than repeatedly consume the free API quota.
                 retry_after = getattr(exc, "retry_after", None)
@@ -507,22 +539,36 @@ def execute_batch(state, path, fetcher, *, limit, min_free_bytes, max_errors=3):
                 state["stop_reason"] = "HTTP_429"
         except (ValueError, KeyError, TypeError, ArithmeticError) as exc:
             entry.update(status="INVALID_ARTIFACT", reason=str(exc))
-            consecutive_errors += 1
+            if download_ready:
+                parser_errors += 1  # Parsed channel/clock validation belongs to extraction.
+            else:
+                download_errors += 1
         except subprocess.CalledProcessError as exc:
-            entry.update(status="PARSE_ERROR", reason=str(exc),
-                         parser_log=str((path.parent / key / "parser.log").relative_to(ROOT)))
-            consecutive_errors += 1
-        except (subprocess.SubprocessError, OSError, ReplayFetchError) as exc:
+            parser_log = path.parent / key / "parser.log"
+            entry.update(status="PARSE_ERROR", reason=parser_failure_reason(exc, parser_log),
+                         parser_log=str(parser_log.relative_to(ROOT)))
+            parser_errors += 1
+        except subprocess.SubprocessError as exc:
             entry.update(status="RETRYABLE_ERROR", reason=str(exc))
-            consecutive_errors += 1
+            parser_errors += 1
+        except (OSError, ReplayFetchError) as exc:
+            entry.update(status="RETRYABLE_ERROR", reason=str(exc))
+            if download_ready:
+                parser_errors += 1
+            else:
+                download_errors += 1
         finally:
             save(path, state)
         print(json.dumps({k: entry.get(k) for k in
                           ("match_id", "league_id", "status", "reason", "channels")}), flush=True)
         if state["stop_reason"] in ("HTTP_429", "LOW_DISK_SPACE"):
             break
-        if consecutive_errors >= max_errors:
+        if max(download_errors, parser_errors) >= max_errors:
             state["stop_reason"] = "REPEATED_ERRORS"
+            print(json.dumps(dict(
+                event="circuit_breaker", stage="download" if download_errors >= max_errors else "parser",
+                download_errors=download_errors, parser_errors=parser_errors,
+            )), flush=True)
             break
     else:
         state["stop_reason"] = "QUEUE_EXHAUSTED"

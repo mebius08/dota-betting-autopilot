@@ -378,8 +378,9 @@ def test_parser_error_preserves_dem_and_is_not_retried_forever(batch, monkeypatc
     cli.execute_batch(state, path, fetcher, limit=1, min_free_bytes=0)
     assert state["matches"]["1"]["status"] == "PARSE_ERROR"
     assert state["matches"]["1"]["dem_sha256"]
+    saved = deepcopy(state["matches"]["1"])
     cli.execute_batch(state, path, fetcher, limit=1, min_free_bytes=0)
-    assert fetcher.downloads == [1]
+    assert fetcher.downloads == [1] and state["matches"]["1"] == saved
 
 
 @pytest.mark.parametrize("http_status", [404, 410])
@@ -456,6 +457,131 @@ def test_disk_and_repeated_network_errors_stop_safely(batch, monkeypatch):
     cli.execute_batch(state, path, fetcher, limit=100, min_free_bytes=0)
     assert state["stop_reason"] == "REPEATED_ERRORS"
     assert len(fetcher.downloads) == 3
+
+
+@pytest.mark.parametrize("sequence,attempted,stage", [
+    (["ok", "download", "parse", "parse", "ok"], 5, None),
+    (["download", "parse", "download", "parse", "download", "ok"], 6, None),
+    (["parse", "parse", "ok", "parse", "parse", "ok"], 6, None),
+    (["download", "download", "download", "ok"], 3, "download"),
+    (["parse", "parse", "parse", "ok"], 3, "parser"),
+    (["parse", "unavailable", "parse", "parse", "ok"], 4, "parser"),
+])
+def test_independent_stage_breakers_and_success_resets(batch, parsed, monkeypatch, capsys,
+                                                      sequence, attempted, stage):
+    state, path = batch
+    state["candidates"] = [candidate(i) for i in range(1, len(sequence) + 1)]
+
+    class SequenceFetcher(Fetcher):
+        def _fetch_opendota_json(self, endpoint, **kwargs):
+            result = super()._fetch_opendota_json(endpoint, **kwargs)
+            if sequence[int(endpoint.split('/')[-1]) - 1] == "unavailable":
+                result.payload["replay_url"] = None
+            return result
+
+        def _download_replay(self, *, match_id, **kwargs):
+            if sequence[match_id - 1] == "download":
+                self.downloads.append(match_id)
+                raise ReplayDownloadError("replay_download_timed_out")
+            super()._download_replay(match_id=match_id, **kwargs)
+
+    def parse(directory, mid, *args, **kwargs):
+        if sequence[mid - 1] == "parse":
+            (directory / "parser.log").write_text(
+                'SLF4J: warning\nException in thread "main" '
+                'java.lang.ArrayIndexOutOfBoundsException: Index 496 out of bounds for length 489\n')
+            raise subprocess.CalledProcessError(1, "probeCompactReplay")
+        return parsed(directory, mid, *args, **kwargs)
+
+    monkeypatch.setattr(cli, "parse_replay", parse)
+    fetcher = SequenceFetcher()
+    cli.execute_batch(state, path, fetcher, limit=100, min_free_bytes=0)
+    assert state["last_run_attempted"] == attempted and len(fetcher.details) == attempted
+    assert state["stop_reason"] == ("REPEATED_ERRORS" if stage else "QUEUE_EXHAUSTED")
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    breakers = [event for event in events if event.get("event") == "circuit_breaker"]
+    if stage:
+        assert len(breakers) == 1 and breakers[0]["stage"] == stage
+        assert breakers[0][f"{stage}_errors"] == 3
+    else:
+        assert not breakers and state["matches"][str(len(sequence))]["status"] == "PARSE_OK"
+    for mid in fetcher.downloads:
+        if sequence[mid - 1] == "parse":
+            entry = state["matches"][str(mid)]
+            assert entry["status"] == "PARSE_ERROR"
+            assert "ArrayIndexOutOfBoundsException: Index 496" in entry["reason"]
+            assert cli.sha256(path.parent / str(mid) / f"{mid}.dem") == entry["dem_sha256"]
+
+
+def test_mixed_failure_checkpoint_resume_skips_success_and_old_parse_errors(batch, parsed, monkeypatch):
+    state, path = batch
+    state["candidates"] = [candidate(i) for i in range(1, 6)]
+    fetcher = Fetcher()
+    download = fetcher._download_replay
+    failed = False
+
+    def transfer(*, match_id, **kwargs):
+        nonlocal failed
+        if match_id == 2 and not failed:
+            failed = True
+            fetcher.downloads.append(match_id)
+            raise ReplayDownloadError("replay_download_timed_out")
+        download(match_id=match_id, **kwargs)
+
+    def parse(directory, mid, *args, **kwargs):
+        if mid in (3, 4):
+            raise subprocess.CalledProcessError(1, "probeCompactReplay")
+        return parsed(directory, mid, *args, **kwargs)
+
+    monkeypatch.setattr(fetcher, "_download_replay", transfer)
+    monkeypatch.setattr(cli, "parse_replay", parse)
+    cli.execute_batch(state, path, fetcher, limit=100, min_free_bytes=0)
+    assert state["stop_reason"] == "QUEUE_EXHAUSTED" and fetcher.downloads == [1, 2, 3, 4, 5]
+    previous = deepcopy(state["matches"])
+    resumed = json.loads(path.read_text())
+    cli.execute_batch(resumed, path, fetcher, limit=100, min_free_bytes=0)
+    assert fetcher.downloads == [1, 2, 3, 4, 5, 2]
+    assert resumed["last_run_attempted"] == 1 and resumed["matches"]["2"]["status"] == "PARSE_OK"
+    assert all(resumed["matches"][str(i)] == previous[str(i)] for i in (1, 3, 4, 5))
+
+
+def test_parser_timeout_has_its_own_breaker(batch, monkeypatch):
+    state, path = batch
+    state["candidates"] = [candidate(i) for i in range(1, 5)]
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired("probeCompactReplay", 600)
+    monkeypatch.setattr(cli, "parse_replay", timeout)
+    fetcher = Fetcher()
+    cli.execute_batch(state, path, fetcher, limit=100, min_free_bytes=0)
+    assert fetcher.downloads == [1, 2, 3] and state["stop_reason"] == "REPEATED_ERRORS"
+    assert all(e["status"] == "RETRYABLE_ERROR" and e["download_status"] == "DOWNLOAD_OK"
+               for e in state["matches"].values())
+
+
+@pytest.mark.parametrize("source", ["log", "stderr", "missing"])
+def test_parser_reason_uses_existing_root_cause_or_keeps_fallback(tmp_path, source):
+    log = tmp_path / "parser.log"
+    text = ('Exception in thread "main" java.lang.RuntimeException: outer\n'
+            'Caused by: java.io.EOFException: truncated bitstream\n')
+    error = subprocess.CalledProcessError(1, "probeCompactReplay",
+        stderr=text.encode() if source == "stderr" else None)
+    if source == "log":
+        log.write_text(text)
+    reason = cli.parser_failure_reason(error, log)
+    if source == "missing":
+        assert reason == str(error)
+    else:
+        assert reason == "Clarity exit 1: Caused by: java.io.EOFException: truncated bitstream"
+    if log.exists():
+        assert log.read_text() == text
+
+
+def test_parser_reason_is_bounded_and_does_not_rewrite_full_log(tmp_path):
+    log = tmp_path / "parser.log"
+    text = 'Exception in thread "main" java.lang.RuntimeException: ' + 'x' * 100000
+    log.write_text(text)
+    reason = cli.parser_failure_reason(subprocess.CalledProcessError(1, "Clarity"), log)
+    assert len(reason) < 550 and log.read_text() == text
 
 
 def queued_corpus():
