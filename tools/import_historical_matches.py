@@ -2,6 +2,7 @@
 
 import argparse
 from collections.abc import Sequence
+from contextlib import nullcontext
 from dataclasses import fields
 from enum import Enum
 from pathlib import Path
@@ -46,7 +47,8 @@ def validate_matches(matches: Sequence[HistoricalMatch]) -> None:
             )
 
 
-def apply_matches(matches: Sequence[HistoricalMatch]) -> int:
+def apply_matches(matches: Sequence[HistoricalMatch], *, connection=None) -> int:
+    """Use the caller's transaction when a connection is supplied."""
     if not matches:
         return 0
     query = sql.SQL(
@@ -63,9 +65,10 @@ def apply_matches(matches: Sequence[HistoricalMatch]) -> int:
         )
         for match in matches
     ]
-    with psycopg.connect(
+    context = nullcontext(connection) if connection is not None else psycopg.connect(
         **postgres_connection_options_from_env(), connect_timeout=5
-    ) as connection:
+    )
+    with context as connection:
         with connection.cursor() as cursor:
             cursor.executemany(query, rows)
             inserted = cursor.rowcount

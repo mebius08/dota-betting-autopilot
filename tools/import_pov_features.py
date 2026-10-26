@@ -3,6 +3,7 @@
 import argparse
 from collections import Counter
 from collections.abc import Sequence
+from contextlib import nullcontext
 import csv
 from pathlib import Path
 import sys
@@ -33,7 +34,8 @@ COLUMNS = (
 TABLE = sql.Identifier("historical_match_pov_snapshots")
 
 
-def build_pov_rows(path: Path) -> list[dict]:
+def build_pov_rows(path: Path, *, expected_rows=None) -> list[dict]:
+    expected_rows = EXPECTED_ROWS if expected_rows is None else expected_rows
     frames, lineages, replay_matches, counts = {}, {}, {}, Counter()
     with path.open(encoding="utf-8", newline="") as stream:
         reader = csv.DictReader(stream)
@@ -43,7 +45,7 @@ def build_pov_rows(path: Path) -> list[dict]:
             if None in raw or any(value is None for value in raw.values()):
                 raise ValueError("Malformed POV CSV row.")
             mid, sha = _lineage(raw)
-            if mid not in EXPECTED_ROWS:
+            if mid not in expected_rows:
                 raise ValueError(f"Unexpected match ID: {mid}.")
             if lineages.setdefault(mid, sha) != sha or replay_matches.setdefault(sha, mid) != mid:
                 raise ValueError("Match/replay SHA conflict.")
@@ -87,8 +89,8 @@ def build_pov_rows(path: Path) -> list[dict]:
                 **{name: features[name] for name in FEATURES},
             )
             counts[mid] += 1
-    if counts != Counter(EXPECTED_ROWS):
-        raise ValueError(f"Incomplete four-match POV source: {dict(counts)}.")
+    if counts != Counter(expected_rows):
+        raise ValueError(f"Incomplete POV source: {dict(counts)}.")
     rows, previous = [], {}
     for (mid, tick), frame in sorted(frames.items(), key=lambda item: (item[0][0], item[1]["time"])):
         time = frame["time"]
@@ -102,7 +104,8 @@ def build_pov_rows(path: Path) -> list[dict]:
     return rows
 
 
-def apply_rows(rows: Sequence[dict]) -> int:
+def apply_rows(rows: Sequence[dict], *, connection=None) -> int:
+    """A supplied connection owns the transaction and requires existing tables."""
     if not rows:
         return 0
     columns = sql.SQL(", ").join(sql.Identifier(name) for name in COLUMNS)
@@ -115,11 +118,14 @@ def apply_rows(rows: Sequence[dict]) -> int:
         "SELECT {} FROM {} WHERE source = %s AND source_match_id IN ({})"
     ).format(columns, TABLE, sql.SQL(", ").join(sql.Placeholder() for _ in identities))
     parameters = [tuple(row[name] for name in COLUMNS) for row in rows]
-    with psycopg.connect(
+    external = connection is not None
+    context = nullcontext(connection) if external else psycopg.connect(
         **postgres_connection_options_from_env(), connect_timeout=5
-    ) as connection:
+    )
+    with context as connection:
         with connection.cursor() as cursor:
-            cursor.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
+            if not external:
+                cursor.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
             cursor.executemany(insert, parameters)
             inserted = cursor.rowcount
             cursor.execute(select, (SOURCE, *identities))

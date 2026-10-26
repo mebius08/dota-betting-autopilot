@@ -2,6 +2,7 @@
 
 import argparse
 from collections.abc import Sequence
+from contextlib import nullcontext
 from pathlib import Path
 import sys
 
@@ -28,10 +29,10 @@ COLUMNS = (
 TABLE = sql.Identifier("historical_match_economy_snapshots")
 
 
-def build_snapshots(root: Path) -> list[dict]:
+def build_snapshots(root: Path, *, compacts=None) -> list[dict]:
     rows = []
     keys, times = set(), set()
-    for expected_id, relative_path in COMPACTS.items():
+    for expected_id, relative_path in (COMPACTS if compacts is None else compacts).items():
         trajectory = load_replay_trajectory(root / relative_path)
         if trajectory["match_id"] != expected_id:
             raise ValueError(f"Canonical compact match ID mismatch: {expected_id}.")
@@ -67,10 +68,11 @@ def build_snapshots(root: Path) -> list[dict]:
     return rows
 
 
-def apply_snapshots(rows: Sequence[dict]) -> int:
+def apply_snapshots(rows: Sequence[dict], *, connection=None) -> int:
+    """A supplied connection owns the transaction and requires existing tables."""
     if not rows:
         return 0
-    schema = SCHEMA_PATH.read_text(encoding="utf-8")
+    external = connection is not None
     column_sql = sql.SQL(", ").join(sql.Identifier(name) for name in COLUMNS)
     insert = sql.SQL(
         "INSERT INTO {} ({}) VALUES ({}) "
@@ -83,11 +85,13 @@ def apply_snapshots(rows: Sequence[dict]) -> int:
         column_sql, TABLE, sql.SQL(", ").join(sql.Placeholder() for _ in identities)
     )
     parameters = [tuple(row[name] for name in COLUMNS) for row in rows]
-    with psycopg.connect(
+    context = nullcontext(connection) if external else psycopg.connect(
         **postgres_connection_options_from_env(), connect_timeout=5
-    ) as connection:
+    )
+    with context as connection:
         with connection.cursor() as cursor:
-            cursor.execute(schema)
+            if not external:
+                cursor.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
             cursor.executemany(insert, parameters)
             inserted = cursor.rowcount
             cursor.execute(select, (SOURCE, *identities))
