@@ -122,12 +122,14 @@ def test_allowlist_and_inclusive_window_filter_without_mutation(allowlist):
 def test_real_configuration_is_used_without_a_copied_id_list():
     allowlist = load_tournament_allowlist()
     assert allowlist.entry_for(19719) is not None
-    assert allowlist.entry_for(20395) is None
+    assert allowlist.entry_for(20395) is not None
+    assert allowlist.entry_for(20053) is None
     report, ids = cli.audit_catalog(
-        Connection([match(8960991322, 19719), match(9061429763, 20395)]),
+        Connection([match(8960991322, 19719), match(9061429763, 20395),
+                    match(1, 20053)]),
         allowlist, as_of=AS_OF,
     )
-    assert ids == [8960991322]
+    assert ids == [8960991322, 9061429763]
     assert [row["league_id"] for row in report["leagues"]] == list(
         allowlist.league_ids
     )
