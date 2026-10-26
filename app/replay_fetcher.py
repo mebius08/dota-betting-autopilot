@@ -1009,10 +1009,14 @@ class ReplayFetcher:
         match_id: int,
         destination: Path,
         progress_callback: ReplayDownloadProgressCallback | None = None,
+        space_guard: Callable[[int], None] | None = None,
     ) -> None:
         compressed: Path | None = None
         decompressed: Path | None = None
         try:
+            if space_guard:
+                space_guard(0)
+            guard_options = {"space_guard": space_guard} if space_guard else {}
             compressed = _temporary_path(
                 destination.parent,
                 prefix=f".{match_id}.",
@@ -1023,6 +1027,7 @@ class ReplayFetcher:
                 compressed,
                 match_id=match_id,
                 progress_callback=progress_callback,
+                **guard_options,
             )
 
             decompressed = _temporary_path(
@@ -1032,11 +1037,12 @@ class ReplayFetcher:
             )
             compression = _detect_replay_compression(compressed)
             if compression == "bzip2":
-                decompressed_size = _decompress_bzip2(compressed, decompressed)
+                decompressed_size = _decompress_bzip2(compressed, decompressed, **guard_options)
             else:
                 decompressed_size = _decompress_zstandard(
                     compressed,
                     decompressed,
+                    **guard_options,
                 )
             if decompressed_size < 1:
                 raise ReplayDownloadError(
@@ -1059,6 +1065,7 @@ class ReplayFetcher:
         *,
         match_id: int,
         progress_callback: ReplayDownloadProgressCallback | None = None,
+        space_guard: Callable[[int], None] | None = None,
     ) -> None:
         request = Request(
             replay_url,
@@ -1089,6 +1096,8 @@ class ReplayFetcher:
                         chunk = response.read(_COPY_CHUNK_SIZE)
                         if not chunk:
                             break
+                        if space_guard:
+                            space_guard(len(chunk))
                         file.write(chunk)
                         downloaded_bytes += len(chunk)
                         if (
@@ -1545,7 +1554,8 @@ def _detect_replay_compression(source: Path) -> Literal["bzip2", "zstandard"]:
     )
 
 
-def _decompress_bzip2(source: Path, destination: Path) -> int:
+def _decompress_bzip2(source: Path, destination: Path, *,
+                      space_guard: Callable[[int], None] | None = None) -> int:
     decompressed_size = 0
     try:
         with bz2.open(source, "rb") as compressed_file:
@@ -1554,6 +1564,8 @@ def _decompress_bzip2(source: Path, destination: Path) -> int:
                     chunk = compressed_file.read(_COPY_CHUNK_SIZE)
                     if not chunk:
                         break
+                    if space_guard:
+                        space_guard(len(chunk))
                     decompressed_file.write(chunk)
                     decompressed_size += len(chunk)
                 decompressed_file.flush()
@@ -1566,7 +1578,8 @@ def _decompress_bzip2(source: Path, destination: Path) -> int:
     return decompressed_size
 
 
-def _decompress_zstandard(source: Path, destination: Path) -> int:
+def _decompress_zstandard(source: Path, destination: Path, *,
+                         space_guard: Callable[[int], None] | None = None) -> int:
     decompressed_size = 0
     try:
         decompressor = zstandard.ZstdDecompressor().decompressobj()
@@ -1578,10 +1591,14 @@ def _decompress_zstandard(source: Path, destination: Path) -> int:
                         break
                     chunk = decompressor.decompress(compressed_chunk)
                     if chunk:
+                        if space_guard:
+                            space_guard(len(chunk))
                         decompressed_file.write(chunk)
                         decompressed_size += len(chunk)
                 chunk = decompressor.flush()
                 if chunk:
+                    if space_guard:
+                        space_guard(len(chunk))
                     decompressed_file.write(chunk)
                     decompressed_size += len(chunk)
                 if not decompressor.eof:

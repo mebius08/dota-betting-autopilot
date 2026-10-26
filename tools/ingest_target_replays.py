@@ -9,7 +9,7 @@ Retryable entries get at most three invocations. No database writes are performe
 import argparse
 from collections import Counter, defaultdict, deque
 from contextlib import contextmanager
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, ROUND_CEILING
 import fcntl
 import hashlib
 import json
@@ -51,6 +51,38 @@ GOLD_LIMITATION = {
 }
 TERMINAL = {"PARSE_OK", "PARSE_ERROR", "REPLAY_UNAVAILABLE", "INVALID_ARTIFACT"}
 DOWNLOAD_DEADLINE_SECONDS = 300
+GIB = 1024**3
+# Retain this headroom above the user's floor for temporary files, parser bursts
+# and checkpoint/log writes. The parser is checked every 250 ms as it runs.
+WORKING_RESERVE_BYTES = 2 * GIB
+
+
+class LowDiskSpace(RuntimeError):
+    pass
+
+
+def gib_to_bytes(value):
+    """Both CLI spellings use binary GiB; round fractional byte floors upward."""
+    try:
+        amount = Decimal(value)
+        if not amount.is_finite() or amount < 1:
+            raise ValueError("Minimum free space must be finite and at least 1 GiB")
+        return int((amount * GIB).to_integral_value(rounding=ROUND_CEILING))
+    except InvalidOperation as exc:
+        raise ValueError("Minimum free space must be a GiB number") from exc
+
+
+def require_space(directory, min_free_bytes, next_write_bytes=0):
+    if min_free_bytes <= 0:  # Explicitly disabled only by synthetic unit tests.
+        return
+    free = shutil.disk_usage(directory).free
+    required = min_free_bytes + WORKING_RESERVE_BYTES + next_write_bytes
+    if free < required:
+        raise LowDiskSpace(
+            f"low_disk_space: free={free}, required={required}; "
+            f"floor={min_free_bytes}, working_reserve={WORKING_RESERVE_BYTES}, "
+            f"next_write={next_write_bytes} bytes"
+        )
 
 
 @contextmanager
@@ -97,7 +129,7 @@ def save(path, payload):
 
 
 def diverse_order(rows):
-    """Newest first within leagues; round-robin leagues by their latest match."""
+    """Canonical checkpoint order retained for compatibility, not execution priority."""
     groups = defaultdict(deque)
     seen = set()
     for row in sorted(rows, key=lambda r: (-r["start_time"], -r["match_id"])):
@@ -185,7 +217,7 @@ def seed_existing():
     return entries
 
 
-def validate_parsed(directory, mid, league, sha):
+def validate_parsed(directory, mid, league, sha, *, space_guard=None):
     compact_path = directory / f"{mid}.compact.json"
     compact = load_replay_trajectory(compact_path)
     spatial_path = directory / f"{mid}.compact.spatial.json"
@@ -249,7 +281,13 @@ def validate_parsed(directory, mid, league, sha):
             row["current_x"] is not None or row["current_y"] is not None
         ):
             raise ValueError("Unavailable enemy position has current coordinates")
+    if space_guard:
+        # CSVs contain these fixed, validated scalar fields. Twice their JSON
+        # size plus headers conservatively budgets the remaining POV outputs.
+        space_guard(4096 + 2 * sum(len(json.dumps(r)) for r in (*teams, *enemies)))
     extract_pov_features(spatial_path, visibility_path, directory / "pov")
+    if space_guard:
+        space_guard(0)
     return dict(
         economy_snapshots=len(compact["snapshots"]),
         hero_rows=10 * len(compact["snapshots"]),
@@ -262,17 +300,43 @@ def validate_parsed(directory, mid, league, sha):
     )
 
 
-def parse_replay(directory, mid, league, sha):
+def parse_replay(directory, mid, league, sha, *, space_guard=None):
     env = dict(os.environ)
     env.pop("JAVA_HOME", None)
+    if space_guard:
+        space_guard(0)
     with (directory / "parser.log").open("w") as log:
-        subprocess.run(
+        with subprocess.Popen(
             [str(ROOT / "tools/replay_probe/invoke.sh"), "probeCompactReplay",
              str(directory / f"{mid}.dem"), str(directory / f"{mid}.compact.json")],
             cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT,
-            timeout=600, check=True,
-        )
-    return validate_parsed(directory, mid, league, sha)
+            start_new_session=True,
+        ) as parser:
+            deadline = time.monotonic() + 600
+            try:
+                while True:
+                    if space_guard:
+                        space_guard(0)
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(parser.args, 600)
+                    try:
+                        code = parser.wait(timeout=min(0.25, remaining))
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
+                if code:
+                    raise subprocess.CalledProcessError(code, parser.args)
+            except BaseException:
+                # Stop the entire owned parser group immediately on low disk,
+                # timeout or interruption; keep all DEMs and produced artifacts.
+                try:
+                    os.killpg(parser.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                parser.wait()
+                raise
+    return validate_parsed(directory, mid, league, sha, space_guard=space_guard)
 
 
 def check_url(url, mid):
@@ -287,8 +351,14 @@ def check_url(url, mid):
         raise ValueError("Replay URL is not the selected match's Valve artifact")
 
 
-def process(entry, directory, fetcher, checkpoint):
+def process(entry, directory, fetcher, checkpoint, *, min_free_bytes=0):
     mid, league = entry["match_id"], entry["league_id"]
+    guard = None
+    if min_free_bytes:
+        def guard(size):
+            require_space(directory, min_free_bytes, size)
+        # directory is created below, so check its existing parent first.
+        require_space(directory.parent, min_free_bytes)
     directory.mkdir(parents=True, exist_ok=True)
     dem = directory / f"{mid}.dem"
     metadata_path = directory / "opendota.json"
@@ -327,10 +397,14 @@ def process(entry, directory, fetcher, checkpoint):
                         downloaded_bytes=event.downloaded_bytes,
                         total_bytes=getattr(event, "total_bytes", None),
                     )), flush=True)
+                elif guard:
+                    total = getattr(event, "total_bytes", None)
+                    guard(max(0, total - event.downloaded_bytes) if total is not None else 0)
 
             with download_deadline():
                 fetcher._download_replay(
                     replay_url=url, match_id=mid, destination=dem, progress_callback=progress,
+                    space_guard=guard,
                 )
             entry["downloaded_compressed_bytes"] = transferred[0]
         with dem.open("rb") as stream:
@@ -340,7 +414,9 @@ def process(entry, directory, fetcher, checkpoint):
                      dem_path=str(dem.relative_to(ROOT)), dem_sha256=sha256(dem),
                      dem_bytes=dem.stat().st_size)
         checkpoint()
-    channels = parse_replay(directory, mid, league, entry["dem_sha256"])
+    channels = parse_replay(directory, mid, league, entry["dem_sha256"], space_guard=guard)
+    if guard:
+        guard(0)
     save(directory / "quality.json", channels)
     paths = [dem, metadata_path, directory / "quality.json",
              directory / f"{mid}.compact.json", directory / f"{mid}.compact.spatial.json",
@@ -351,10 +427,11 @@ def process(entry, directory, fetcher, checkpoint):
 
 
 def pending_order(state):
-    """Stable partition of the canonical diverse queue; never edit checkpoint order.
+    """Newest actual start_time first, independent of league; do not edit checkpoint.
 
     Freeze both parts before processing: a new failure cannot re-enter this run.
     Previously interrupted/downloaded work is also deferred behind fresh IDs.
+    Equal dates use ascending match_id; deferred work stays behind all fresh IDs.
     """
     fresh, deferred, seen = [], [], set()
     for row in state["candidates"]:
@@ -367,19 +444,25 @@ def pending_order(state):
             "RETRYABLE_ERROR", "IN_PROGRESS", "DOWNLOAD_OK",
         )
         (deferred if prior else fresh).append(row)
-    return fresh + deferred
+    def priority(row):
+        return -row["start_time"], row["match_id"]
+    return sorted(fresh, key=priority) + sorted(deferred, key=priority)
 
 
 def execute_batch(state, path, fetcher, *, limit, min_free_bytes, max_errors=3):
     attempts, consecutive_errors = 0, 0
     state["stop_reason"] = "RUNNING"
+    state.pop("disk_space_diagnostic", None)
     for row in pending_order(state):
         key = str(row["match_id"])
         if attempts >= limit:
             state["stop_reason"] = "LIMIT_REACHED"
             break
-        if shutil.disk_usage(path.parent).free < min_free_bytes:
+        try:
+            require_space(path.parent, min_free_bytes)
+        except LowDiskSpace as exc:
             state["stop_reason"] = "LOW_DISK_SPACE"
+            state["disk_space_diagnostic"] = str(exc)
             break
         attempts += 1
         entry = state["matches"].setdefault(key, dict(row, existing=False))
@@ -387,10 +470,17 @@ def execute_batch(state, path, fetcher, *, limit, min_free_bytes, max_errors=3):
         entry["status"] = "IN_PROGRESS"
         entry.pop("reason", None)
         entry.pop("http_status", None)
+        entry.pop("disk_space_diagnostic", None)
         save(path, state)
         try:
-            process(entry, path.parent / key, fetcher, lambda: save(path, state))
+            process(entry, path.parent / key, fetcher, lambda: save(path, state),
+                    min_free_bytes=min_free_bytes)
             consecutive_errors = 0
+        except LowDiskSpace as exc:
+            entry.update(status="RETRYABLE_ERROR", reason="low_disk_space",
+                         disk_space_diagnostic=str(exc))
+            state["stop_reason"] = "LOW_DISK_SPACE"
+            state["disk_space_diagnostic"] = str(exc)
         except (OpenDotaRequestError, ReplayDownloadError) as exc:
             status = getattr(exc, "http_status", None)
             unavailable = status in (404, 410)
@@ -429,7 +519,7 @@ def execute_batch(state, path, fetcher, *, limit, min_free_bytes, max_errors=3):
             save(path, state)
         print(json.dumps({k: entry.get(k) for k in
                           ("match_id", "league_id", "status", "reason", "channels")}), flush=True)
-        if state["stop_reason"] == "HTTP_429":
+        if state["stop_reason"] in ("HTTP_429", "LOW_DISK_SPACE"):
             break
         if consecutive_errors >= max_errors:
             state["stop_reason"] = "REPEATED_ERRORS"
@@ -446,10 +536,13 @@ def main(argv=None):
     parser.add_argument("--limit", type=int, default=100)
     parser.add_argument("--output-dir", type=Path, default=OUTPUT / "target-replays")
     parser.add_argument("--run", action="store_true")
-    parser.add_argument("--min-free-gb", type=float, default=10)
+    parser.add_argument("--min-free-gib", "--min-free-gb", dest="min_free_bytes",
+                        type=gib_to_bytes, default=40 * GIB,
+                        help="Remaining binary GiB (2^30 bytes), default 40, plus 2 GiB working reserve. "
+                             "--min-free-gb is a legacy alias with the SAME GiB units.")
     args = parser.parse_args(argv)
-    if args.limit <= 0 or args.min_free_gb < 1:
-        parser.error("--limit must be positive and --min-free-gb at least 1")
+    if args.limit <= 0:
+        parser.error("--limit must be positive")
     directory = args.output_dir.resolve()
     if not directory.is_relative_to(OUTPUT.resolve()):
         parser.error("All generated files must be inside gitignored replay_probe/output")
@@ -490,7 +583,7 @@ def main(argv=None):
                 save(path, state)
                 try:
                     execute_batch(state, path, fetcher, limit=args.limit,
-                                  min_free_bytes=args.min_free_gb * 1024**3)
+                                  min_free_bytes=args.min_free_bytes)
                 except KeyboardInterrupt:
                     state["stop_reason"] = "INTERRUPTED"
                     save(path, state)

@@ -10,6 +10,7 @@ Usage (from repository root):
   bash tools/run_ingestion_batches.sh [--run] [--max-batches N]
        [--batch-limit N] [--min-free-gib N]
 Defaults: dry-run, 1 batch, 100 candidates, 40 GiB minimum free disk.
+40 GiB = 42949672960 bytes; ingestion keeps another 2 GiB working reserve.
 N must be a positive integer. Dry-run reads local state and prints the plan;
 it does not contact PostgreSQL or invoke ingestion/import CLIs.
 --run requires exported POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB,
@@ -93,9 +94,11 @@ try:
         raise ValueError('Checkpoint does not match the fixed as-of window/schema')
     parsed = {k: v['dem_sha256'] for k, v in state['matches'].items() if v['status'] == 'PARSE_OK'}
     if action in ('disk', 'preflight'):
+        from tools.ingest_target_replays import GIB, WORKING_RESERVE_BYTES
         free = shutil.disk_usage(path.parent).free
-        if free < int(args[0]) * 1024**3:
-            raise ValueError(f'Low disk: {free / 1024**3:.1f} GiB free; need {args[0]} GiB')
+        required = int(args[0]) * GIB + WORKING_RESERVE_BYTES
+        if free < required:
+            raise ValueError(f'Low disk: {free / GIB:.1f} GiB free; need {args[0]} GiB + 2 GiB working reserve')
         if action == 'preflight':
             import psycopg
             from app.storage.postgres import postgres_connection_options_from_env
@@ -161,7 +164,7 @@ if ((run == 0)); then
     inspect_state summary | tee -a "$LOG_DIR/runner.log"
     say "DRY RUN: no DB connection, downloads, parsing or imports."
     say "Plan: up to $max_batches batches; limit=$batch_limit; minimum=$min_free_gib GiB."
-    say "$PYTHON -B -m tools.ingest_target_replays --as-of $AS_OF --limit $batch_limit --min-free-gb $min_free_gib --run"
+    say "$PYTHON -B -m tools.ingest_target_replays --as-of $AS_OF --limit $batch_limit --min-free-gib $min_free_gib --run"
     say "Then preflight and --apply: import_replay_batch -> import_hero_snapshots -> import_spatial_snapshots -> import_enemy_observations."
     say "--run checks exported POSTGRES_* and the populated existing DB before every batch."
     exit 0
@@ -175,7 +178,7 @@ for ((batch=1; batch<=max_batches; batch++)); do
     say "Batch $batch: ingestion (limit $batch_limit); log: $prefix-ingest.log"
     ingest_rc=0
     run_cli "$prefix-ingest.log" tools.ingest_target_replays --as-of "$AS_OF" \
-        --limit "$batch_limit" --min-free-gb "$min_free_gib" --run || ingest_rc=$?
+        --limit "$batch_limit" --min-free-gib "$min_free_gib" --run || ingest_rc=$?
     if decision=$(inspect_state decision "$prefix-checkpoint-before.json" "$ingest_rc" 2>&1); then
         read -r new_parsed reason <<< "$decision"
     else
@@ -186,6 +189,9 @@ for ((batch=1; batch<=max_batches; batch++)); do
     for module in import_replay_batch import_hero_snapshots import_spatial_snapshots import_enemy_observations; do
         for mode in preflight apply; do
             report="$prefix-$module-$mode.json"
+            if ! checked=$(inspect_state disk "$min_free_gib" 2>&1); then
+                say "$checked"; die "Disk check failed before $module $mode; progress retained"
+            fi
             say "Batch $batch: $module $mode"
             args=(--report "$report")
             [[ "$mode" != apply ]] || args+=(--apply)
