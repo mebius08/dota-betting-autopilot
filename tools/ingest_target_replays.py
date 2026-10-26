@@ -1,6 +1,7 @@
 """Bounded, resumable replay batches using the existing selector/fetcher/Clarity.
 
-Only --run downloads/parses. --limit bounds attempted NEW matches per invocation;
+Only --run downloads/parses. --limit bounds candidate attempts per invocation,
+including deferred retries. Unattempted candidates precede previous failures;
 terminal unavailable/invalid entries and SHA-verified PARSE_OK entries are skipped.
 Retryable entries get at most three invocations. No database writes are performed.
 """
@@ -320,6 +321,12 @@ def process(entry, directory, fetcher, checkpoint):
 
             def progress(event):
                 transferred[0] = event.downloaded_bytes
+                if getattr(event, "outcome", None) == "failure":
+                    print(json.dumps(dict(
+                        event="replay_download_failure", match_id=mid,
+                        downloaded_bytes=event.downloaded_bytes,
+                        total_bytes=getattr(event, "total_bytes", None),
+                    )), flush=True)
 
             with download_deadline():
                 fetcher._download_replay(
@@ -343,14 +350,31 @@ def process(entry, directory, fetcher, checkpoint):
                  artifacts=[artifact(path) for path in paths])
 
 
-def execute_batch(state, path, fetcher, *, limit, min_free_bytes, max_errors=3):
-    attempts, consecutive_errors = 0, 0
-    state["stop_reason"] = "RUNNING"
+def pending_order(state):
+    """Stable partition of the canonical diverse queue; never edit checkpoint order.
+
+    Freeze both parts before processing: a new failure cannot re-enter this run.
+    Previously interrupted/downloaded work is also deferred behind fresh IDs.
+    """
+    fresh, deferred, seen = [], [], set()
     for row in state["candidates"]:
         key = str(row["match_id"])
         entry = state["matches"].get(key, {})
-        if entry.get("status") in TERMINAL or entry.get("attempts", 0) >= 3:
+        if key in seen or entry.get("status") in TERMINAL or entry.get("attempts", 0) >= 3:
             continue
+        seen.add(key)
+        prior = entry.get("attempts", 0) > 0 or entry.get("status") in (
+            "RETRYABLE_ERROR", "IN_PROGRESS", "DOWNLOAD_OK",
+        )
+        (deferred if prior else fresh).append(row)
+    return fresh + deferred
+
+
+def execute_batch(state, path, fetcher, *, limit, min_free_bytes, max_errors=3):
+    attempts, consecutive_errors = 0, 0
+    state["stop_reason"] = "RUNNING"
+    for row in pending_order(state):
+        key = str(row["match_id"])
         if attempts >= limit:
             state["stop_reason"] = "LIMIT_REACHED"
             break

@@ -228,6 +228,173 @@ def test_disk_and_repeated_network_errors_stop_safely(batch, monkeypatch):
     assert len(fetcher.downloads) == 3
 
 
+def queued_corpus():
+    completed = [candidate(i, i % 3 + 1, 5000 - i) for i in range(1, 166)]
+    retries = [candidate(i, i % 3 + 1, 10000 - i) for i in range(201, 204)]
+    fresh = [candidate(i, i % 3 + 1, 3000 - i) for i in range(1001, 1031)]
+    matches = {str(r["match_id"]): dict(
+        r, status="PARSE_OK", attempts=1, dem_sha256=f"{r['match_id']:064x}",
+        artifacts=[dict(path=f"saved/{r['match_id']}.dem", sha256="a" * 64)],
+    ) for r in completed}
+    matches.update({str(r["match_id"]): dict(
+        r, status="RETRYABLE_ERROR", attempts=1, reason="replay_download_incomplete",
+    ) for r in retries})
+    return dict(matches=matches, candidates=cli.diverse_order(completed + retries + fresh), as_of=100)
+
+
+def test_165_completed_and_old_failures_do_not_block_fresh_diverse_queue(batch, monkeypatch):
+    _, path = batch
+    state = queued_corpus()
+    original = deepcopy(state)
+    expected = [r["match_id"] for r in state["candidates"] if r["match_id"] >= 1001]
+    attempted = []
+
+    def success(entry, *args):
+        attempted.append(entry["match_id"])
+        entry.update(status="PARSE_OK", dem_sha256=f"{entry['match_id']:064x}")
+
+    monkeypatch.setattr(cli, "process", success)
+    cli.execute_batch(state, path, None, limit=6, min_free_bytes=0)
+    assert attempted == expected[:6] and state["stop_reason"] == "LIMIT_REACHED"
+    resumed = json.loads(path.read_text())
+    cli.execute_batch(resumed, path, None, limit=6, min_free_bytes=0)
+    assert attempted == expected[:12] and resumed["last_run_attempted"] == 6
+    assert resumed["candidates"] == original["candidates"]
+    assert all(resumed["matches"][k] == v for k, v in original["matches"].items())
+
+
+def test_new_network_failures_still_trip_breaker_before_deferred_retries(batch, monkeypatch):
+    _, path = batch
+    state = queued_corpus()
+    old = deepcopy(state["matches"])
+    expected = [r["match_id"] for r in state["candidates"] if r["match_id"] >= 1001]
+    attempted = []
+
+    def failed(entry, *args):
+        attempted.append(entry["match_id"])
+        raise ReplayDownloadError("replay_download_incomplete")
+
+    monkeypatch.setattr(cli, "process", failed)
+    cli.execute_batch(state, path, None, limit=100, min_free_bytes=0)
+    assert attempted == expected[:3]
+    assert state["stop_reason"] == "REPEATED_ERRORS" and state["last_run_attempted"] == 3
+    assert all(state["matches"][k] == v for k, v in old.items())
+    assert all(state["matches"][str(i)]["status"] == "RETRYABLE_ERROR" for i in attempted)
+
+
+def test_each_id_runs_once_and_new_failures_are_not_requeued(batch, monkeypatch):
+    state, path = batch
+    state["candidates"] = [candidate(3), candidate(1), candidate(3), candidate(2), candidate(1)]
+    state["matches"]["3"] = dict(candidate(3), status="RETRYABLE_ERROR", attempts=1)
+    attempted = []
+
+    def process(entry, *args):
+        attempted.append(entry["match_id"])
+        if entry["match_id"] in (1, 3):
+            raise ReplayDownloadError("replay_download_incomplete")
+        entry["status"] = "PARSE_OK"
+
+    monkeypatch.setattr(cli, "process", process)
+    cli.execute_batch(state, path, None, limit=100, min_free_bytes=0)
+    assert attempted == [1, 2, 3]
+    assert state["last_run_attempted"] == 3 and state["stop_reason"] == "QUEUE_EXHAUSTED"
+    assert state["matches"]["1"]["attempts"] == 1 and state["matches"]["3"]["attempts"] == 2
+    assert all(state["matches"][str(i)]["reason"] == "replay_download_incomplete" for i in (1, 3))
+
+
+@pytest.mark.parametrize("status", ["RETRYABLE_ERROR", "IN_PROGRESS", "DOWNLOAD_OK"])
+def test_previous_work_is_deferred_and_counts_towards_same_limit(batch, monkeypatch, status):
+    state, path = batch
+    state["matches"]["1"] = dict(candidate(1), status=status, attempts=1, dem_sha256="a" * 64)
+    calls = []
+
+    def success(entry, *args):
+        calls.append(entry["match_id"])
+        entry["status"] = "PARSE_OK"
+
+    monkeypatch.setattr(cli, "process", success)
+    cli.execute_batch(state, path, None, limit=2, min_free_bytes=0)
+    assert calls == [2, 1] and state["last_run_attempted"] == 2
+    assert state["matches"]["1"]["dem_sha256"] == "a" * 64
+
+
+def test_deferred_retries_only_remain_bounded_after_fresh_work_exhausted(batch, monkeypatch):
+    state, path = batch
+    state["candidates"] = [candidate(1)]
+    state["matches"]["1"] = dict(candidate(1), status="RETRYABLE_ERROR", attempts=1)
+    calls = []
+
+    def failed(entry, *args):
+        calls.append(entry["match_id"])
+        raise ReplayDownloadError("replay_download_incomplete")
+
+    monkeypatch.setattr(cli, "process", failed)
+    for _ in range(3):
+        cli.execute_batch(state, path, None, limit=1, min_free_bytes=0)
+        state = json.loads(path.read_text())
+    assert calls == [1, 1]  # One per run, at most three lifetime attempts.
+    assert state["matches"]["1"]["status"] == "RETRYABLE_ERROR"
+    assert state["matches"]["1"]["attempts"] == 3
+    assert state["last_run_attempted"] == 0 and state["stop_reason"] == "QUEUE_EXHAUSTED"
+
+
+def test_deferred_rate_limit_still_stops_and_retains_cooldown(batch, monkeypatch):
+    state, path = batch
+    state["candidates"].append(candidate(3))
+    for mid in (1, 3):
+        state["matches"][str(mid)] = dict(candidate(mid), status="RETRYABLE_ERROR", attempts=1)
+    calls = []
+
+    def process(entry, *args):
+        calls.append(entry["match_id"])
+        if entry["match_id"] == 1:
+            raise OpenDotaRateLimitError("900", attempts=1)
+        entry["status"] = "PARSE_OK"
+
+    monkeypatch.setattr(cli, "process", process)
+    monkeypatch.setattr(cli.time, "time", lambda: 1000)
+    cli.execute_batch(state, path, None, limit=100, min_free_bytes=0)
+    assert calls == [2, 1]
+    assert state["stop_reason"] == "HTTP_429" and state["resume_after_epoch"] == 1900
+    assert state["matches"]["3"]["attempts"] == 1
+
+
+@pytest.mark.parametrize("empty", [True, False])
+def test_no_eligible_candidates_finishes_without_changing_records(batch, monkeypatch, empty):
+    state, path = batch
+    statuses = ["PARSE_OK", "PARSE_ERROR", "REPLAY_UNAVAILABLE", "INVALID_ARTIFACT", "RETRYABLE_ERROR"]
+    state["candidates"] = [] if empty else [candidate(i) for i in range(1, 6)]
+    state["matches"] = {str(i): dict(candidate(i), status=s, attempts=3) for i, s in enumerate(statuses, 1)}
+    original = deepcopy(state["matches"])
+
+    def unexpected(*args):
+        pytest.fail("No eligible candidate should reach downloader/parser")
+
+    monkeypatch.setattr(cli, "process", unexpected)
+    cli.execute_batch(state, path, None, limit=100, min_free_bytes=0)
+    assert state["last_run_attempted"] == 0 and state["stop_reason"] == "QUEUE_EXHAUSTED"
+    assert json.loads(path.read_text())["matches"] == original
+
+
+@pytest.mark.parametrize("expected_bytes", [1024, None])
+def test_incomplete_reason_and_available_transfer_diagnostics_are_retained(batch, monkeypatch, capsys, expected_bytes):
+    state, path = batch
+    fetcher = Fetcher()
+
+    def incomplete(*, progress_callback, match_id, **kwargs):
+        progress_callback(SimpleNamespace(outcome="failure", downloaded_bytes=256,
+                                           total_bytes=expected_bytes))
+        raise ReplayDownloadError("replay_download_incomplete", reason="replay_download_incomplete")
+
+    monkeypatch.setattr(fetcher, "_download_replay", incomplete)
+    cli.execute_batch(state, path, fetcher, limit=1, min_free_bytes=0)
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert lines[0] == dict(event="replay_download_failure", match_id=1,
+                            downloaded_bytes=256, total_bytes=expected_bytes)
+    assert lines[-1]["reason"] == state["matches"]["1"]["reason"] == "replay_download_incomplete"
+    assert state["matches"]["1"]["status"] == "RETRYABLE_ERROR" and len(fetcher.details) == 1
+
+
 def test_sha_tampering_and_identity_mismatch_are_explicit(batch, parsed):
     state, path = batch
     cli.execute_batch(state, path, Fetcher(), limit=1, min_free_bytes=0)
