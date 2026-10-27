@@ -11,6 +11,8 @@ Usage (from repository root):
        [--batch-limit N] [--min-free-gib N]
 Defaults: dry-run, 1 batch, 100 candidates, 40 GiB minimum free disk.
 40 GiB = 42949672960 bytes; ingestion keeps another 2 GiB working reserve.
+Confirmed download circuit breaker: import verified matches, wait 600 seconds,
+then retry within --max-batches. Three such batches without new PARSE_OK stop.
 N must be a positive integer. Dry-run reads local state and prints the plan;
 it does not contact PostgreSQL or invoke ingestion/import CLIs.
 --run requires exported POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB,
@@ -19,8 +21,10 @@ Logs: tools/replay_probe/output/ingestion-batches/<UTC timestamp>-<PID>/
 HELP
 }
 
-die() { printf 'STOP: %s\n' "$*" >&2; exit 1; }
+die() { final_reason=$*; printf 'STOP: %s\n' "$*" >&2; exit 1; }
 run=0; max_batches=1; batch_limit=100; min_free_gib=40
+new_parsed_total=0; imported_new_total=0; network_stops=0; no_progress_network=0
+final_reason='unexpected error'
 while (($#)); do
     case "$1" in
         --run) run=1; shift ;;
@@ -55,7 +59,15 @@ done
 LOCK="$OUTPUT/.ingestion-batches.lock"
 mkdir "$LOCK" 2>/dev/null || die "Another runner or stale lock: $LOCK (inspect owner PID directory)"
 child_pid=''
-cleanup() { rmdir "$LOCK/$$" "$LOCK" 2>/dev/null || :; }
+cleanup() {
+    local status=$?
+    if [[ -d "${LOG_DIR:-}" ]]; then
+        printf 'SUMMARY: new_PARSE_OK=%s; fully_imported_new=%s; download_stops=%s; reason=%s; exit=%s\n' \
+            "$new_parsed_total" "$imported_new_total" "$network_stops" "$final_reason" "$status" \
+            | tee -a "$LOG_DIR/runner.log" || :
+    fi
+    rmdir "$LOCK/$$" "$LOCK" 2>/dev/null || :
+}
 trap cleanup EXIT
 mkdir "$LOCK/$$"
 LOG_DIR="$OUTPUT/ingestion-batches/$(date -u +%Y%m%dT%H%M%SZ)-$$"
@@ -63,6 +75,7 @@ mkdir -p "$LOG_DIR"
 say() { printf '%s\n' "$*" | tee -a "$LOG_DIR/runner.log"; }
 interrupted() {
     trap '' INT TERM
+    final_reason="interrupted (${1:-signal})"
     if [[ -n "$child_pid" ]]; then
         # Ingester's existing SIGTERM handler saves INTERRUPTED; SQL tools
         # leave prior matches committed and roll back the active transaction.
@@ -72,7 +85,8 @@ interrupted() {
     say "STOP: interrupted; checkpoint/data retained. Logs: $LOG_DIR"
     exit 130
 }
-trap interrupted INT TERM
+trap 'interrupted SIGINT' INT
+trap 'interrupted SIGTERM' TERM
 
 # Small read-only checks, not an ingestion implementation. Times/targets and
 # replay payloads are exclusively handled by the existing five CLI modules.
@@ -129,7 +143,37 @@ try:
         if ((rc == 0 and not normal) or (rc == 1 and not partial) or rc not in (0, 1)
                 or (rc != 0 and hashlib.sha256(raw).digest() == hashlib.sha256(before_raw).digest())):
             raise ValueError(f'Unconfirmed ingestion result: exit={rc}, checkpoint={reason}; no imports')
-        print(len(parsed.keys() - previous.keys()), reason)
+        breaker = 'none'
+        if reason == 'REPEATED_ERRORS':
+            breaker = 'unknown'
+            # Only the fresh per-batch CLI log is evidence for auto-resume.
+            # Missing, duplicate or inconsistent events must fail closed.
+            events = []
+            try:
+                with Path(args[2]).open(encoding='utf-8', errors='replace') as stream:
+                    for line in stream:
+                        try:
+                            event = json.loads(line)
+                        except ValueError:
+                            continue
+                        if isinstance(event, dict) and event.get('event') == 'circuit_breaker':
+                            events.append(event)
+            except OSError:
+                pass
+            if len(events) == 1:
+                event = events[0]
+                download, parser = event.get('download_errors'), event.get('parser_errors')
+                if type(download) is int and type(parser) is int and min(download, parser) >= 0:
+                    new_invalid = any(
+                        v.get('status') == 'INVALID_ARTIFACT'
+                        and before['matches'].get(k, {}).get('status') != 'INVALID_ARTIFACT'
+                        for k, v in state['matches'].items()
+                    )
+                    if event.get('stage') == 'download' and download >= 3 and parser < 3 and not new_invalid:
+                        breaker = 'download'
+                    elif event.get('stage') == 'parser' and parser >= 3 and download < 3:
+                        breaker = 'parser'
+        print(len(parsed.keys() - previous.keys()), reason, breaker)
     elif action == 'report':
         report = json.loads(Path(args[0]).read_text())
         allowed = ('COMPATIBLE',) if args[1] == 'preflight' else ('IMPORTED', 'SKIPPED')
@@ -167,6 +211,7 @@ if ((run == 0)); then
     say "$PYTHON -B -m tools.ingest_target_replays --as-of $AS_OF --limit $batch_limit --min-free-gib $min_free_gib --run"
     say "Then preflight and --apply: import_replay_batch -> import_hero_snapshots -> import_spatial_snapshots -> import_enemy_observations."
     say "--run checks exported POSTGRES_* and the populated existing DB before every batch."
+    final_reason='DRY_RUN'
     exit 0
 fi
 
@@ -179,12 +224,19 @@ for ((batch=1; batch<=max_batches; batch++)); do
     ingest_rc=0
     run_cli "$prefix-ingest.log" tools.ingest_target_replays --as-of "$AS_OF" \
         --limit "$batch_limit" --min-free-gib "$min_free_gib" --run || ingest_rc=$?
-    if decision=$(inspect_state decision "$prefix-checkpoint-before.json" "$ingest_rc" 2>&1); then
-        read -r new_parsed reason <<< "$decision"
+    if decision=$(inspect_state decision "$prefix-checkpoint-before.json" "$ingest_rc" "$prefix-ingest.log" 2>&1); then
+        read -r new_parsed reason breaker <<< "$decision"
     else
         say "$decision"; die "Ingestion failed without a confirmed safe checkpoint; see $prefix-ingest.log"
     fi
-    say "Batch $batch: new PARSE_OK=$new_parsed; stop=$reason; exit=$ingest_rc"
+    say "Batch $batch: new PARSE_OK=$new_parsed; stop=$reason; breaker=$breaker; exit=$ingest_rc"
+    new_parsed_total=$((new_parsed_total + new_parsed))
+    if ((new_parsed > 0)); then no_progress_network=0; fi
+    if [[ "$reason" == REPEATED_ERRORS && "$breaker" == download ]]; then
+        network_stops=$((network_stops + 1))
+        if ((new_parsed == 0)); then no_progress_network=$((no_progress_network + 1)); fi
+    fi
+    [[ "$reason" != LOW_DISK_SPACE ]] || die "LOW_DISK_SPACE; verified files retained for later import"
     if checked=$(inspect_state disk "$min_free_gib" 2>&1); then say "$checked"; else say "$checked"; die "Disk check failed; verified files retained for later import"; fi
     for module in import_replay_batch import_hero_snapshots import_spatial_snapshots import_enemy_observations; do
         for mode in preflight apply; do
@@ -199,11 +251,31 @@ for ((batch=1; batch<=max_batches; batch++)); do
             if checked=$(inspect_state report "$report" "$mode" 2>&1); then say "$checked"; else say "$checked"; die "$module report verification failed"; fi
         done
     done
+    imported_new_total=$((imported_new_total + new_parsed))
     case "$reason" in
-        REPEATED_ERRORS|HTTP_429|LOW_DISK_SPACE) die "$reason; verified PARSE_OK matches imported, no next batch. Logs: $LOG_DIR" ;;
-        QUEUE_EXHAUSTED) say "STOP: queue exhausted; imports verified"; exit 0 ;;
+        REPEATED_ERRORS)
+            [[ "$breaker" == download ]] || die "REPEATED_ERRORS ($breaker breaker); imports verified, no auto-resume"
+            if ((no_progress_network >= 3)); then
+                die "Source persistently unavailable: 3 consecutive download-breaker batches without new PARSE_OK"
+            fi
+            if ((batch >= max_batches)); then
+                final_reason="max-batches=$max_batches reached after download breaker"
+                say "STOP: $final_reason"; exit 0
+            fi
+            say "Download breaker: imports verified; cooldown 600 seconds (no-progress streak=$no_progress_network/3)"
+            sleep 600 &
+            child_pid=$!
+            if wait "$child_pid"; then child_pid=''; else
+                cooldown_rc=$?; child_pid=''; die "Cooldown failed (exit $cooldown_rc)"
+            fi
+            continue ;;
+        HTTP_429) die "HTTP_429; imports verified, no auto-resume" ;;
+        QUEUE_EXHAUSTED) final_reason='queue exhausted'; say "STOP: $final_reason; imports verified"; exit 0 ;;
     esac
-    if ((new_parsed == 0)); then say "STOP: no new verified replay; no next batch"; exit 0; fi
+    if ((new_parsed == 0)); then
+        final_reason='no new verified replay'; say "STOP: $final_reason; no next batch"; exit 0
+    fi
     say "Batch $batch complete; all four importers verified"
 done
-say "STOP: max-batches=$max_batches reached. Logs: $LOG_DIR"
+final_reason="max-batches=$max_batches reached"
+say "STOP: $final_reason. Logs: $LOG_DIR"
