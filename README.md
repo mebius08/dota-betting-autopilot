@@ -1,5 +1,19 @@
 # Dota Betting Autopilot
 
+## About
+
+This course project explores live analytics and win-probability predictions for
+professional Dota 2 matches. The current web application serves a historical
+match browser at `/` and a JSON API at `/api/matches`, using FastAPI and either
+SQLite or PostgreSQL. It runs in Docker; the minimal web dependencies are pinned
+in `requirements-web.txt`. The project performs research and paper simulations,
+without executing real bets. The proposed course topic is **Dota 2 match
+analytics and prediction**; agreement with the instructor is still required.
+
+Practice L3 container check (2026-10-29): the Dockerfile built successfully;
+`GET /` returned HTTP 200 with HTML and `GET /api/matches` returned HTTP 200 with
+an empty JSON array using the container's isolated SQLite database.
+
 The target product is a universal, on-demand, medium-frequency LIVE predictor
 for professional Dota 2. The user selects an individual map/match (distinct from
 a series), can attach after play has started, and receives repeated predictions
